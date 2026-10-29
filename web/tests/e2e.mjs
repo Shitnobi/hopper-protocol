@@ -144,6 +144,7 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
       tabs: [...document.querySelectorAll('.receive-tab')].map((b) => b.textContent.trim()),
       address: document.querySelector('.receive-address')?.textContent.trim(),
       dark,
+      sheet: (() => { const r = document.querySelector('.overlay .sheet').getBoundingClientRect(); return { y: Math.round(r.y), h: Math.round(r.height), w: Math.round(r.width) }; })(),
     };
   })()`);
   console.log('receive:', first);
@@ -156,7 +157,11 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
     warning: document.querySelector('.receive-warning')?.textContent.trim(),
     address: document.querySelector('.receive-address')?.textContent.trim(),
     hasNew: Boolean(document.querySelector('[data-action=new-receive]')),
+    sheet: (() => { const r = document.querySelector('.overlay .sheet').getBoundingClientRect(); return { y: Math.round(r.y), h: Math.round(r.height), w: Math.round(r.width) }; })(),
   })`);
+  if (first.sheet.h !== ord.sheet.h || first.sheet.y !== ord.sheet.y) {
+    errors.push(`receive: the window resized on tab switch ${JSON.stringify({ btc: first.sheet, ord: ord.sheet })}`);
+  }
   if (!ord.warning.includes('ONLY SEND HOPPERS')) errors.push('receive: missing the hoppers warning');
   if (ord.hasNew) errors.push('receive: the fixed hoppers tab must not offer NEW ADDRESS');
   if (ord.address === first.address) errors.push('receive: the two tabs show the same address');

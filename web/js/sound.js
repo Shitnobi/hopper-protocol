@@ -197,7 +197,7 @@ export class Sound {
       document.addEventListener('visibilitychange', () => {
         if (!this.ctx) return;
         if (document.hidden) this.ctx.suspend().catch(() => {});
-        else if (!this.mute) this.ctx.resume().catch(() => {});
+        else if (!this.mute) this._resume();
       });
     }
   }
@@ -205,33 +205,35 @@ export class Sound {
   // ---- lifecycle ----------------------------------------------------
 
   arm() {
-    if (this.armed) {
-      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
-      return;
+    if (!this.armed) {
+      this.armed = true;
+      const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.mute ? 0.0001 : gainFor(this.volume);
+      const comp = this.ctx.createDynamicsCompressor();
+      comp.threshold.value = -16;
+      comp.knee.value = 10;
+      comp.ratio.value = 3.5;
+      comp.attack.value = 0.004;
+      comp.release.value = 0.2;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 45;
+      hp.Q.value = 0.7;
+      const shelf = this.ctx.createBiquadFilter();
+      shelf.type = 'highshelf';
+      shelf.frequency.value = 1500;
+      shelf.gain.value = 2.5;
+      this.master.connect(hp).connect(shelf).connect(comp).connect(this.ctx.destination);
+      this.wave = this._shape();
     }
-    this.armed = true;
-    const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-    if (!AC) return;
-    this.ctx = new AC();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = this.mute ? 0.0001 : gainFor(this.volume);
-    const comp = this.ctx.createDynamicsCompressor();
-    comp.threshold.value = -16;
-    comp.knee.value = 10;
-    comp.ratio.value = 3.5;
-    comp.attack.value = 0.004;
-    comp.release.value = 0.2;
-    const hp = this.ctx.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = 45;
-    hp.Q.value = 0.7;
-    const shelf = this.ctx.createBiquadFilter();
-    shelf.type = 'highshelf';
-    shelf.frequency.value = 1500;
-    shelf.gain.value = 2.5;
-    this.master.connect(hp).connect(shelf).connect(comp).connect(this.ctx.destination);
-    this.wave = this._shape();
-    this.ctx.resume().catch(() => {});
+    if (!this.ctx) return;
+    // A browser may leave the context suspended (autoplay policy, a tab
+    // that started hidden) or, on iOS, interrupted. Every gesture retries;
+    // only the first creates the graph.
+    this._resume();
     if (!this.mute) {
       this._load();
       if (this.wanted) this._transport();
@@ -241,8 +243,8 @@ export class Sound {
   startLoop() {
     this.wanted = true;
     if (!this.ctx) return;
-    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
-    this._load();
+    this._resume();
+    if (!this.mute) this._load();
     this._transport();
   }
 
@@ -266,10 +268,16 @@ export class Sound {
     this.mute = !!m;
     this._apply();
     if (!this.mute && this.ctx) {
-      this.ctx.resume().catch(() => {});
+      this._resume();
       this._load();
       if (this.wanted) this._transport();
     }
+  }
+
+  _resume() {
+    if (!this.ctx) return;
+    const state = this.ctx.state;
+    if (state === 'suspended' || state === 'interrupted') this.ctx.resume().catch(() => {});
   }
 
   _apply(initial = false) {
@@ -317,6 +325,9 @@ export class Sound {
         if (this.wanted) this._transport();
       })
       .catch((e) => {
+        // A transient fetch/parse failure must not poison every later
+        // gesture: clear the in-flight promise so the next one retries.
+        this.loading = null;
         console.warn('hopper: no music —', e && e.message ? e.message : e);
       });
     return this.loading;
@@ -432,6 +443,20 @@ export class Sound {
     h.connect(hg).connect(this.master);
     h.start(t);
     h.stop(t + dur);
+  }
+
+  /** For tests and the console: one glance at the player's state. */
+  status() {
+    return {
+      armed: this.armed,
+      wanted: this.wanted,
+      mute: this.mute,
+      volume: this.volume,
+      state: this.ctx ? this.ctx.state : 'none',
+      notes: this.song ? this.song.notes.length : 0,
+      dur: this.song ? this.song.dur : 0,
+      timer: !!this.timer,
+    };
   }
 
   /** For tests/probes: the parsed score once loaded (null before). */

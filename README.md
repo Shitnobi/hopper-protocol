@@ -116,9 +116,18 @@ RECEIVE is the egui bottom window, not an address list: a tab for
 ADDRESSES) and a tab for **HOPPERS** (the fixed BIP86 frog address), each
 with the warning band the tab demands ("DON'T SEND HOPPERS HERE" /
 "🐸 ONLY SEND HOPPERS HERE"), a scannable QR with the spec's quiet zone,
-the selectable address, COPY and FULL QR. The music is the egui app's
-`music.mid` played through WebAudio with the same tempo map, voice and
-master fader; the mute and volume still live in the wallet settings.
+the selectable address, COPY and FULL QR. The window is height-stable:
+both tabs use the same fixed QR, address, note and action rows, so
+flipping BITCOIN/HOPPERS never moves or resizes it.
+
+The music is the egui app's `music.mid` played through WebAudio with the
+same tempo map, voice and master fader; the mute and volume still live in
+the wallet settings. Browsers require one gesture before audio may start,
+so the first tap/click/key starts the score (later gestures retry if the
+browser suspended it). If it is silent, the drawer should read
+`SOUND: ON` with a non-zero volume; `hopperSound.status()` in the console
+reports `state: "running"`, `notes: 7635`. After an update, reload once
+more so the new service-worker shell replaces the cached scripts.
 
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):

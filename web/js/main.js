@@ -66,17 +66,20 @@ function resetMintDraft() {
 newMintSeed();
 
 const sound = new Sound({ volume: app.settings.volume, mute: app.settings.mute });
-let armed = false;
+if (typeof window !== 'undefined') window.hopperSound = sound;
 let viewSeq = 0;
 let lastLocation = null;
+// Kept on every gesture on purpose: a context created during the first
+// tap can still be suspended by the browser (autoplay policy, a tab that
+// started hidden). Sound.arm() only builds the graph once and otherwise
+// retries resume(), so later taps can always bring the score back.
 function armSound() {
-  if (armed) return;
-  armed = true;
   sound.arm();
 }
-document.addEventListener('pointerdown', armSound, { once: true });
-document.addEventListener('touchstart', armSound, { once: true, passive: true });
-document.addEventListener('keydown', armSound, { once: true });
+document.addEventListener('pointerdown', armSound, { passive: true });
+document.addEventListener('touchstart', armSound, { passive: true });
+document.addEventListener('click', armSound, { passive: true });
+document.addEventListener('keydown', armSound);
 
 // ---------------------------------------------------------------------------
 // rendering
@@ -1095,7 +1098,8 @@ document.getElementById('drawer-backdrop')?.addEventListener('click', () => { cl
 // flaky link) work offline. Live chain calls are always network-only.
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('service worker', e.message));
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .catch((e) => console.warn('service worker', e.message));
   });
 }
 document.addEventListener('keydown', (ev) => {

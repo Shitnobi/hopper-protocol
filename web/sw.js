@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v6-19';
+const VERSION = 'hopper-v6-21';
 const SHELL = [
   './',
   'index.html',
@@ -72,6 +72,21 @@ self.addEventListener('fetch', (event) => {
         caches.open(VERSION).then((c) => c.put('index.html', copy)).catch(() => {});
         return res;
       }).catch(() => caches.match('index.html')),
+    );
+    return;
+  }
+  // Code is network-first: a pulled fix must be the code that runs on the
+  // next online reload, not the copy a previous worker cached. Images, the
+  // score and fonts stay cache-first (they are content, not behaviour).
+  if (/\/js\/.*\.js$/.test(url.pathname) || /\/css\/.*\.css$/.test(url.pathname)) {
+    event.respondWith(
+      fetch(req, { cache: 'no-cache' }).then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => {});
+        }
+        return res;
+      }).catch(() => caches.match(req).then((hit) => hit || Response.error())),
     );
     return;
   }

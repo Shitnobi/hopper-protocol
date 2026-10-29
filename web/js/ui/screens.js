@@ -992,9 +992,11 @@ export function receiveSheet(app) {
   const warning = tab === 'ord'
     ? { cls: 'green', text: '🐸 ONLY SEND HOPPERS HERE' }
     : { cls: 'red', text: "DON'T SEND HOPPERS HERE" };
+  // Both notes are deliberately the same length and live in a fixed
+  // three-line box: switching tabs must not resize the window.
   const note = tab === 'ord'
-    ? 'FROGS / INSCRIPTIONS — the same TAPROOT address forever. Give it to anyone sending you a Hopper or an inscription. Sats here are never spent automatically (that keeps Hoppers safe), so they cannot fund a mint or a send: fund the wallet from the BITCOIN tab.'
-    : 'Fresh address — it rotates after it is paid. Ordinary Bitcoin only; sats sent here can fund mints and sends.';
+    ? 'Fixed Taproot address for Hoppers and inscriptions. Its sats never fund a mint or a send.'
+    : 'Fresh address — rotates after it is paid. Ordinary Bitcoin only; these sats fund mints and sends.';
   return `
     <div class="receive-warning ${warning.cls}" data-warning="${tab}">
       <span>${esc(warning.text)}</span>
@@ -1012,9 +1014,13 @@ export function receiveSheet(app) {
     <div class="receive-actions">
       ${logBtn('📋 COPY', 'copy', { edge: 'dim', cls: 'small', attrs: `data-text="${esc(address)}"` })}
       ${logBtn('⛶ FULL QR', 'full-qr', { edge: 'dim', cls: 'small', attrs: `data-text="${esc(address)}"` })}
-      ${tab === 'btc' ? logBtn('✚ NEW ADDRESS', 'new-receive', { edge: 'accent', cls: 'small' }) : ''}
     </div>
-    ${tab === 'btc' ? `<div class="receive-book-row">${logBtn('USED ADDRESSES', 'receive-book', { edge: 'dim', cls: 'small' })}</div>` : ''}
+    <div class="receive-book-row">
+      ${tab === 'btc'
+        ? `${logBtn('✚ NEW ADDRESS', 'new-receive', { edge: 'accent', cls: 'small' })}
+           ${logBtn('USED ADDRESSES', 'receive-book', { edge: 'dim', cls: 'small' })}`
+        : '<span class="receive-book-note">Fixed Taproot address · no rotation</span>'}
+    </div>
     <div class="sep"></div>
     <div class="sub">${tab === 'btc' ? 'BIP84 P2WPKH' : 'BIP86 P2TR'} · ${esc(w.network)}</div>`;
 }
