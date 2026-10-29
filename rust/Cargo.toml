@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hopper-core",
+    "crates/hopper-indexer",
+    "crates/hopper-indexer-api",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["HOPPER contributors"]
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

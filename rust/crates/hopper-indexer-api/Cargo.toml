@@ -1,0 +1,39 @@
+[package]
+name = "hopper-indexer-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FROGGER v2.0 indexer REST API (axum) wrapping the pure indexer core"
+
+[features]
+# Durable state mirror (P2.3d-4d): every ingest commits the block's
+# after-images plus undo journal through the embedded store.
+redb = ["hopper-indexer/redb"]
+
+[dependencies]
+hopper-core = { path = "../hopper-core" }
+hopper-indexer = { path = "../hopper-indexer" }
+bincode = "1"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+# ZMQ ingest (B4): pure-Rust ZeroMQ subscriber over bitcoind's
+# `zmqpubhashblock`, plus the RPC client for block fetches (ureq/rustls
+# match the wallet's stack; base64 for Basic auth).
+zeromq = "0.6"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+# Mempool preview (B4 leftovers): raw-tx decode for OP_RETURN envelope
+# extraction — same crate/version as the wallet stack.
+bitcoin = { version = "0.32", features = ["std"] }
+# SSE push (B4 leftovers): broadcast bus + stream adapters.
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[[test]]
+name = "crash"
+required-features = ["redb"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-stream = { version = "0.1", default-features = false }

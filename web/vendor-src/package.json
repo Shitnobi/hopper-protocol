@@ -1,0 +1,21 @@
+{
+  "name": "hopper-web-vendor",
+  "version": "1.0.0",
+  "description": "Pinned noble/scure crypto primitives bundled into web/js/vendor/bitcoin-lib.js",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --format=esm --minify --target=es2022 --outfile=../js/vendor/bitcoin-lib.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@scure/base": "^1.2.6",
+    "@scure/bip32": "^1.7.0",
+    "@scure/bip39": "^1.6.0",
+    "esbuild": "^0.28.2"
+  }
+}

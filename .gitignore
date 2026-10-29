@@ -1,0 +1,20 @@
+# Rust
+rust/target/
+
+# Node / the vendor bundle build
+web/vendor-src/node_modules/
+web/vendor-src/.cache/
+node_modules/
+
+# Local runtime state: demo chain snapshots, indexer snapshots/events,
+# Chromium profiles and screenshots from the headless tests.
+web/.shots/
+*.snapshot.bin
+*.snapshot.bin.events/
+*.snapshot.bin.tmp
+hopper-indexer.snapshot.bin*
+
+# OS / editors
+.DS_Store
+*.swp
+__pycache__/

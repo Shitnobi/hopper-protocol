@@ -1,0 +1,38 @@
+[package]
+name = "hopper-indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FROGGER v2.0 indexer: chain ingest, sat tracking, crossing state machine, API"
+
+[features]
+# Optional embedded backend (IR plan P2.3). Off by default: the pure
+# in-memory core stays dependency-light and deterministic.
+redb = ["dep:redb"]
+
+[dependencies]
+redb = { version = "2", optional = true }
+# Canonical state digest (state_root) needs a deterministic binary codec;
+# snapshots and the durable store use the same one.
+bincode = "1"
+sha2 = "0.10"
+hopper-core = { path = "../hopper-core", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+# Inline storage for the usual 1-2 sat ranges / 1-2 frogs per coin:
+# the hot apply path then allocates nothing per coin.
+smallvec = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[[example]]
+name = "durable_ingest"
+required-features = ["redb"]
+
+[[example]]
+name = "store_memory"
+required-features = ["redb"]
+
+[[example]]
+name = "store_backup"
+required-features = ["redb"]

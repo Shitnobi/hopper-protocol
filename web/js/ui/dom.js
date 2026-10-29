@@ -1,0 +1,149 @@
+// Tiny DOM helpers: formatting, toasts, overlays, sprites.
+
+import { bytesToBase64, hexToBytes } from '../core/hex.js';
+import { renderSprite } from '../core/art.js';
+import { encodePng } from '../core/png.js';
+import { requiredAt } from '../core/params.js';
+
+export function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+export function sats(n) {
+  const v = typeof n === 'bigint' ? n : BigInt(Math.round(Number(n) || 0));
+  return v.toLocaleString('en-US');
+}
+
+export function btc(n) {
+  const v = Number(n) / 1e8;
+  return v.toLocaleString('en-US', { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+}
+
+export function shortHash(s, n = 8) {
+  if (!s) return '—';
+  return s.length > n * 2 + 3 ? `${s.slice(0, n)}…${s.slice(-n)}` : s;
+}
+
+export function stateLabel(state) {
+  return {
+    idle: 'ON THE BANK', crossing: 'ON THE ROAD', home: 'HOME · IMMORTAL',
+    dead: 'ROADKILL', burned: 'BURNED', retired: 'RETIRED',
+  }[state] || String(state || '').toUpperCase();
+}
+
+export function stateClass(state) {
+  return ['idle', 'crossing', 'home', 'dead', 'burned', 'retired'].includes(state) ? state : 'idle';
+}
+
+const spriteCache = new Map();
+
+export function spriteUri(seed, state = 'idle') {
+  const key = `${seed}:${state}`;
+  if (spriteCache.has(key)) return spriteCache.get(key);
+  const png = encodePng(16, 16, renderSprite(seed, state).data);
+  const uri = `data:image/png;base64,${bytesToBase64(png)}`;
+  spriteCache.set(key, uri);
+  return uri;
+}
+
+export function frogImg(seed, state, className = 'sprite', alt = '') {
+  return `<img class="${esc(className)}" src="${spriteUri(seed, state)}" alt="${esc(alt)}" loading="lazy">`;
+}
+
+export function targetOf(record, tip) {
+  if (!record) return requiredAt((tip || 0) + 1);
+  if (record.in_flight) return record.in_flight.target_hops;
+  if (record.last_target_hops) return record.last_target_hops;
+  return requiredAt((tip || 0) + 1);
+}
+
+export function frogProgress(record, tip) {
+  const target = targetOf(record, tip);
+  const dist = Number(record?.dist || 0);
+  return { target, dist, pct: Math.max(0, Math.min(100, (dist / Math.max(1, target)) * 100)) };
+}
+
+export function chip(text, kind = '') {
+  return `<span class="state-chip ${esc(kind)}">${esc(text)}</span>`;
+}
+
+export function badge(text, kind = '') {
+  return `<span class="badge ${esc(kind)}">${esc(text)}</span>`;
+}
+
+export function toast(message, kind = '') {
+  const host = document.getElementById('toasts');
+  if (!host) return;
+  const node = document.createElement('div');
+  node.className = `toast ${kind}`;
+  node.textContent = message;
+  host.appendChild(node);
+  setTimeout(() => { node.style.opacity = '0'; node.style.transition = 'opacity .3s'; }, 4200);
+  setTimeout(() => node.remove(), 4700);
+}
+
+export function busy(on, text = 'working…') {
+  const node = document.getElementById('busy');
+  if (!node) return;
+  node.hidden = !on;
+  const t = document.getElementById('busy-text');
+  if (t) t.textContent = text;
+  const frog = document.getElementById('busy-frog');
+  if (frog) frog.src = spriteUri(0x9058d0fa, 'idle');
+}
+
+export function openOverlay(html, { dismissable = true } = {}) {
+  const node = document.getElementById('overlay');
+  if (!node) return;
+  node.innerHTML = `<div class="modal" data-modal>${html}</div>`;
+  node.hidden = false;
+  node.dataset.dismissable = dismissable ? '1' : '0';
+}
+
+export function closeOverlay() {
+  const node = document.getElementById('overlay');
+  if (!node) return;
+  node.hidden = true;
+  node.innerHTML = '';
+}
+
+export async function copyText(text, label = 'copied') {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(label, 'ok');
+  } catch {
+    // Fallback for non-secure contexts.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); toast(label, 'ok'); } catch { toast('copy failed', 'err'); }
+    ta.remove();
+  }
+}
+
+export function hexSeed(text) {
+  const s = String(text || '').trim().toLowerCase();
+  if (!s) return (crypto.getRandomValues(new Uint32Array(1))[0]) >>> 0;
+  if (/^0x[0-9a-f]{1,8}$/.test(s) || /^[0-9a-f]{1,8}$/.test(s)) return parseInt(s.replace(/^0x/, ''), 16) >>> 0;
+  if (/^\d+$/.test(s)) return Number(s) >>> 0;
+  // Any other text is hashed deterministically.
+  let h = 2166136261;
+  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+export function seedText(seed) {
+  return `${Number(seed) >>> 0} · 0x${(Number(seed) >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function timeAgo(iso) {
+  if (!iso) return '';
+  const d = Date.now() - new Date(iso).getTime();
+  if (d < 60000) return 'just now';
+  if (d < 3600000) return `${Math.floor(d / 60000)}m ago`;
+  if (d < 86400000) return `${Math.floor(d / 3600000)}h ago`;
+  return `${Math.floor(d / 86400000)}d ago`;
+}

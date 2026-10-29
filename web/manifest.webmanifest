@@ -1,0 +1,16 @@
+{
+  "name": "HOPPER — the pond on Bitcoin",
+  "short_name": "HOPPER",
+  "description": "A non-custodial wallet and game for HOPPER v6 frogs: satoshis whose lives are Bitcoin transactions.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#18241a",
+  "theme_color": "#18241a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

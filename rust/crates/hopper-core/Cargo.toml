@@ -1,0 +1,24 @@
+[package]
+name = "hopper-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FROGGER v2.0 protocol core: OP_RETURN envelopes, fair settlement, deterministic frog art"
+
+# Workstream A exit gate: this crate must build for x86_64, aarch64, and
+# aarch64-linux-android with no dependencies beyond sha2 (pure Rust).
+[dependencies]
+sha2 = "0.10"
+# Optional serde for the wire types that cross process boundaries
+# (indexer config snapshots, API DTOs). OFF by default: the Workstream
+# A exit gate — x86_64/aarch64/android builds with no deps beyond
+# sha2 — holds for every default-feature build.
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
