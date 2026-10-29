@@ -119,6 +119,9 @@ function updateMintPreview() {
   for (const seedLabel of document.querySelectorAll('[data-seed-label]')) {
     seedLabel.textContent = `SEED ${seedText(app.mintSeed)}`;
   }
+  for (const seedInput of document.querySelectorAll('[data-seed-value]')) {
+    seedInput.value = (app.mintSeed >>> 0).toString(16).padStart(8, '0');
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -173,22 +173,26 @@ await waitFor('document.querySelector("[data-action=mint]")');
 const draft = await evaluate(`({
   seed: document.querySelector('[data-seed-label]')?.textContent || '',
   name: document.querySelector('[data-input=mint-name]')?.value,
-  hasSeedInput: Boolean(document.querySelector('[data-input=mint-seed]')),
+  field: document.querySelector('[data-seed-value]')?.value || '',
+  hasSeedInput: Boolean(document.querySelector('[data-seed-value]')),
+  seedReadonly: document.querySelector('[data-seed-value]')?.readOnly === true,
   hasDice: Boolean(document.querySelector('[data-action=random-seed]')),
 })`);
 console.log('mint draft:', draft);
 if (!draft.seed) errors.push('mint: seed label is missing');
-if (draft.hasSeedInput) errors.push('mint: seed is manually editable');
+if (!draft.hasSeedInput || !draft.seedReadonly) errors.push('mint: seed field is missing or editable');
 if (!draft.hasDice) errors.push('mint: dice button is missing');
 if (draft.name !== '') errors.push(`mint: default name is not blank (${JSON.stringify(draft.name)})`);
 await click('random-seed');
 await sleep(100);
 const rolled = await evaluate(`({
   seed: document.querySelector('[data-seed-label]')?.textContent || '',
+  field: document.querySelector('[data-seed-value]')?.value || '',
   name: document.querySelector('[data-input=mint-name]')?.value,
 })`);
 console.log('diced mint draft:', rolled);
 if (rolled.seed === draft.seed) errors.push('mint: dice did not change the seed');
+if (!rolled.field || rolled.field === draft.field) errors.push('mint: seed field did not update');
 if (rolled.name !== '') errors.push('mint: dice changed the name');
 await fill('mint-name', 'Test Hopper');
 await sleep(300);
