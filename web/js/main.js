@@ -618,6 +618,10 @@ const handlers = {
       await ensureViewData(app.view);
     });
   },
+  'random-seed'() {
+    newMintSeed();
+    updateMintPreview();
+  },
   mint() {
     run('inscribing the frog (commit + reveal)', async () => {
       const seed = app.mintSeed >>> 0;

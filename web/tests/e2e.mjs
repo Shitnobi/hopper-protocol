@@ -166,7 +166,8 @@ if (scrolled < 100) errors.push(`scroll test did not scroll (${scrolled})`);
 if (top > 1) errors.push(`route did not reset scroll (${top})`);
 console.log('scroll: route starts at top');
 
-// 2. Mint view: the seed is wallet-assigned and read-only; the name starts blank.
+// 2. Mint view: the seed is wallet-assigned, dice-rerollable, never typed;
+// the name starts blank.
 await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
 await waitFor('document.querySelector("[data-action=mint]")');
 const draft = await evaluate(`({
@@ -177,8 +178,18 @@ const draft = await evaluate(`({
 })`);
 console.log('mint draft:', draft);
 if (!draft.seed) errors.push('mint: seed label is missing');
-if (draft.hasSeedInput || draft.hasDice) errors.push('mint: seed is user-editable');
+if (draft.hasSeedInput) errors.push('mint: seed is manually editable');
+if (!draft.hasDice) errors.push('mint: dice button is missing');
 if (draft.name !== '') errors.push(`mint: default name is not blank (${JSON.stringify(draft.name)})`);
+await click('random-seed');
+await sleep(100);
+const rolled = await evaluate(`({
+  seed: document.querySelector('[data-seed-label]')?.textContent || '',
+  name: document.querySelector('[data-input=mint-name]')?.value,
+})`);
+console.log('diced mint draft:', rolled);
+if (rolled.seed === draft.seed) errors.push('mint: dice did not change the seed');
+if (rolled.name !== '') errors.push('mint: dice changed the name');
 await fill('mint-name', 'Test Hopper');
 await sleep(300);
 await click('mint');
@@ -196,7 +207,7 @@ const nextDraft = await evaluate(`({
   name: document.querySelector('[data-input=mint-name]')?.value,
 })`);
 console.log('next mint draft:', nextDraft);
-if (nextDraft.seed === draft.seed) errors.push('mint: seed was not rotated after broadcast');
+if (nextDraft.seed === rolled.seed) errors.push('mint: seed was not rotated after broadcast');
 if (nextDraft.name !== '') errors.push(`mint: name was not cleared after broadcast (${JSON.stringify(nextDraft.name)})`);
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelector(".frog-card")', 15000, 'pond after mint draft check');
