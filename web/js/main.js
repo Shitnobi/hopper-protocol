@@ -328,6 +328,8 @@ function closeDrawer() {
 async function run(label, fn) {
   if (app.busy) return;
   setBusy(true, label);
+  // Let the browser paint the busy overlay before any synchronous work.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   try {
     await fn();
     sound.sfx('tap');

@@ -11,6 +11,7 @@ import { CARD_VALUE, GENESIS, requiredAt } from '../core/params.js';
 import { decodeAddress, p2trScript, scriptToAddress } from './addresses.js';
 import { deriveWallet } from './keys.js';
 import { DemoBackend, LiveBackend } from './backend.js';
+import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
   buildBurn, buildCross, buildMint, buildPrepare, buildSend, buildTransfer, stateScripts,
@@ -316,10 +317,23 @@ export class WalletSession {
   async mint({ seed, name = '', feeRate = null, revealFeeRate = null }) {
     await this.refresh();
     const rate = feeRate ?? this.settings.feeRate;
-    const built = buildMint({
-      keys: this.keys, utxos: this._funding(), seed, name, feeRate: rate,
+    const args = {
+      utxos: this._funding(), seed, name, feeRate: rate,
       revealFeeRate: revealFeeRate ?? rate,
-    });
+    };
+    let built;
+    try {
+      if (!this.mnemonic) throw Object.assign(new Error('no mnemonic in this session'), { workerUnavailable: true });
+      built = await buildMintOffThread({
+        mnemonic: this.mnemonic, network: this.network, ...args,
+      });
+    } catch (err) {
+      // A build error is authoritative; only a worker/startup problem falls
+      // back to the main thread. The fallback keeps unusual browsers usable.
+      if (!err.workerUnavailable) throw err;
+      console.warn('mint worker unavailable; building on the main thread', err.message);
+      built = buildMint({ keys: this.keys, ...args });
+    }
     await this.backend.broadcast(built.commit.hex);
     await this.backend.broadcast(built.reveal.hex);
     this._recordAction({

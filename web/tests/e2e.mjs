@@ -164,6 +164,7 @@ await waitFor('location.hash === "#/pond"', 40000, 'mint to navigate to pond');
 await waitFor('document.querySelectorAll(".frog-card").length > 0', 20000, 'minted frog card');
 const pond = await evaluate('document.querySelector(".panel.lily")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
+if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
 
 // 3. Open frog, prepare custody.
 await evaluate(`document.querySelector('.frog-card').click()`);

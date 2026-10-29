@@ -51,7 +51,8 @@ web/
   js/core/                 hex, params, settles, envelopes, inscriptions,
                            v6 leaves, fold replay, art, PNG, mint document
   js/wallet/               keys, addresses, tx sign/serialize, actions,
-                           tx parser, backends, vault, storage, session
+                           tx parser, backends, vault, storage, session,
+                           mint worker + client
   js/mock/chain.js         in-browser v6 demo chain
   js/ui/                   screens, DOM helpers
   js/main.js               boot, onboarding/lock, routing, action wiring
@@ -171,7 +172,9 @@ curl -sN localhost:9770/v1/events/stream
   witness-free indexer.
 - **Actions**: `buildMint` (commit + reveal), `buildPrepare`, `buildCross`,
   `buildTransfer`, `buildSend`, `buildBurn`, all fee-sized from the actual
-  scripts.
+  scripts. The session runs `buildMint` in a module worker so hashing and
+  signing the 14 KiB mint document cannot make the page unresponsive; if a
+  browser cannot start the worker it falls back to the main thread.
 - **Vault**: AES-256-GCM under a PBKDF2-SHA-256 (210,000 rounds)
   non-extractable WebCrypto KEK. The KEK is cached in IndexedDB **only**
   when "keep this device unlocked" is checked; locking deletes it. Wiping
@@ -221,9 +224,10 @@ node tests/e2e.mjs http://127.0.0.1:8130
 ```
 
 It creates a wallet, checks every screen fits a phone width, verifies the
-PWA manifest/service worker, mints, prepares, crosses, mines six blocks,
-reloads without and with "keep this device unlocked", and fails on console
-errors or horizontal overflow. Screenshots land in `.shots/` (ignored).
+PWA manifest/service worker, mints through the worker, prepares, crosses,
+mines six blocks, reloads without and with "keep this device unlocked", and
+fails on console errors or horizontal overflow. Screenshots land in
+`.shots/` (ignored).
 
 Rebuild the vendored crypto bundle and the protocol vectors:
 
