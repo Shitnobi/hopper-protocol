@@ -780,6 +780,61 @@ function frogEvents(w, sat) {
   return out.sort((a, b) => (a.height ?? 0) - (b.height ?? 0));
 }
 
+
+function scanAge(ts) {
+  if (!ts) return '—';
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (secs < 5) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
+  return `${Math.round(secs / 60)}m ago`;
+}
+
+function scanEta(ts) {
+  if (!ts) return '—';
+  const secs = Math.max(0, Math.round((ts - Date.now()) / 1000));
+  if (secs < 2) return 'now';
+  if (secs < 60) return `in ${secs}s`;
+  return `in ${Math.round(secs / 60)}m`;
+}
+
+/**
+ * The live scan policy, shown in SETTINGS. This is deliberately explicit:
+ * on a public API the idle cost is one tip query every ten minutes, a gap
+ * walk only happens on request, and a rescan says where it is and can be
+ * stopped.
+ */
+export function scanPanel(app) {
+  const w = app?.w;
+  if (!w || typeof w.scanState !== 'function') return '';
+  const sc = w.scanState();
+  const mode = w.settings?.mode === 'demo'
+    ? 'DEMO — in-browser chain'
+    : sc.publicSource ? 'PUBLIC — metered' : 'LOCAL NODE — free';
+  const builtIn = Math.max(0, sc.gapLimit - (sc.gapExtra || 0));
+  const progress = sc.rescan
+    ? `Rescanning ${sc.rescan.asked} addresses · ${sc.rescan.hits} with history`
+    : sc.note || 'No scan has run yet.';
+  return `
+    <div class="settings-grid mt10">
+      <label>Source</label><dd>${esc(mode)}</dd>
+      <label>Scan window</label><dd>${sats(sc.gapLimit)} addresses (${sats(builtIn)} built-in + ${sats(sc.gapExtra || 0)})</dd>
+      <label>Last pass</label><dd>${esc(sc.lastPass ? `tip ${sats(sc.lastTip)} · ${scanAge(sc.lastPass)}` : '—')}</dd>
+      <label>Next pass</label><dd>${esc(sc.busy || sc.rescan ? 'running' : sc.nextAt ? scanEta(sc.nextAt) : sc.auto ? 'scheduled' : 'manual')}</dd>
+      ${sc.fails ? `<label>Backoff</label><dd>${sats(sc.fails)} failed pass${sc.fails === 1 ? '' : 'es'} — retrying slower</dd>` : ''}
+      ${sc.pending ? `<label>Confirming</label><dd>${sats(sc.pending)} transaction${sc.pending === 1 ? '' : 's'} — polling faster until confirmed</dd>` : ''}
+    </div>
+    <div class="actions mt10">
+      ${sc.rescan
+        ? logBtn('STOP RESCAN', 'stop-rescan', { edge: 'dead', cls: 'small' })
+        : app.scanArmed
+          ? logBtn('RESCAN? TAP AGAIN', 'rescan', { edge: 'dead', cls: 'small' })
+          : logBtn('RESCAN FROM CHAIN', 'rescan', { edge: 'accent', cls: 'small' })}
+      ${logBtn('EXTEND +20', 'extend-gap', { edge: 'dim', cls: 'small' })}
+    </div>
+    <div class="scan-line ${sc.rescan ? 'accent' : ''}" data-scan-line>${esc(progress)}</div>
+    <div class="hint">A public source is asked for the tip once every 10 minutes while idle. Address lookups happen only when a block changes the answer, while one of our transactions is confirming, or when you RESCAN. RESCAN takes two taps, walks the gap one wave at a time, and can be stopped.</div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Settings (HOPPER's own controls, in the FROGGER window material)
 // ---------------------------------------------------------------------------
@@ -807,8 +862,6 @@ export function settings(app) {
         <input type="text" data-input="electrumUrl" value="${esc(s.electrumUrl || '')}" placeholder="wss://…">
         <label>Fee rate</label>
         <input type="number" min="1" max="1000" data-input="fee-rate" value="${s.feeRate}">
-        <label>Address gap</label>
-        <input type="number" min="5" max="50" data-input="gap" value="${s.gap}">
         <label>Deep scan</label>
         <select data-input="deepScan">
           <option value="1" ${s.deepScan ? 'selected' : ''}>On</option>
@@ -820,6 +873,11 @@ export function settings(app) {
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
       <div class="hint">A live backend needs an indexer or ord server for sat ranges; Esplora alone can answer coins, not frog custody.</div>
+    </div>
+
+    <div class="window" data-lily="home">
+      <div style="font-weight:700">SCAN POLICY</div>
+      <div data-scan-panel>${scanPanel(app)}</div>
     </div>
 
     <div class="window" data-lily="home">

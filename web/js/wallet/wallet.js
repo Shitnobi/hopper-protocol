@@ -18,6 +18,104 @@ import {
   buildTransfer, stateScripts,
 } from './actions.js';
 
+// The FROGGER scan policy, ported to the browser wallet.
+//
+// A settled chain answer can change only with a block, so a warm pass asks
+// about a handful of scripts (the ordinals address, the next unused index
+// per branch plus one guard, and the indices that held coins last pass).
+// The full gap walk is a COLD-only cost: boot, RESCAN, EXTEND. A public
+// source gets one tip probe every ten minutes while idle, and a 15 s
+// cadence only while something of ours is in flight.
+export const GAP_LIMIT = 20;
+export const SCAN_WAVE = 8;
+export const WATCH_AHEAD = 2;
+export const PUBLIC_IDLE_TICK_MS = 10 * 60 * 1000;
+export const PUBLIC_BUSY_TICK_MS = 15 * 1000;
+export const RESCAN_DELAY_MS = 400;
+export const LOCAL_TICK_MS = 3000;
+
+/** Same bounded backoff as FROGGER: 5, 10, 20, 40, 80, 160, 300 s. */
+export function failureBackoffMs(fails) {
+  const n = Math.max(1, Math.min(7, Math.trunc(Number(fails) || 1)));
+  return Math.min(300_000, 5_000 * (2 ** (n - 1)));
+}
+
+function isPrivateHost(host) {
+  const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return false;
+  if (h === 'localhost' || h === '::1' || h === '0.0.0.0') return true;
+  if (h.endsWith('.local') || h.endsWith('.localhost')) return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
+  return /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+}
+
+/** A metered, someone-else's endpoint. A local node/pool is free. */
+export function isPublicEndpoint(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return false;
+  try {
+    return !isPrivateHost(new URL(raw).hostname);
+  } catch {
+    // A malformed URL is not a local node; be conservative about it.
+    return true;
+  }
+}
+
+export function settingsPublicSource(settings = {}) {
+  if (settings.mode === 'demo') return false;
+  return [settings.esploraUrl, settings.indexerUrl, settings.electrumUrl]
+    .some((url) => isPublicEndpoint(url));
+}
+
+/** `next_unused`: what the wallet has SEEN, never a chain walk. */
+export function nextUnusedIndex(lastUsed = {}, receiveFloor = 0, branch = 0) {
+  const seen = Number(lastUsed?.[branch]);
+  const next = Number.isSafeInteger(seen) && seen >= 0 ? seen + 1 : 0;
+  return branch === 0 ? Math.max(next, Number(receiveFloor) || 0) : next;
+}
+
+/**
+ * The WARM plan: 6–10 scripts, not every address up to the gap limit.
+ * `next - 1` is included because that is where this wallet's change (and
+ * the coin a mint/reveal left behind) actually sits.
+ */
+export function buildWatchPlan({ lastUsed = {}, receiveFloor = 0, hot = [] } = {}) {
+  const plan = new Map();
+  const add = (branch, index) => {
+    const b = Number(branch);
+    const i = Number(index);
+    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return;
+    plan.set(`${b}:${i}`, [b, i]);
+  };
+  add(0, receiveFloor);
+  for (const branch of [0, 1]) {
+    const next = nextUnusedIndex(lastUsed, receiveFloor, branch);
+    add(branch, Math.max(0, next - 1));
+    for (let i = 0; i < WATCH_AHEAD; i += 1) add(branch, next + i);
+  }
+  for (const pair of hot || []) {
+    if (Array.isArray(pair)) add(pair[0], pair[1]);
+  }
+  return [...plan.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+/** The COLD plan: every index the gap walk reached, plus the warm plan. */
+export function buildColdPlan(warmPlan, watched = {}) {
+  const plan = new Map((warmPlan || []).map(([b, i]) => [`${b}:${i}`, [b, i]]));
+  for (const branch of [0, 1]) {
+    const end = Number(watched?.[branch]) || 0;
+    for (let i = 0; i < end; i += 1) plan.set(`${branch}:${i}`, [branch, i]);
+  }
+  return [...plan.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+/** A fresh wallet need not look at change; a restore/rescan must. */
+export function shouldSkipChange(rescanning, receiveFound, receiveFloor, spendable) {
+  return !rescanning && !receiveFound && !receiveFloor && !spendable;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Bound the number of chain requests in flight. Sequential scans used to
 // take one RTT per address (and per public frog); a small pool keeps a live
 // refresh from turning into a multi-second wall of requests.
@@ -51,19 +149,30 @@ export const DEFAULT_SETTINGS = {
   mute: false,
   volume: 0.55,
   deepScan: false,
-  gap: 20,
+  gap: GAP_LIMIT,
+  gapExtra: 0,
   addressBook: [],
 };
 
 export function loadSettings() {
-  const s = { ...DEFAULT_SETTINGS, ...(loadJson(KEYS.settings, {}) || {}) };
+  const saved = loadJson(KEYS.settings, {}) || {};
+  const s = { ...DEFAULT_SETTINGS, ...saved };
   // Settings are user-editable and survive upgrades. Normalize the values
   // that flow into fee math or the scan loop so a corrupt/empty field can
   // never become NaN or an unbounded gap.
   s.mode = s.mode === 'live' ? 'live' : 'demo';
   s.feeRate = rateOr(s.feeRate);
-  const gap = Number(s.gap);
-  s.gap = Number.isFinite(gap) ? Math.max(5, Math.min(50, Math.trunc(gap))) : 20;
+  // Compatibility: older files had a user-editable 5–50 gap and no
+  // extension. Keep a wider old setting by turning the part above the
+  // built-in 20 into a persisted extension, never by shrinking it (that
+  // could strand a payment made to an address the old build watched).
+  const legacyGap = Number(s.gap);
+  let extra = Number(saved.gapExtra);
+  if (!Number.isFinite(extra) || extra < 0) {
+    extra = Number.isFinite(legacyGap) ? Math.max(0, Math.trunc(legacyGap) - GAP_LIMIT) : 0;
+  }
+  s.gapExtra = Math.max(0, Math.min(1_000_000, Math.trunc(extra)));
+  s.gap = GAP_LIMIT + s.gapExtra;
   const volume = Number(s.volume);
   s.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.55;
   s.mute = s.mute === true;
@@ -90,12 +199,38 @@ export class WalletSession {
     this.frogs = [];
     this.history = [];
     this.actions = [];
+    this.pending = [];
     this.imported = new Set();
     this.tipHeight = null;
     this.tipHash = null;
     this.receiveIndex = 0;
+    this.receiveFloor = 0;
     this.receiveHistory = [];
     this.balance = { total: 0n, spendable: 0n, cards: 0n, unspendable: 0n };
+    // Scan state, persisted where it matters and rebuilt by the next cold
+    // pass where it does not. `fullScanTip` is the FROGGER tip gate.
+    this.used = {};
+    this.lastUsed = {};
+    this.hot = [];
+    this.watched = {};
+    this.fullScanTip = null;
+    this.watchTip = null;
+    this.forceWatch = false;
+    this.cold = true;
+    this.fails = 0;
+    this.publicSource = false;
+    this.scan = {
+      busy: false, rescan: null, note: '', lastPass: null, lastTip: null,
+      nextAt: null, cold: true, partial: false,
+    };
+    this._autoSync = false;
+    this._timer = null;
+    this._refreshing = null;
+    this._wakeQueued = false;
+    this._rescanCancel = false;
+    this._stopped = false;
+    this._blockUnsub = null;
+    this._visHandler = null;
     this._txCache = new Map();
     this._loadLedger();
   }
@@ -108,24 +243,51 @@ export class WalletSession {
     const l = loadJson(this._ledgerKey(), null);
     if (!l) return;
     this.actions = l.actions || [];
+    this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.history = l.history || [];
     this.imported = new Set(l.imported || []);
     this.used = l.used || {};
-    const gap = this.settings.gap || 20;
+    this.lastUsed = l.lastUsed && typeof l.lastUsed === 'object' ? l.lastUsed : {};
+    this.hot = Array.isArray(l.hot)
+      ? l.hot.filter((p) => Array.isArray(p) && (p[0] === 0 || p[0] === 1) && Number.isSafeInteger(Number(p[1])))
+        .map((p) => [Number(p[0]), Number(p[1])])
+      : [];
+    this.fullScanTip = Number.isSafeInteger(l.fullScanTip) ? l.fullScanTip : null;
+    this.receiveFloor = Number.isSafeInteger(l.receiveFloor)
+      ? Math.min(1_000_000, Math.max(0, l.receiveFloor)) : 0;
+    const gap = this.gapLimit();
     const index = Number(l.receiveIndex);
-    this.receiveIndex = Number.isInteger(index) && index >= 0 && index < gap ? index : 0;
+    this.receiveIndex = Number.isInteger(index) && index >= 0
+      ? Math.min(1_000_000, index) : 0;
+    this.receiveFloor = Math.max(this.receiveFloor, this.receiveIndex);
     this.receiveHistory = Array.isArray(l.receiveHistory) ? l.receiveHistory.slice(-gap * 4) : [];
+    if (l.balance && typeof l.balance === 'object') {
+      const big = (v) => { try { return BigInt(v); } catch { return 0n; } };
+      this.balance = {
+        total: big(l.balance.total), spendable: big(l.balance.spendable),
+        cards: big(l.balance.cards), unspendable: big(l.balance.unspendable),
+      };
+    }
   }
 
   _saveLedger() {
     saveJson(this._ledgerKey(), {
       network: this.network,
       actions: this.actions.slice(-300),
+      pending: this.pending.slice(-24),
       history: this.history.slice(-200),
       imported: [...this.imported],
       used: this.used || {},
+      lastUsed: this.lastUsed || {},
+      hot: this.hot || [],
+      fullScanTip: this.fullScanTip,
+      receiveFloor: this.receiveFloor || 0,
       receiveIndex: this.receiveIndex || 0,
       receiveHistory: this.receiveHistory || [],
+      balance: {
+        total: String(this.balance.total), spendable: String(this.balance.spendable),
+        cards: String(this.balance.cards), unspendable: String(this.balance.unspendable),
+      },
       lastRefresh: new Date().toISOString(),
       tipHeight: this.tipHeight,
     });
@@ -134,6 +296,8 @@ export class WalletSession {
   // --- backend -----------------------------------------------------------
 
   async connect() {
+    this.stop();
+    this._stopped = false;
     if (this.settings.mode === 'demo') {
       this.backend = new DemoBackend(this.network);
     } else {
@@ -143,7 +307,135 @@ export class WalletSession {
         electrumUrl: this.settings.electrumUrl,
       });
     }
+    this.publicSource = settingsPublicSource(this.settings);
+    this._setupAutoSync();
     return this;
+  }
+
+  /** Stop background work (lock/wipe/backend change). Network requests
+   *  already in flight are left to finish; nothing is rescheduled. */
+  stop() {
+    this._autoSync = false;
+    this._stopped = true;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = null;
+    this._wakeQueued = false;
+    this.scan.nextAt = null;
+    if (this._blockUnsub) {
+      try { this._blockUnsub(); } catch { /* already gone */ }
+      this._blockUnsub = null;
+    }
+    if (this._visHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this._visHandler);
+      this._visHandler = null;
+    }
+  }
+
+  _setupAutoSync() {
+    this._autoSync = true;
+    if (typeof document !== 'undefined' && !this._visHandler) {
+      this._visHandler = () => { if (!document.hidden) this._wake(); };
+      document.addEventListener('visibilitychange', this._visHandler);
+    }
+    if (this.backend?.onNewBlock) {
+      this._blockUnsub = this.backend.onNewBlock(() => this._wake());
+    }
+  }
+
+  /** FROGGER's `tick_interval`: failure backoff, then public idle/busy,
+   *  then the local node's own cadence. */
+  tickIntervalMs() {
+    if (this.fails > 0) return failureBackoffMs(this.fails);
+    if (!this.publicSource) return LOCAL_TICK_MS;
+    return this._inFlight() ? PUBLIC_BUSY_TICK_MS : PUBLIC_IDLE_TICK_MS;
+  }
+
+  _inFlight() {
+    if ((this.pending || []).length) return true;
+    return this.frogs.some((f) => String(f?.state) === 'crossing' || f?.in_flight);
+  }
+
+  /** Clear broadcasts that confirmed, and expire a transaction that never
+   *  landed (so a dropped relay cannot make a public source poll forever).
+   *  One `getTx` per pending tx, only while one is actually pending. */
+  async _reconcilePending(tip) {
+    if (!this.pending?.length) return;
+    const seen = new Set((this.history || []).map((e) => e.txid).filter(Boolean));
+    const keep = [];
+    for (const p of this.pending) {
+      if (!p?.txid || seen.has(p.txid)) continue;
+      if (Number.isInteger(p.sinceTip) && tip - p.sinceTip > 144) continue;
+      try {
+        const tx = await this.backend.getTx(p.txid);
+        const st = tx?.status || {};
+        if (st.confirmed === true || Number.isInteger(st.block_height) || Number.isInteger(st.height)) continue;
+      } catch { /* a mempool/API miss is not a confirmation */ }
+      keep.push(p);
+    }
+    this.pending = keep;
+  }
+
+  _scheduleNext(ms = this.tickIntervalMs()) {
+    if (!this._autoSync || this._stopped) return;
+    if (this._timer) clearTimeout(this._timer);
+    this.scan.nextAt = Date.now() + ms;
+    this._timer = setTimeout(() => {
+      this._timer = null;
+      this._tick();
+    }, Math.max(0, ms));
+    if (this._timer?.unref) this._timer.unref();
+  }
+
+  _tick() {
+    if (!this._autoSync || this._stopped) return;
+    if (typeof document !== 'undefined' && document.hidden) {
+      this._scheduleNext();
+      return;
+    }
+    this.refresh({ force: false, auto: true }).catch((e) => {
+      console.warn('background sync failed', e.message || String(e));
+    });
+  }
+
+  _wake() {
+    if (!this._autoSync || this._stopped) return;
+    this._wakeQueued = true;
+    if (this._refreshing) return;
+    this._wakeQueued = false;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = null;
+    this._scheduleNext(250);
+  }
+
+  gapLimit() { return GAP_LIMIT + (Number(this.settings.gapExtra) || 0); }
+
+  _noteUsed(branch, index) {
+    const b = Number(branch);
+    const i = Number(index);
+    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return;
+    const prev = Number(this.lastUsed?.[b]);
+    if (!Number.isSafeInteger(prev) || i > prev) this.lastUsed = { ...this.lastUsed, [b]: i };
+  }
+
+  scanState() {
+    return {
+      busy: this.scan.busy,
+      rescan: this.scan.rescan ? { ...this.scan.rescan } : null,
+      note: this.scan.note,
+      lastPass: this.scan.lastPass,
+      lastTip: this.scan.lastTip,
+      nextAt: this.scan.nextAt,
+      cold: this.cold,
+      partial: this.scan.partial,
+      publicSource: this.publicSource,
+      fails: this.fails,
+      pending: (this.pending || []).length,
+      tip: this.tipHeight,
+      fullScanTip: this.fullScanTip,
+      gapLimit: this.gapLimit(),
+      gapExtra: Number(this.settings.gapExtra) || 0,
+      auto: this._autoSync,
+    };
   }
 
   async setMode(mode, urls = {}) {
@@ -156,23 +448,30 @@ export class WalletSession {
 
   // --- discovery ---------------------------------------------------------
 
-  _watched() {
-    const out = [];
-    const gap = this.settings.gap || 20;
-    for (const branch of ['receive', 'change']) {
-      for (let i = 0; i < gap; i++) {
-        const key = this.keys[branch](i);
-        out.push({ branch, index: i, key, address: key.address, script: key.script, kind: 'p2wpkh' });
-      }
+  _entry(branch, index) {
+    if (branch === 'ord') {
+      return {
+        branch: 'ord', index: 0, key: this.keys.ord,
+        address: this.keys.frogAddress(),
+        script: p2trScript(this.keys.ord.outputXonly), kind: 'frog',
+      };
     }
-    const frogAddress = this.keys.frogAddress();
-    out.push({
-      branch: 'ord', index: 0, key: this.keys.ord,
-      address: frogAddress, script: p2trScript(this.keys.ord.outputXonly), kind: 'frog',
-    });
-    return out;
+    const b = Number(branch);
+    const i = Number(index);
+    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return null;
+    const key = b === 0 ? this.keys.receive(i) : this.keys.change(i);
+    return { branch: b, index: i, key, address: key.address, script: key.script, kind: 'p2wpkh' };
   }
 
+  _watchPlan() {
+    const floor = Math.max(Number(this.receiveFloor) || 0, Number(this.receiveIndex) || 0);
+    return buildWatchPlan({ lastUsed: this.lastUsed, receiveFloor: floor, hot: this.hot });
+  }
+
+  _plan(cold) {
+    const plan = this._watchPlan();
+    return cold ? buildColdPlan(plan, this.watched) : plan;
+  }
   async _getTx(txid) {
     if (this._txCache.has(txid)) return this._txCache.get(txid);
     const tx = await this.backend.getTx(txid).catch(() => null);
@@ -180,30 +479,209 @@ export class WalletSession {
     return tx;
   }
 
-  async refresh({ deep: deepOpt = null } = {}) {
+  /** A user-facing refresh is forced; the scheduler calls with force:false
+   *  so an unchanged tip can pass without a single address query. */
+  async refresh({ deep = null, force = true } = {}) {
     if (!this.backend) await this.connect();
-    this._txCache.clear();
-    const [tipHeight, tipHash] = await Promise.all([
-      this.backend.tipHeight().catch(() => this.tipHeight),
-      this.backend.tipHash().catch(() => this.tipHash),
-    ]);
-    this.tipHeight = tipHeight;
-    this.tipHash = tipHash;
+    if (this._refreshing) {
+      if (force) this.forceWatch = true;
+      return this._refreshing;
+    }
+    const wantedForce = force || this.forceWatch;
+    this.scan.busy = true;
+    this.dispatch('scan', this.scanState());
+    const job = this._refreshInner({ deep, force: wantedForce });
+    this._refreshing = job;
+    try {
+      await job;
+    } catch (e) {
+      this._noteFailure(e);
+      throw e;
+    } finally {
+      if (this._refreshing === job) this._refreshing = null;
+      this.scan.busy = false;
+      if (this._autoSync && !this._stopped) {
+        if (this._wakeQueued) {
+          this._wakeQueued = false;
+          this._scheduleNext(0);
+        } else {
+          this._scheduleNext();
+        }
+      }
+      this.dispatch('scan', this.scanState());
+    }
+    return this;
+  }
 
-    // Scan the watched addresses in a small pool. The demo resolves almost
-    // instantly, but live Esplora/Electrum would otherwise spend one full
-    // RTT per address on every action.
-    const utxos = [];
+  _noteFailure(err) {
+    const why = err?.message || String(err);
+    this.fails += 1;
+    this.watchTip = null;
+    this.scan.partial = true;
+    this.scan.note = `sync failed: ${why} (retry in ${Math.round(this.tickIntervalMs() / 1000)}s)`;
+    if (this.scan.rescan) {
+      const { asked } = this.scan.rescan;
+      this.scan.rescan = null;
+      this.scan.note = `rescan failed after ${asked} addresses: ${why}`;
+      this._rescanCancel = false;
+    }
+    this._saveLedger();
+  }
+
+  async _refreshInner({ deep: deepOpt = null, force: forceOpt = false } = {}) {
+    let tip;
+    let tipNote = null;
+    try {
+      tip = Number(await this.backend.tipHeight());
+      if (!Number.isFinite(tip)) throw new Error('chain returned no tip height');
+    } catch (e) {
+      // The balance does not need the height. Fall back to the last height
+      // this wallet saw, but a cold start has no previous answer to use.
+      const last = [this.watchTip, this.fullScanTip, this.tipHeight]
+        .find((h) => Number.isSafeInteger(h));
+      if (last == null) throw e;
+      tip = last;
+      tipNote = `tip height unavailable (${e.message || String(e)}) — using ${last}`;
+    }
+    this.tipHeight = tip;
+    await this._reconcilePending(tip);
+
+    let force = !!forceOpt || this.forceWatch;
+    this.forceWatch = false;
+
+    // THE GATE. A settled answer can change only with a block. While
+    // nothing of ours is in flight, an unchanged tip costs one request.
+    if (!force && !this.scan.rescan && this.fullScanTip != null
+        && this.watchTip === tip && !this._inFlight()) {
+      this.scan.lastPass = Date.now();
+      this.scan.lastTip = tip;
+      this.scan.partial = false;
+      this.scan.note = tipNote
+        ? `${tipNote} · no address queries`
+        : `tip ${tip} unchanged — ${this.publicSource ? 'public source' : 'local node'} asked nothing`;
+      return this;
+    }
+
+    this.cold = this.fullScanTip == null;
+    this._txCache.clear();
+    const previousUtxos = this.utxos.slice();
+    const previousFrogs = this.frogs.slice();
+    const previousBalance = this.balance;
+    const previousHot = (this.hot || []).slice();
     const used = { ...(this.used || {}) };
-    const scanned = await mapLimit(this._watched(), 6, async (w) => {
-      let list = [];
-      try { list = await this.backend.addressUtxos(w.address, w.script); } catch { list = []; }
-      const dtos = await mapLimit(list, 4, async (u) => {
+    const notes = [];
+    if (tipNote) notes.push(tipNote);
+    const rescanning = !!this.scan.rescan;
+    let readFailed = null;
+    let cancelled = false;
+    let receiveFound = false;
+    let asked = 0;
+    let hits = 0;
+
+    // 0. COLD GAP WALK. Only boot, RESCAN and EXTEND reach this. Small
+    //    concurrent waves (SCAN_WAVE) keep the user from staring at a
+    //    spinner; a rescan on a public source waits RESCAN_DELAY between
+    //    waves, reports progress, and can be stopped.
+    if (this.cold) {
+      for (const branch of [0, 1]) {
+        if (branch === 1 && shouldSkipChange(
+          rescanning, receiveFound, this.receiveFloor, Number(this.balance.spendable),
+        )) {
+          notes.push('change addresses not scanned (nothing on receive); RESCAN walks them');
+          continue;
+        }
+        let index = 0;
+        let consecutiveEmpty = 0;
+        const floor = branch === 0
+          ? Math.max(Number(this.receiveIndex) || 0, Number(this.receiveFloor) || 0)
+          : 0;
+        const gapLimit = this.gapLimit();
+        while (!(consecutiveEmpty >= gapLimit && index > floor)) {
+          if (this._stopped) { cancelled = true; break; }
+          const wave = [];
+          for (let n = 0; n < SCAN_WAVE; n += 1, index += 1) {
+            const entry = this._entry(branch, index);
+            if (entry) wave.push(entry);
+          }
+          const answers = await mapLimit(wave, SCAN_WAVE, async (w) => {
+            try {
+              const hist = this.backend.addressHistory
+                ? await this.backend.addressHistory(w.address, w.script)
+                : await this.backend.addressUtxos(w.address, w.script);
+              return { ok: true, history: Array.isArray(hist) ? hist : [] };
+            } catch (e) {
+              return { ok: false, error: e };
+            }
+          });
+          for (let i = 0; i < wave.length; i += 1) {
+            asked += 1;
+            const answer = answers[i];
+            if (!answer.ok) {
+              readFailed = answer.error?.message || String(answer.error);
+              break;
+            }
+            if (answer.history.length === 0) {
+              consecutiveEmpty += 1;
+            } else {
+              consecutiveEmpty = 0;
+              hits += 1;
+              if (branch === 0) {
+                receiveFound = true;
+                used[wave[i].address] = true;
+              }
+              this._noteUsed(branch, wave[i].index);
+            }
+          }
+          if (readFailed) break;
+          if (rescanning) {
+            this.scan.rescan = { asked, hits };
+            this.dispatch('scan', this.scanState());
+            if (this._rescanCancel) { cancelled = true; break; }
+            if (this.publicSource) await sleep(RESCAN_DELAY_MS);
+          }
+        }
+        this.watched[branch] = Math.max(Number(this.watched[branch]) || 0, index);
+        if (readFailed || cancelled) break;
+      }
+    }
+
+    // 1. WATCH PLAN. A warm pass asks about the ordinals address, the
+    //    next unused index on each branch plus one guard, the last used
+    //    index, and every index that held coins last pass. A cold pass
+    //    asks about everything the walk reached.
+    const entries = [];
+    for (const [branch, index] of this._plan(this.cold)) {
+      const entry = this._entry(branch, index);
+      if (entry) entries.push(entry);
+    }
+    entries.push(this._entry('ord'));
+
+    const utxos = [];
+    let hotNow = [];
+    let watchFailed = null;
+    const prevByAddress = new Map();
+    for (const u of previousUtxos) {
+      if (!u.address) continue;
+      if (!prevByAddress.has(u.address)) prevByAddress.set(u.address, []);
+      prevByAddress.get(u.address).push(u);
+    }
+
+    // Sequential on purpose: a warm pass is 6–10 scripts and a public
+    // source must not see them as a burst.
+    for (const w of entries) {
+      let list;
+      try {
+        list = await this.backend.addressUtxos(w.address, w.script);
+        if (!Array.isArray(list)) list = [];
+      } catch (e) {
+        watchFailed = e.message || String(e);
+        list = prevByAddress.get(w.address) || [];
+        for (const u of list) utxos.push(u);
+        continue;
+      }
+      const dtos = await mapLimit(list, 2, async (u) => {
         try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
       });
-      return { w, list, dtos };
-    });
-    for (const { w, list, dtos } of scanned) {
       list.forEach((u, i) => {
         const dto = dtos[i];
         const ranges = dto && dto.ranges
@@ -219,20 +697,46 @@ export class WalletSession {
           key, keyRef: { branch: w.branch, index: w.index },
           spendable: kind !== 'state' && exact && !frogs.length,
         });
-        // Only record addresses that actually hold coins. Marking the whole
-        // gap made the old address cursor think every index was used.
-        // The map is merged across refreshes: an address that was paid and
-        // later spent stays in the address book.
-        if (w.branch === 'receive' && list.length) {
+      });
+      if (list.length) {
+        if (w.branch === 0) {
           used[w.address] = true;
           this._noteReceiveAddress(w.address);
         }
-      });
+        if (typeof w.branch === 'number') {
+          this._noteUsed(w.branch, w.index);
+          if (!hotNow.some(([b, i]) => b === w.branch && i === w.index)) {
+            hotNow.push([w.branch, w.index]);
+          }
+        }
+      }
     }
 
-    // Frog candidates: imported sats, sats on our coins, and (optionally)
-    // a bounded public scan so a restored wallet finds state outputs that
-    // live at no derivation path.
+    // A pass that could not name every address keeps the coins it already
+    // knew: absence is not evidence. Only a completed pass may shrink hot.
+    const preserve = !!(readFailed || watchFailed || cancelled);
+    if (preserve) {
+      const queried = new Set(entries.map((w) => w.address));
+      for (const u of previousUtxos) {
+        if (!u.address || !queried.has(u.address)) {
+          if (!utxos.some((x) => x.txid === u.txid && x.vout === u.vout)) utxos.push(u);
+        }
+      }
+      const merged = new Map();
+      for (const pair of [...previousHot, ...hotNow]) merged.set(`${pair[0]}:${pair[1]}`, pair);
+      hotNow = [...merged.values()];
+    }
+    this.hot = hotNow;
+    if (readFailed) notes.push(`gap walk stopped: ${readFailed}`);
+    if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
+    if (cancelled) notes.push(`scan stopped by user after ${asked} addresses`);
+    // The session was locked/wiped/pointed at another backend while this
+    // pass was in flight. Do not write a ledger after the vault is gone.
+    if (this._stopped) return this;
+
+    // 2. Frog candidates: imported sats, sats on our coins, and (optionally)
+    //    a bounded public scan so a restored wallet finds state outputs that
+    //    live at no derivation path.
     const candidates = new Set([...this.imported].map(Number).filter(Number.isSafeInteger));
     for (const u of utxos) {
       for (const sat of u.frogs) {
@@ -257,24 +761,36 @@ export class WalletSession {
       } catch { /* live indexer may be absent */ }
     }
 
+    let recordFailed = false;
     const missing = [...candidates].filter((sat) => !records.has(sat));
-    const fetched = await mapLimit(missing, 6, async (sat) => {
+    const fetched = await mapLimit(missing, 4, async (sat) => {
       try { return [sat, await this.backend.frogger(sat)]; } catch { return [sat, null]; }
     });
-    for (const [sat, record] of fetched) if (record) records.set(sat, record);
+    for (const [sat, record] of fetched) {
+      if (record) records.set(sat, record);
+      else recordFailed = true;
+    }
 
+    let ownershipFailed = false;
     const ownership = await mapLimit(
       [...candidates].filter((sat) => records.has(sat)),
-      6,
+      4,
       async (sat) => {
-        try { return [sat, records.get(sat), await this._ownsFrog(records.get(sat), utxos)]; }
-        catch { return [sat, records.get(sat), { owned: false }]; }
+        try {
+          return [sat, records.get(sat), await this._ownsFrog(records.get(sat), utxos)];
+        } catch {
+          ownershipFailed = true;
+          return [sat, records.get(sat), { owned: false, error: true }];
+        }
       },
     );
 
     const frogs = [];
     for (const [sat, record, owned] of ownership) {
-      if (!owned.owned) continue;
+      if (!owned.owned) {
+        if (owned.error) ownershipFailed = true;
+        continue;
+      }
       frogs.push(record);
       if (owned.utxo) {
         if (owned.custody) {
@@ -288,11 +804,27 @@ export class WalletSession {
       }
       this.imported.add(Number(sat));
     }
+    if (recordFailed) notes.push('some Hopper records could not be fetched');
+    if (ownershipFailed) notes.push('some Hopper ownership checks did not answer — known frogs stay visible');
 
-    this.utxos = utxos.sort((a, b) => b.value - a.value);
+    // On an incomplete pass a registered frog must not vanish. This is the
+    // same "no opinion" rule FROGGER applies to a failed UTXO pass.
+    if (preserve || recordFailed || ownershipFailed) {
+      for (const f of previousFrogs) {
+        if (!frogs.some((g) => Number(g.sat) === Number(f.sat))) frogs.push(f);
+      }
+    }
+
+    const unique = new Map();
+    for (const u of utxos) unique.set(`${u.txid}:${u.vout}`, u);
+    this.utxos = [...unique.values()].sort((a, b) => b.value - a.value);
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
     this.used = used;
+
+    const priorTotal = this.balance.total;
     this._computeBalance();
+    if (preserve && this.balance.total < priorTotal) this.balance = previousBalance;
+
     try {
       const ev = await this.backend.events(200);
       this.history = (ev.events || []).map((e) => ({
@@ -300,9 +832,87 @@ export class WalletSession {
         kind: e.action.kind || e.action.action, payload: e.action,
       }));
     } catch { /* history is optional */ }
+
+    // 3. Scan bookkeeping and the tip gate.
+    if (rescanning) {
+      const note = cancelled
+        ? `rescan stopped after ${asked} addresses (${hits} had history) — the rest was not checked`
+        : readFailed
+          ? `rescan failed after ${asked} addresses — the chain source stopped answering`
+          : `rescan complete: ${asked} addresses asked, ${hits} with history`;
+      notes.unshift(note);
+      this.scan.rescan = null;
+      this._rescanCancel = false;
+    }
+    if (readFailed || watchFailed) {
+      this.fails += 1;
+      this.watchTip = null;
+    } else {
+      this.fails = 0;
+      this.watchTip = tip;
+    }
+    if (this.cold) {
+      if (!readFailed && !cancelled) {
+        this.fullScanTip = tip;
+        this.cold = false;
+      }
+    }
+    this.scan.lastPass = Date.now();
+    this.scan.lastTip = tip;
+    this.scan.partial = !!(readFailed || watchFailed || cancelled || recordFailed || ownershipFailed);
+    if (this._stopped) return this;
+    if (!notes.length) notes.push(`synced at block ${tip}`);
+    this.scan.note = notes.join(' · ');
     this._saveLedger();
     this.dispatch('refresh', this.summary());
     return this;
+  }
+
+  // --- manual scan controls (FROGGER's RESCAN / STOP / EXTEND) ----------
+
+  async startRescan() {
+    if (!this.backend) await this.connect();
+    if (this.scan.rescan) return false;
+    if (this._refreshing) {
+      try { await this._refreshing; } catch { /* the rescan can still start */ }
+    }
+    if (this.scan.rescan) return false;
+    this._rescanCancel = false;
+    this.scan.rescan = { asked: 0, hits: 0 };
+    this.scan.note = 'rescanning from the chain — this walks every address in the gap';
+    this.fullScanTip = null;
+    this.cold = true;
+    this.forceWatch = true;
+    this.dispatch('scan', this.scanState());
+    await this.refresh({ force: true });
+    return true;
+  }
+
+  cancelRescan() {
+    if (!this.scan.rescan) return false;
+    this._rescanCancel = true;
+    this.scan.note = 'stopping after this wave…';
+    this.dispatch('scan', this.scanState());
+    return true;
+  }
+
+  async extendGap(n = GAP_LIMIT) {
+    if (!this.backend) await this.connect();
+    const add = Math.max(1, Math.min(100_000, Math.trunc(Number(n) || GAP_LIMIT)));
+    if (this._refreshing) {
+      try { await this._refreshing; } catch { /* extend anyway */ }
+    }
+    const before = this.gapLimit();
+    this.settings.gapExtra = Math.min(1_000_000, (Number(this.settings.gapExtra) || 0) + add);
+    this.settings.gap = GAP_LIMIT + this.settings.gapExtra;
+    saveSettings(this.settings);
+    this.scan.note = `gap limit extended by ${add}: ${before} → ${this.gapLimit()}`;
+    this.fullScanTip = null;
+    this.cold = true;
+    this.forceWatch = true;
+    this.dispatch('scan', this.scanState());
+    await this.refresh({ force: true });
+    return this.gapLimit();
   }
 
   async _ownsFrog(record, utxos) {
@@ -324,7 +934,8 @@ export class WalletSession {
       return { owned: false };
     }
     const tx = await this._getTx(record.location.txid);
-    if (!tx) return { owned: false };
+    // A source that cannot name the transaction is not proof of absence.
+    if (!tx) return { owned: false, error: true };
     const out = tx.outputs[record.location.vout];
     if (!out) return { owned: false };
     let want;
@@ -373,6 +984,7 @@ export class WalletSession {
       keys: this.keys,
       ord: this.ord,
       settings: this.settings,
+      scan: this.scanState(),
     };
   }
 
@@ -388,8 +1000,7 @@ export class WalletSession {
 
   /** The address the BITCOIN tab shows: a fresh BIP84 address that rotates. */
   receiveAddress() {
-    const gap = this.settings.gap || 20;
-    if (!(this.receiveIndex >= 0 && this.receiveIndex < gap)) this.receiveIndex = 0;
+    if (!Number.isInteger(this.receiveIndex) || this.receiveIndex < 0) this.receiveIndex = 0;
     const address = this.keys.receive(this.receiveIndex).address;
     this._noteReceiveAddress(address);
     return address;
@@ -399,23 +1010,27 @@ export class WalletSession {
     if (!Array.isArray(this.receiveHistory)) this.receiveHistory = [];
     if (!this.receiveHistory.includes(address)) {
       this.receiveHistory.push(address);
-      if (this.receiveHistory.length > Math.max(80, (this.settings.gap || 20) * 4)) {
-        this.receiveHistory = this.receiveHistory.slice(-Math.max(80, (this.settings.gap || 20) * 4));
-      }
+      const max = Math.max(80, this.gapLimit() * 4);
+      if (this.receiveHistory.length > max) this.receiveHistory = this.receiveHistory.slice(-max);
       this._saveLedger();
     }
   }
 
-  /** Rotate to a previously-unused receive address (never the frogs' one). */
+  /** Rotate to a previously-unused receive address (never the frogs' one).
+   *  The floor only moves forward: every address we ever handed out stays
+   *  covered by the scan. */
   newReceiveAddress() {
-    const gap = Math.max(1, this.settings.gap || 20);
+    const gap = Math.max(1, this.gapLimit());
     const history = new Set(this.receiveHistory || []);
+    history.add(this.keys.receive(this.receiveIndex || 0).address);
     let next = (this.receiveIndex + 1) % gap;
     for (let step = 1; step <= gap; step += 1) {
       const candidate = (this.receiveIndex + step) % gap;
       if (!history.has(this.keys.receive(candidate).address)) { next = candidate; break; }
     }
     this.receiveIndex = next;
+    this.receiveFloor = Math.max(Number(this.receiveFloor) || 0, next);
+    this.forceWatch = true;
     const address = this.receiveAddress();
     this._saveLedger();
     this.dispatch('receive-address', { address, index: next });
@@ -424,12 +1039,17 @@ export class WalletSession {
 
   /** Every bitcoin receive address handed out, newest first. */
   receiveAddresses() {
-    const gap = Math.max(1, this.settings.gap || 20);
     const history = new Set(this.receiveHistory || []);
     // The current address is always handed out, even before it is paid.
     history.add(this.keys.receive(this.receiveIndex || 0).address);
     const rows = [];
-    for (let i = 0; i < gap; i += 1) {
+    const limit = Math.max(
+      this.gapLimit(),
+      Number(this.receiveIndex) + 1 || 0,
+      Number(this.receiveFloor) + 1 || 0,
+      (this.receiveHistory || []).length,
+    );
+    for (let i = 0; i < limit; i += 1) {
       const key = this.keys.receive(i);
       if (!history.has(key.address)) continue;
       const coins = this.utxos.filter((u) => u.address === key.address);
@@ -466,8 +1086,14 @@ export class WalletSession {
   }
 
   _recordAction(action) {
+    this.forceWatch = true;
     this.actions.unshift({ ...action, at: new Date().toISOString(), height: this.tipHeight });
     this.actions = this.actions.slice(0, 300);
+    if (action.txid) {
+      const pending = (this.pending || []).filter((p) => p.txid !== action.txid);
+      pending.unshift({ txid: action.txid, sinceTip: this.tipHeight, at: Date.now() });
+      this.pending = pending.slice(0, 24);
+    }
     this._saveLedger();
   }
 

@@ -49,6 +49,7 @@ export class MockChain {
     this.faucetIndex = 0;
     this.npcIndex = 0;
     this.registered = new Set();
+    this.seenAddresses = new Set();
     this.seedNpcs();
     this.persist();
   }
@@ -75,10 +76,21 @@ export class MockChain {
   keyFor(outpoint) { return `${outpoint.txid}:${outpoint.vout}`; }
 
   addCoin({ txid, vout, value, script, ranges, frogs = [] }) {
+    const address = scriptToAddress(script, this.network);
     this.utxos.set(this.keyFor({ txid, vout }), {
       txid, vout, value: Number(value), scriptHex: bytesToHex(script), ranges, frogs,
-      address: scriptToAddress(script, this.network),
+      address,
     });
+    // The gap walk asks "has this address EVER been used?", not "does it
+    // hold a coin now?". Record every output address so a spent address
+    // does not look unused and get handed out again.
+    if (address) this.seenAddresses.add(address);
+  }
+
+  /** Chain history shape for the demo: membership is all the wallet's
+   *  gap walk needs. */
+  addressHistory(address) {
+    return this.seenAddresses.has(address) ? [{ txid: null, height: null }] : [];
   }
 
   utxosForScript(scriptHex) {
@@ -424,6 +436,7 @@ export class MockChain {
       frogs: [...this.frogs.values()],
       txs: this.txs.slice(-500),
       events: this.events.slice(-500),
+      seenAddresses: [...this.seenAddresses],
     };
     try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch { /* quota */ }
   }
@@ -442,6 +455,10 @@ export class MockChain {
       this.frogs = new Map(data.frogs.map((f) => [f.sat, f]));
       this.txs = data.txs || [];
       this.events = data.events || [];
+      this.seenAddresses = new Set(data.seenAddresses || []);
+      for (const u of this.utxos.values()) {
+        if (u.address) this.seenAddresses.add(u.address);
+      }
       this.loaded = true;
       this.registered = new Set();
     } catch { /* corrupt demo state: start fresh */ }

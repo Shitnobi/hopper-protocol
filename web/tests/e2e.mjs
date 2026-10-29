@@ -241,6 +241,24 @@ await sleep(200);
 // scrollable page for this test is SETTINGS.
 await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
 await sleep(300);
+const scanPanel = await evaluate(`({
+  text: document.querySelector('[data-scan-panel]')?.innerText || '',
+  hasRescan: Boolean(document.querySelector('[data-action=rescan]')),
+  hasExtend: Boolean(document.querySelector('[data-action=extend-gap]')),
+})`);
+console.log('scan policy:', scanPanel.text.replace(/\n/g, ' | '));
+if (!scanPanel.hasRescan || !scanPanel.hasExtend || !/SCAN|Scan window/i.test(scanPanel.text)) {
+  errors.push(`settings: scan policy is incomplete ${JSON.stringify(scanPanel)}`);
+}
+await click('rescan');
+await sleep(150);
+await click('rescan');
+await sleep(900);
+const rescanned = await evaluate(`document.querySelector('[data-scan-line]')?.textContent || ''`);
+console.log('rescan:', rescanned.trim().replace(/\s+/g, ' '));
+if (!/rescan (complete|stopped|failed)|synced at/i.test(rescanned)) {
+  errors.push(`settings: RESCAN produced no result line (${JSON.stringify(rescanned)})`);
+}
 await evaluate('window.scrollTo(0, document.body.scrollHeight)');
 await sleep(120);
 const scrolled = await evaluate('window.scrollY');

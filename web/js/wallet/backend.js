@@ -65,6 +65,21 @@ export class EsploraClient {
     return (await (await this.req(`/address/${encodeURIComponent(address)}/txs`)).json());
   }
 
+  /**
+   * The address's transaction list, in the shape the gap walk needs:
+   * "has this script ever been used?". Esplora returns up to 50 recent
+   * transactions (mempool + chain); an address with more history than
+   * that is certainly used, so the page limit cannot make a used index
+   * look empty.
+   */
+  async addressHistory(address) {
+    const txs = await this.addressTxs(address);
+    return (Array.isArray(txs) ? txs : []).map((tx) => ({
+      txid: tx.txid,
+      height: tx.status?.block_height ?? null,
+    }));
+  }
+
   async getTx(txid) {
     const tx = await (await this.req(`/tx/${txid}`)).json();
     return {
@@ -107,6 +122,14 @@ export class ElectrumClient {
     this.pending = new Map();
     this.ws = null;
     this.tip = null;
+    this._headerListeners = new Set();
+  }
+
+  /** Notify when a NEW block header arrives (Electrum push). The first
+   *  subscribe reply is the current tip, not a new block. */
+  onNewBlock(fn) {
+    this._headerListeners.add(fn);
+    return () => this._headerListeners.delete(fn);
   }
 
   async connect() {
@@ -148,7 +171,13 @@ export class ElectrumClient {
           if (msg.error) reject(new Error(msg.error.message || 'electrum error'));
           else resolve(msg.result);
         } else if (msg.method === 'blockchain.headers.subscribe') {
+          const before = this.tip?.height;
           this.tip = msg.params[0];
+          if (before != null && this.tip?.height !== before) {
+            for (const fn of this._headerListeners) {
+              try { fn(this.tip.height); } catch { /* listener is best-effort */ }
+            }
+          }
         }
       };
       ws.onclose = () => {
@@ -216,6 +245,16 @@ export class ElectrumClient {
     return list.map((u) => ({
       txid: u.tx_hash, vout: u.tx_pos, value: Number(u.value), status: { height: u.height },
     }));
+  }
+
+  /** Full history of one script. Used by the cold gap walk: an address
+   *  whose coins were spent still has history, and treating it as unused
+   *  would reuse an index. */
+  async addressHistory(address, script) {
+    await this.connect();
+    const sh = this.scripthash(script);
+    const list = await this.call('blockchain.scripthash.get_history', [sh]);
+    return list.map((h) => ({ txid: h.tx_hash, height: h.height }));
   }
 
   async getTx(txid) {
@@ -305,6 +344,8 @@ export class DemoBackend {
     }));
   }
 
+  async addressHistory(address) { return this.chain.addressHistory(address); }
+
   async getTx(txid) {
     const entry = this.chain.txs.find((t) => t.txid === txid);
     if (!entry || !entry.hex) return null;
@@ -348,9 +389,20 @@ export class LiveBackend {
   async tipHash() { return this.chain.tipHash(); }
   async blockHashAt(h) { return this.chain.blockHashAt(h); }
 
+  /** Register a block-header callback. Only Electrum has a push
+   *  subscription; Esplora callers fall back to the scheduler's tip
+   *  poll. */
+  onNewBlock(fn) {
+    return this.electrum ? this.electrum.onNewBlock(fn) : () => {};
+  }
+
   async addressUtxos(address, script) {
     const list = await this.chain.addressUtxos(address, script);
     return list.map((u) => ({ ...u, script }));
+  }
+
+  async addressHistory(address, script) {
+    return this.chain.addressHistory(address, script);
   }
 
   async getTx(txid) { return this.chain.getTx(txid); }

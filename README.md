@@ -232,13 +232,20 @@ curl -sN localhost:9770/v1/events/stream
   non-extractable WebCrypto KEK. The KEK is cached in IndexedDB **only**
   when "keep this device unlocked" is checked; locking deletes it. Wiping
   removes the vault and local ledger.
-- **Discovery**: watch receive/change addresses (configurable gap) and the
-  ordinals address; ask the indexer for UTXO ranges; optionally enumerate
-  public frogs to find state outputs that live at no derivation path.
-  A frog is owned when its sat is in a coin whose script this wallet can
-  spend; the indexer is never trusted for ownership. Live scans use a small
-  request pool, and live deep scan is **off by default**; demo mode always
-  scans so the simulator has something to show.
+- **Discovery**: the scan policy is ported from FROGGER. A cold boot (or
+  RESCAN / EXTEND) walks the 20-address gap on receive and change in waves
+  of eight; the change branch is skipped on a brand-new wallet. Every later
+  pass watches only the ordinals address, the next unused index per branch
+  plus one guard (`next - 1` too), and the indices that held coins last
+  pass. A tip gate means an unchanged block asks the chain **nothing**.
+  Public sources get one tip probe every ten minutes while idle, and a 15 s
+  cadence only while one of our transactions is confirming; failures back
+  off 5→300 s. RESCAN takes two taps, walks the gap slowly (400 ms
+  per wave on a public source), reports progress and can be stopped;
+  EXTEND grows the persisted window by 20. A frog is owned when its sat is
+  in a coin whose script this wallet can spend; the indexer is never
+  trusted for ownership. Live deep scan is **off by default**; demo mode
+  always scans so the simulator has something to show.
 - **Demo vs live**: `DemoBackend` implements the same interface as
   `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
   Live mode requires a secure context for WebCrypto; Electrum needs a
@@ -250,6 +257,7 @@ curl -sN localhost:9770/v1/events/stream
 cd web
 node tests/core.test.mjs        # 64 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → cross → settle → transfer → burn
+node tests/scan.test.mjs        # ported FROGGER scan policy: cold/warm plan, tip gate, rescan
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 
@@ -306,11 +314,12 @@ mainnet value on it without review.
   (ownership, fees, signatures) are made locally from chain data.
 - Demo mode is a simulator: no PoW, no mempool policy, no script execution.
   It validates the v6 state machine and byte encodings, not Bitcoin.
-- Live mode currently refreshes on demand; there is no background block
-  subscription in the PWA. Deep discovery of state outputs is bounded to
-  300 public frogs and can be expensive on a large pond; it is off by
-  default and can be enabled in Settings if you need to recover custody
-  outputs from a fresh device.
+- Live mode refreshes on a block-driven schedule: an Electrum source pushes
+  new headers, an Esplora source polls the tip every ten minutes while idle.
+  There is no second index or full-gap sweep on a warm pass. Deep discovery
+  of state outputs is bounded to 300 public frogs and can be expensive on a
+  large pond; it is off by default and can be enabled in Settings if you
+  need to recover custody outputs from a fresh device.
 - No RBF/CPFP, hardware wallet, multisig, or coinbase maturity handling.
 - Snapshot/event retention and ZMQ ingest are operator concerns; see the
   module docs and `rust/crates/hopper-indexer/src/NOTES.md`.

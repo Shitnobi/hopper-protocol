@@ -43,6 +43,7 @@ const app = {
   frogRefusal: null,
   navChosen: false,
   seenFirstFrog: false,
+  scanArmed: false,
   booted: false,
 };
 
@@ -322,6 +323,11 @@ function lockScreen() {
 // session
 // ---------------------------------------------------------------------------
 
+function endSession() {
+  try { app.w?.stop(); } catch { /* nothing left to stop */ }
+  app.w = null;
+}
+
 async function startSession({ mnemonic, network, fingerprint }) {
   app.screen = 'wallet';
   app.view = 'wallet';
@@ -421,7 +427,7 @@ async function boot() {
   } catch {
     // A remembered KEK can be stale, or a live backend can be unreachable.
     // Do not leave a half-started session behind an apparently locked UI.
-    app.w = null;
+    endSession();
     app.leaders = [];
     app.road = [];
     app.frogRecord = null;
@@ -437,6 +443,7 @@ async function boot() {
 // ---------------------------------------------------------------------------
 
 function navigate(view, { push = true, chosen = push } = {}) {
+  if (view !== 'settings') app.scanArmed = false;
   app.view = view;
   if (chosen) app.navChosen = true;
   closeDrawer();
@@ -622,6 +629,34 @@ const handlers = {
       toast('refreshing…', 'ok');
     });
   },
+  rescan() {
+    if (!app.w?.startRescan || app.w.scan?.rescan) return;
+    // Two taps: a walk of the whole gap is minutes on a public server.
+    if (!app.scanArmed) {
+      app.scanArmed = true;
+      toast('This walks every address in the gap — tap RESCAN again.', 'ok');
+      render();
+      return;
+    }
+    app.scanArmed = false;
+    app.w.startRescan()
+      .then((ok) => { if (ok) toast('Rescan finished', 'ok'); })
+      .catch((e) => toast(e.message || String(e), 'err'));
+    render();
+  },
+  'stop-rescan'() {
+    app.scanArmed = false;
+    app.w?.cancelRescan?.();
+    render();
+  },
+  'extend-gap'() {
+    if (!app.w?.extendGap) return;
+    app.scanArmed = false;
+    app.w.extendGap(20)
+      .then((n) => toast(`Gap limit is now ${n} addresses`, 'ok'))
+      .catch((e) => toast(e.message || String(e), 'err'));
+    render();
+  },
   'on-road'() {
     app.frogRefusal = 'finish (or die on) the road first — sending mid-crossing would retreat it';
     render();
@@ -710,7 +745,7 @@ const handlers = {
     if (!confirm('Replace the vault on this device? The current 12 words are the only way back.')) return;
     sound.stopLoop();
     destroyVault();
-    app.w = null;
+    endSession();
     app.view = 'wallet';
     app.frogSat = null;
     app.frogRecord = null;
@@ -738,7 +773,7 @@ const handlers = {
         // The vault exists, but the session did not start (for example a
         // configured live backend is down). Leave a usable lock screen
         // rather than a wallet shell with no backend.
-        app.w = null;
+        endSession();
         app.screen = 'lock';
         app.lockError = e.message;
         sound.stopLoop();
@@ -756,7 +791,7 @@ const handlers = {
         await startSession(data);
         toast('Unlocked', 'ok');
       } catch (e) {
-        app.w = null;
+        endSession();
         app.leaders = [];
         app.road = [];
         app.frogRecord = null;
@@ -771,7 +806,7 @@ const handlers = {
     run('locking', async () => {
       await lockVault();
       sound.stopLoop();
-      app.w = null;
+      endSession();
       app.remember = false;
       app.leaders = [];
       app.road = [];
@@ -792,7 +827,7 @@ const handlers = {
       }
       destroyVault();
       if (globalThis.indexedDB) indexedDB.deleteDatabase('hopper');
-      app.w = null;
+      endSession();
       app.view = 'wallet';
       app.frogSat = null;
       app.frogRecord = null;
@@ -1077,12 +1112,6 @@ document.addEventListener('change', (ev) => {
     app.settings.feeRate = app.w.settings.feeRate;
     ev.target.value = app.w.settings.feeRate;
     saveSettings(app.w.settings);
-  } else if (key === 'gap') {
-    const raw = Number(value);
-    if (!Number.isFinite(raw)) { ev.target.value = app.w.settings.gap; return; }
-    app.w.settings.gap = Math.max(5, Math.min(50, Math.trunc(raw)));
-    ev.target.value = app.w.settings.gap;
-    saveSettings(app.w.settings);
   } else if (key === 'deepScan') {
     app.w.settings.deepScan = value === '1';
     saveSettings(app.w.settings);
@@ -1130,10 +1159,27 @@ document.addEventListener('keydown', (ev) => {
   }
 });
 
+function refreshScanPanel() {
+  const host = document.querySelector('[data-scan-panel]');
+  if (!host || !app.w || typeof screens.scanPanel !== 'function') return;
+  host.innerHTML = screens.scanPanel(app);
+}
+
 window.addEventListener('hopper:refresh', () => {
   if (!app.w || app.busy) return;
-  if (!['wallet', 'pond', 'road', 'history', 'frog'].includes(app.view)) return;
+  if (app.view === 'settings') {
+    // Do not re-render the whole settings form while the user is editing
+    // a URL; the scan window is the only part that changes on a tick.
+    refreshScanPanel();
+    return;
+  }
+  if (!['wallet', 'pond', 'road', 'history', 'frog', 'leaders'].includes(app.view)) return;
   render();
+});
+
+window.addEventListener('hopper:scan', () => {
+  if (!app.w) return;
+  if (app.view === 'settings') refreshScanPanel();
 });
 
 // Keep settings in sync if another tab edits them.
