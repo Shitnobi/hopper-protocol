@@ -435,13 +435,24 @@ p { margin: .45em 0; }
 .road-entry .name { text-align: center; font-weight: 700; font-size: 14px; margin-top: 2px; }
 .road-entry .meta { display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 
-.pips { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink); }
+.pips {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 2px 6px; max-width: 100%;
+  font-size: 11px; line-height: 1.1; color: var(--ink);
+  vertical-align: middle;
+}
+.pips .pip-dots {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: var(--pip-gap, 4px);
+  max-width: 100%; min-width: 0;
+}
 .pips i {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: #465548; display: inline-block;
+  width: var(--pip-size, 7px); height: var(--pip-size, 7px);
+  border-radius: 50%; background: #465548;
+  display: inline-block; flex: 0 0 auto;
 }
 .pips i.on { background: var(--accent); }
-.pips b { font-weight: 700; margin-left: 4px; }
+.pips b { font-weight: 700; margin-left: 2px; white-space: nowrap; }
 
 /* ---------------------------------- mint -------------------------------- */
 

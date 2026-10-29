@@ -6,6 +6,8 @@ import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
 import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../js/ui/frog-mark.js';
 import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg } from '../js/ui/theme.js';
+import { pipPlan, pips, targetOf } from '../js/ui/dom.js';
+import { GENESIS, requiredAt } from '../js/core/params.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -70,5 +72,25 @@ ok(['b', 'w', 'p', 'f'].every((ch) => POND_MARK_ROWS.some((row) => row.includes(
 const pond = pondMarkSvg(14);
 ok(pond.includes('class="pond-mark"') && pond.includes('viewBox="0 0 14 14"') && pond.includes('shape-rendering="crispEdges"'), 'the pond glyph is a crisp 14x14 SVG');
 ok(pond.includes('#3a7d89') && pond.includes('#68b270') && pond.includes('#eab0ca'), 'the pond glyph carries water, pad and flower colours');
+
+// ---- crossing pips ----------------------------------------------------
+// One dot per required hop, not a fixed five-dot cap: a 5/6 frog shows
+// six dots with five filled, and a 100-hop target shows all 100.
+const plan56 = pipPlan(5, 6);
+ok(plan56.total === 6 && plan56.completed === 5, 'a 5/6 frog gets six dots, five filled');
+ok(plan56.size === 7 && plan56.gap === 4, 'small targets keep the original pip size');
+const ink56 = pips(5, 6);
+ok((ink56.match(/<i /g) || []).length === 6 && (ink56.match(/<i class="on"/g) || []).length === 5, 'the 5/6 markup has six dots and five on');
+ok(ink56.includes('×5 / 6') && ink56.includes('aria-label="5 of 6 crossings complete"'), 'the 5/6 label and accessible name tell the truth');
+const plan100 = pipPlan(55, 100);
+ok(plan100.total === 100 && plan100.completed === 55 && plan100.size === 4, 'a 100-hop target plans 100 smaller dots, 55 filled');
+const ink100 = pips(55, 100);
+ok((ink100.match(/<i /g) || []).length === 100 && (ink100.match(/<i class="on"/g) || []).length === 55, 'the 100-hop markup renders every dot and fill');
+ok(pipPlan(0, 5).total === 5 && pipPlan(7, 5).total === 7, 'targets never truncate a completed count');
+const tip = GENESIS + 63;
+ok(targetOf({ state: 'idle', dist: 5, last_target_hops: 5 }, tip) === requiredAt(tip + 1), 'an idle frog follows the next required target');
+ok(targetOf({ state: 'crossing', in_flight: { target_hops: 5 }, last_target_hops: 5 }, tip) === 5, 'an in-flight frog keeps its frozen target');
+ok(targetOf({ state: 'dead', dist: 4, last_target_hops: 5 }, tip) === 5, 'a dead frog keeps the last target it faced');
+ok(targetOf({ state: 'home', dist: 5 }, tip) === 5, 'a home frog shows the target it reached');
 
 console.log(`media: ${checks} checks passed`);

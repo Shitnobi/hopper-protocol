@@ -53,11 +53,48 @@ export function frogImg(seed, state, className = 'sprite', alt = '') {
   return `<img class="${esc(className)}" src="${spriteUri(seed, state)}" alt="${esc(alt)}" loading="lazy">`;
 }
 
+/**
+ * One dot per hop the Hopper must complete, filled up to its current
+ * crossing count. Targets grow from 5 to 100, so the dots scale down and
+ * wrap instead of being capped at five. The exact count is always printed
+ * beside them, as FROGGER's pips intended.
+ */
+export function pipPlan(dist, target) {
+  const completed = Math.max(0, Math.floor(Number(dist) || 0));
+  const needed = Math.max(1, Math.floor(Number(target) || 0));
+  const total = Math.max(completed, needed, 1);
+  const size = total <= 10 ? 7 : total <= 20 ? 5 : 4;
+  const gap = total <= 10 ? 4 : total <= 20 ? 3 : 2;
+  return { completed, target: total, total, size, gap };
+}
+
+export function pips(dist, target) {
+  const p = pipPlan(dist, target);
+  const dots = Array.from({ length: p.total }, (_, i) =>
+    `<i class="${i < p.completed ? 'on' : ''}"></i>`).join('');
+  const text = `${p.completed} of ${p.total} crossings complete`;
+  return `<span class="pips" role="img" aria-label="${text}" title="${text}" style="--pip-size:${p.size}px;--pip-gap:${p.gap}px"><span class="pip-dots" aria-hidden="true">${dots}</span><b>×${p.completed} / ${p.total}</b></span>`;
+}
+
+/**
+ * The target for the pips. An idle frog is measured against the next
+ * crossing's requirement, so new empty dots appear as the chain raises
+ * the toll. A crossing keeps the target frozen at T; home keeps the
+ * target it reached; dead/burned frogs keep the last target they faced.
+ */
 export function targetOf(record, tip) {
-  if (!record) return requiredAt((tip || 0) + 1);
-  if (record.in_flight) return record.in_flight.target_hops;
-  if (record.last_target_hops) return record.last_target_hops;
-  return requiredAt((tip || 0) + 1);
+  const next = requiredAt((tip || 0) + 1);
+  if (!record) return next;
+  if (record.in_flight?.target_hops) {
+    return Math.max(1, Math.floor(Number(record.in_flight.target_hops) || 0));
+  }
+  const state = String(record.state || 'idle');
+  if (state === 'home') return Math.max(1, Math.floor(Number(record.dist) || 0));
+  if (state === 'dead' || state === 'burned' || state === 'retired') {
+    const last = Math.floor(Number(record.last_target_hops) || 0);
+    if (last > 0) return last;
+  }
+  return next;
 }
 
 export function frogProgress(record, tip) {

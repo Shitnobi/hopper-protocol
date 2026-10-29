@@ -7,7 +7,7 @@
 //   DETAIL (one hopper) · BIO (one hopper's life story) · SETTINGS
 
 import {
-  btc, esc, frogImg, sats, seedText,
+  btc, esc, frogImg, pips, sats, seedText, targetOf,
 } from './dom.js';
 import { requiredAt, deathBps, nextIncrement, paramsHashHex } from '../core/params.js';
 import { deriveTraits } from '../core/art.js';
@@ -79,11 +79,6 @@ function lifeChip(state) {
   return chip(label, tone);
 }
 
-function pips(dist) {
-  const n = Math.max(0, Math.min(5, Number(dist) || 0));
-  const dots = Array.from({ length: 5 }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('');
-  return `<span class="pips">${dots}<b>×${Number(dist) || 0}</b></span>`;
-}
 
 function logBtn(label, action, { edge = 'dim', cls = '', attrs = '' } = {}) {
   return `<button class="btn ${cls}" data-action="${esc(action)}" data-edge="${esc(edge)}" ${attrs}>${label}</button>`;
@@ -320,12 +315,13 @@ function roadEntry(app, c) {
   const name = c.name || f?.name || 'UNNAMED';
   const tone = c.provisionalDead == null ? 'accent' : c.provisionalDead ? 'dead' : 'home';
   const label = c.provisionalDead == null ? 'ON THE ROAD' : c.provisionalDead ? 'DEAD SEALED' : 'ALIVE SEALED';
+  const target = c.inFlight?.target_hops ?? (f ? targetOf(f, tip) : requiredAt(tip + 1));
   return `
     <div class="pond-item road-entry">
       <div class="pond-tap road-no-tap">
         <canvas class="pond-art" data-roadfrog="${seed >>> 0}" width="320" height="275"></canvas>
         <span class="pf-name">${esc(name)}</span>
-        <span class="pf-sub">${pips(c.dist)}</span>
+        <span class="pf-sub">${pips(c.dist, target)}</span>
         <span class="pf-sub" style="display:flex;justify-content:center;gap:6px;align-items:center;margin-top:2px">
           ${chip(label, tone)}
           <span class="tiny muted">${blocks ? `⬛ ${blocks}` : 'settling…'}</span>
@@ -644,9 +640,12 @@ export function frogDetail(app, sat) {
   const canCross = owned && f.state === 'idle' && utxo && kind === 'state';
   const canTransfer = owned && !!utxo && !['burned', 'crossing', 'retired'].includes(f.state);
   const canBurn = owned && !!utxo && !['burned', 'retired'].includes(f.state);
-  const target = requiredAt((w.tipHeight || 0) + 1);
-  const body = f.mint_txid ? `${f.mint_txid}i${f.mint_index ?? 0}` : f.inscription_id;
   const state = f.state || 'idle';
+  const target = targetOf(f, w.tipHeight || 0);
+  const targetLabel = state === 'idle' ? 'Next hop target'
+    : state === 'crossing' ? 'Crossing target'
+      : state === 'home' ? 'Target reached' : 'Last target';
+  const body = f.mint_txid ? `${f.mint_txid}i${f.mint_index ?? 0}` : f.inscription_id;
 
   return `
     ${backButton()}
@@ -655,7 +654,7 @@ export function frogDetail(app, sat) {
       <div class="detail-info">
         <div class="detail-name">${esc(f.name || 'UNNAMED')}</div>
         ${logBtn('📜 BIO', 'bio', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` })}
-        <div class="mt10">${pips(f.dist)}</div>
+        <div class="mt10">${pips(f.dist, target)}</div>
         <div class="row mt6">
           ${chip(rarityOf(f), rarityClass(f))}
           ${lifeChip(state)}
@@ -666,8 +665,8 @@ export function frogDetail(app, sat) {
           <dt>Road entries</dt><dd>${Number(f.crossings_entered) || 0}</dd>
           <dt>Seed</dt><dd>${(Number(f.seed) >>> 0).toString(16).toUpperCase().padStart(8, '0')}</dd>
           <dt>Hopper sat</dt><dd>${sats(f.sat)}</dd>
-          <dt>Next hop target</dt><dd>${target} hops</dd>
-          <dt>Next hop risk</dt><dd>${(deathBps(target) / 100).toFixed(2)}% roadkill</dd>
+          <dt>${targetLabel}</dt><dd>${target} hops</dd>
+          <dt>${state === 'idle' ? 'Next hop risk' : 'Target risk'}</dt><dd>${(deathBps(target) / 100).toFixed(2)}% roadkill</dd>
           <dt>Inscription</dt><dd class="tiny wrap">${esc(body || (f.commit_pending ? 'inscribing…' : '—'))}</dd>
         </div>
 
@@ -746,6 +745,7 @@ export function bio(app, sat) {
   const w = app.w;
   const f = w.frogBySat(Number(sat)) || app.frogRecord;
   if (!f) return `${backButton()}<div class="sub mt14">No frog at sat ${esc(sat)}.</div>`;
+  const target = targetOf(f, w.tipHeight || 0);
   const events = frogEvents(w, Number(sat));
   const iconFor = (e) => {
     if (e.type === 'born') return '<canvas class="timeline-icon" data-tadpole width="44" height="30"></canvas>';
@@ -762,7 +762,7 @@ export function bio(app, sat) {
       ${frogImg(f.seed, SPRITE_STATE(f), 'sprite', f.name || '')}
       <div class="detail-info">
         <div class="detail-name">${esc(f.name || 'UNNAMED')}</div>
-        <div class="mt10">${pips(f.dist)}</div>
+        <div class="mt10">${pips(f.dist, target)}</div>
         <div class="row mt6">${chip(rarityOf(f), rarityClass(f))}${lifeChip(f.state)}</div>
       </div>
     </div>

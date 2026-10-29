@@ -501,6 +501,62 @@ await waitFor('document.querySelector("[data-action=travel-to-road]")', 15000, '
 const detailTravel = await evaluate(`document.querySelector('[data-action=travel-to-road]').textContent.trim()`);
 if (detailTravel !== 'TRAVEL TO ROAD') errors.push(`detail travel label: ${JSON.stringify(detailTravel)}`);
 console.log('frog detail:', (await evaluate('document.querySelector(".detail-head")?.innerText')).replace(/\n/g, ' | '));
+
+// The pips are one dot per required hop, not a five-dot cap. A newly
+// minted frog is 0 of the current target, and the row must fit.
+const detailPips = await evaluate(`(() => {
+  const p = document.querySelector('.detail-info .pips');
+  const targetDt = [...document.querySelectorAll('.detail-info .stat-grid dt')]
+    .find((dt) => dt.textContent.trim() === 'Next hop target');
+  const target = targetDt?.nextElementSibling?.textContent || '';
+  const dots = [...(p?.querySelectorAll('.pip-dots i') || [])];
+  return {
+    dots: dots.length,
+    on: dots.filter((d) => d.classList.contains('on')).length,
+    label: p?.querySelector('b')?.textContent.trim() || '',
+    aria: p?.getAttribute('aria-label') || '',
+    target,
+    right: p ? Math.round(p.getBoundingClientRect().right) : 0,
+    innerWidth: document.documentElement.clientWidth,
+  };
+})()`);
+console.log('detail pips:', detailPips);
+const pipTarget = Number.parseInt(detailPips.target, 10);
+if (!pipTarget) errors.push(`pips: no target on the detail page (${JSON.stringify(detailPips)})`);
+else {
+  if (detailPips.dots !== pipTarget) errors.push(`pips: ${detailPips.dots} dots for target ${pipTarget}`);
+  if (detailPips.on !== 0) errors.push(`pips: new frog starts with ${detailPips.on} filled`);
+  if (detailPips.label !== `×0 / ${pipTarget}`) errors.push(`pips: label ${JSON.stringify(detailPips.label)}`);
+  if (detailPips.aria !== `0 of ${pipTarget} crossings complete`) errors.push(`pips: aria ${JSON.stringify(detailPips.aria)}`);
+  if (detailPips.right > detailPips.innerWidth + 1) errors.push(`pips: row overflows (${JSON.stringify(detailPips)})`);
+}
+
+// A high-target frog must still wrap inside a 320px pond column rather
+// than shrinking beyond legibility or pushing the page sideways.
+const bigPips = await evaluate(`(async () => {
+  const { pips } = await import('./js/ui/dom.js');
+  const host = document.createElement('div');
+  host.style.cssText = 'position:absolute;left:-9999px;top:0;width:136px';
+  host.innerHTML = pips(55, 100);
+  document.body.appendChild(host);
+  const p = host.querySelector('.pips');
+  const dots = [...p.querySelectorAll('.pip-dots i')];
+  const out = {
+    dots: dots.length,
+    on: dots.filter((d) => d.classList.contains('on')).length,
+    label: p.querySelector('b').textContent.trim(),
+    w: Math.round(p.getBoundingClientRect().width),
+    sw: p.scrollWidth,
+    cw: p.clientWidth,
+  };
+  host.remove();
+  return out;
+})()`);
+console.log('100-hop pips:', bigPips);
+if (bigPips.dots !== 100 || bigPips.on !== 55 || bigPips.label !== '×55 / 100') {
+  errors.push(`100-hop pips: ${JSON.stringify(bigPips)}`);
+}
+if (bigPips.sw > bigPips.cw + 1) errors.push(`100-hop pips overflow: ${JSON.stringify(bigPips)}`);
 await click('travel-to-road');
 await waitFor('document.querySelector(".overlay [data-action=travel-approved]")', 5000, 'travel warning');
 const travelWarn = await evaluate(`document.querySelector('.overlay').innerText`);

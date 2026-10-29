@@ -107,7 +107,7 @@ web/
 
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
-palette, monospace text, wooden log buttons, lily-pad floating windows,
+palette, pixel text, wooden log buttons, lily-pad floating windows,
 pond water, lane-dashed asphalt, crossing pips and pixel art. It is not a
 screenshot of egui — it is DOM text and events over canvas-painted
 materials, so the wallet stays selectable, accessible and installable.
@@ -115,6 +115,12 @@ The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
 boot intro and the eight-page rules walkthrough (swipe left or right, or
 use BACK and NEXT).
+
+The crossing pips are a real progress display: one dot for every hop in
+the current target (5 at genesis, rising to 100), filled to the Hopper's
+completed crossings, with `×completed / target` beside them. An idle
+Hopper follows the next block's requirement, so empty dots appear as the
+road raises its toll; an in-flight Hopper keeps its frozen target.
 
 RECEIVE is the egui bottom window, not an address list: a tab for
 **BITCOIN** (the rotating BIP84 receive branch, with NEW ADDRESS and USED
@@ -270,6 +276,7 @@ curl -sN localhost:9770/v1/events/stream
 cd web
 node tests/core.test.mjs        # 64 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → cross → settle → transfer → burn
+node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
