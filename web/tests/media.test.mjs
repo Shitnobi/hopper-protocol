@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
+import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg } from '../js/ui/frog-mark.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -35,5 +36,12 @@ ok(grid[0].slice(0, 7).every(Boolean), 'the top-left finder border is dark');
 ok(grid.slice(0, 7).every((row) => row[6]), 'the top-left finder side is dark');
 ok(qrModules('') === null, 'an empty payload is a placeholder, not a throw');
 ok(qrModules('x'.repeat(5000)) === null, 'an oversized payload is a placeholder');
+
+// ---- pixel frog mark ------------------------------------------------
+ok(FROG_MARK_ROWS.length === FROG_MARK_SIZE, 'the frog mark is a square grid');
+ok(FROG_MARK_ROWS.every((row) => row.length === FROG_MARK_SIZE), 'every frog-mark row is 16 cells');
+ok(FROG_MARK_ROWS.some((row) => row.includes('#')) && FROG_MARK_ROWS.some((row) => row.includes('o')), 'the frog mark has body and cut pixels');
+const mark = frogMarkSvg(24);
+ok(mark.includes('shape-rendering="crispEdges"') && mark.includes('viewBox="0 0 16 16"'), 'the inline mark is a crisp 16x16 SVG');
 
 console.log(`media: ${checks} checks passed`);

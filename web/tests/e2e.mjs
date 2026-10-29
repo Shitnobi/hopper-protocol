@@ -223,6 +223,22 @@ const cache = await evaluate(`caches.keys().then(async (keys) => {
 console.log('pwa:', { serviceWorker: sw, manifest, cache });
 if (!sw || manifest !== 'HOPPER' || !cache.n) errors.push(`pwa shell: ${JSON.stringify({ sw, manifest, cache })}`);
 
+// The tab mark and the in-app brand mark are the same crisp pixel frog.
+const mark = await evaluate(`Promise.all([
+  fetch('icons/favicon.svg').then((r) => r.text()),
+  Promise.resolve(document.querySelector('.brand .frog-mark')?.outerHTML || ''),
+  Promise.resolve(document.querySelector('link[rel=icon][type="image/svg+xml"]')?.getAttribute('href') || ''),
+])`);
+const [faviconSvg, brandMark, faviconHref] = mark;
+console.log('favicon:', { href: faviconHref, svg: faviconSvg.length, brand: brandMark.slice(0, 60) });
+if (faviconHref !== 'icons/favicon.svg') errors.push(`favicon link: ${faviconHref}`);
+if (!faviconSvg.includes('shape-rendering="crispEdges"') || !faviconSvg.includes('#f0c83c')) {
+  errors.push('favicon.svg is not the pixel HOPPER mark');
+}
+if (!brandMark.includes('viewBox="0 0 16 16"') || !brandMark.includes('shape-rendering="crispEdges"')) {
+  errors.push('topbar frog mark is not the pixel mark');
+}
+
 // The app typeface is Pixelify Sans everywhere, not just on the rules.
 await evaluate('document.fonts.ready.then(() => true)');
 const appFonts = await evaluate(`(() => {

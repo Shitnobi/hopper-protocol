@@ -20,6 +20,7 @@
 
 import { renderSprite } from '../core/art.js';
 import { paintQR } from './qr.js';
+import { frogMarkSvg as pixelFrogMark } from './frog-mark.js';
 
 // ---------------------------------------------------------------------------
 // Palette — exact RGB values from theme.rs.
@@ -446,16 +447,9 @@ export function carBodyColor(seed) {
   return palette[(seed >>> 0) % palette.length];
 }
 
-/** The install icon's frog (theme.rs::frog_mark) as an inline SVG. */
+/** The install icon's frog, squared off to sit with the pixel type. */
 export function frogMarkSvg(size = 24, body = C.accent, cut = C.bg) {
-  return `<svg class="frog-mark" width="${size}" height="${size}" viewBox="6 12 52 44" aria-hidden="true">
-    <ellipse cx="32" cy="44" rx="18" ry="10" fill="${body}"/>
-    <circle cx="24" cy="26" r="7" fill="${body}"/>
-    <circle cx="40" cy="26" r="7" fill="${body}"/>
-    <circle cx="24" cy="26" r="3" fill="${cut}"/>
-    <circle cx="40" cy="26" r="3" fill="${cut}"/>
-    <rect x="18" y="44.5" width="28" height="3" fill="${cut}"/>
-  </svg>`;
+  return pixelFrogMark(size, body, cut);
 }
 
 // ---------------------------------------------------------------------------

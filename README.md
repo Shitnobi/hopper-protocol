@@ -46,7 +46,8 @@ rust/
                            snapshots, reorg replay
   crates/hopper-indexer-api REST + SSE server, admin ingest, metrics
 web/
-  index.html, manifest, sw.js, icons/
+  index.html, manifest, sw.js
+  icons/                   pixel HOPPER tab mark + generated PWA icons
   fonts/                   Pixelify Sans (SIL OFL), the app typeface
   css/app.css              mobile-first dark lily-pad UI
   js/core/                 hex, params, settles, envelopes, inscriptions,
@@ -60,6 +61,8 @@ web/
   js/ui/theme.js           the FROGGER egui materials: wood log-frames,
                            lily-pad window borders, pond/road/grave/sprite
                            painters, mounted on canvases after each render
+  js/ui/frog-mark.js       the 16x16 HOPPER mark shared by the tab icon
+                           and the title bar
   js/ui/tour.js            the boot splash (a hop into the road) and the
                            eight animated rules pictures
   js/ui/qr.js              the QR widget (quiet zone, paper/ink, placeholder)
