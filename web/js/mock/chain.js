@@ -164,7 +164,10 @@ export class MockChain {
       });
     });
 
-    // Frog movement.
+    // Frog movement. Transfer events wait until we know whether this tx is
+    // a crossing: a crossing spends the state output too, but it is not a
+    // handoff and must not appear as a Transfer in history.
+    const pendingTransfers = [];
     for (const [sat, frog] of spentFrogs) {
       const dest = this.outputContaining(tx, assignment, sat);
       if (dest == null) {
@@ -175,7 +178,7 @@ export class MockChain {
         if (frog.state === 'idle') frog.state = 'burned';
       } else {
         frog.location = { txid: tx.txid, vout: dest };
-        this.event(height, tx.txid, 'transfer', { frogger_sat: sat });
+        pendingTransfers.push(sat);
       }
     }
 
@@ -194,6 +197,7 @@ export class MockChain {
     }
 
     // CROSS
+    let crossedSat = null;
     if (isCross && reveal) {
       try {
         const body = decodeStateBody(reveal.body);
@@ -223,10 +227,14 @@ export class MockChain {
             frog.outcome_block_hash = null;
             frog.provisional_dead = null;
             frog.location = { txid: tx.txid, vout: 0 };
+            crossedSat = body.sat;
             this.event(height, tx.txid, 'cross', { frogger_sat: body.sat });
           }
         }
       } catch { /* not a crossing */ }
+    }
+    for (const sat of pendingTransfers) {
+      if (sat !== crossedSat) this.event(height, tx.txid, 'transfer', { frogger_sat: sat });
     }
 
     this.txs.push({

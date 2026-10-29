@@ -8,6 +8,21 @@ import { bytesToHex, hexToBytes, reverseBytes, sha256, sha256d } from '../core/h
 import { parseTx } from './txparse.js';
 import { MockChain } from '../mock/chain.js';
 
+const REQUEST_TIMEOUT_MS = 20000;
+
+async function timedFetch(url, opts = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (err) {
+    if (ctrl.signal.aborted) throw new Error(`request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // --- Esplora --------------------------------------------------------------
 
 export class EsploraClient {
@@ -16,7 +31,7 @@ export class EsploraClient {
   }
 
   async req(path, opts = {}) {
-    const res = await fetch(this.base + path, {
+    const res = await timedFetch(this.base + path, {
       ...opts,
       headers: { 'content-type': 'text/plain', ...(opts.headers || {}) },
     });
@@ -76,7 +91,7 @@ export class EsploraClient {
   }
 
   async broadcast(hex) {
-    const res = await fetch(`${this.base}/tx`, { method: 'POST', body: hex });
+    const res = await timedFetch(`${this.base}/tx`, { method: 'POST', body: hex }, 30000);
     const text = (await res.text()).trim();
     if (!res.ok) throw new Error(`broadcast rejected: ${text}`);
     return text;
@@ -95,37 +110,76 @@ export class ElectrumClient {
   }
 
   async connect() {
-    if (this.ws && this.ws.readyState === 1) return this;
-    this.ws = new WebSocket(this.url);
-    await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = () => reject(new Error(`cannot connect to ${this.url}`));
-    });
-    this.ws.onmessage = (event) => {
-      let msg;
-      try { msg = JSON.parse(event.data); } catch { return; }
-      if (msg.id != null && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error) reject(new Error(msg.error.message || 'electrum error'));
-        else resolve(msg.result);
-      } else if (msg.method === 'blockchain.headers.subscribe') {
-        this.tip = msg.params[0];
+    if (this.ws && this.ws.readyState === 1 && this.tip) return this;
+    // Several address scans may call connect() together. Share one handshake
+    // instead of opening a socket per worker.
+    if (this._connecting) return this._connecting;
+    const connecting = (async () => {
+      const ws = new WebSocket(this.url);
+      this.ws = ws;
+      await new Promise((resolve, reject) => {
+        let done = false;
+        let timer = null;
+        const finish = (err) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          ws.onopen = null;
+          ws.onerror = null;
+          ws.onclose = null;
+          if (err) {
+            try { ws.close(); } catch { /* already closed */ }
+            reject(err);
+          } else {
+            resolve();
+          }
+        };
+        timer = setTimeout(() => finish(new Error(`electrum connect timed out (${this.url})`)), 15000);
+        ws.onopen = () => finish(null);
+        ws.onerror = () => finish(new Error(`cannot connect to ${this.url}`));
+        ws.onclose = () => finish(new Error('electrum socket closed before opening'));
+      });
+      ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch { return; }
+        if (msg.id != null && this.pending.has(msg.id)) {
+          const { resolve, reject } = this.pending.get(msg.id);
+          this.pending.delete(msg.id);
+          if (msg.error) reject(new Error(msg.error.message || 'electrum error'));
+          else resolve(msg.result);
+        } else if (msg.method === 'blockchain.headers.subscribe') {
+          this.tip = msg.params[0];
+        }
+      };
+      ws.onclose = () => {
+        for (const { reject } of this.pending.values()) reject(new Error('electrum socket closed'));
+        this.pending.clear();
+      };
+      try {
+        this.tip = await this.call('blockchain.headers.subscribe');
+      } catch (err) {
+        try { ws.close(); } catch { /* already closed */ }
+        throw err;
       }
-    };
-    this.ws.onclose = () => {
-      for (const { reject } of this.pending.values()) reject(new Error('electrum socket closed'));
-      this.pending.clear();
-    };
-    this.tip = await this.call('blockchain.headers.subscribe');
-    return this;
+      return this;
+    })();
+    this._connecting = connecting;
+    try { return await connecting; } finally {
+      if (this._connecting === connecting) this._connecting = null;
+    }
   }
 
   call(method, params = []) {
     return new Promise((resolve, reject) => {
       const id = ++this.id;
       this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      try {
+        this.ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      } catch (err) {
+        this.pending.delete(id);
+        reject(new Error(`electrum ${method}: ${err.message || err}`));
+        return;
+      }
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
@@ -204,7 +258,7 @@ export class IndexerClient {
   }
 
   async get(path) {
-    const res = await fetch(this.base + path, { headers: { accept: 'application/json' } });
+    const res = await timedFetch(this.base + path, { headers: { accept: 'application/json' } });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(`indexer ${path}: ${res.status} ${body}`.trim());

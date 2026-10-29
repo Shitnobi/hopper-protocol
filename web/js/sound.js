@@ -12,6 +12,12 @@ export class Sound {
     this.armed = false;
   }
 
+  stopLoop() {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = null;
+  }
+
   setVolume(v) { this.volume = Math.max(0, Math.min(1, Number(v))); this._apply(); }
   setMute(m) { this.mute = !!m; this._apply(); }
 
@@ -70,6 +76,9 @@ export class Sound {
 
   startLoop() {
     if (this.timer || !this.ctx) return;
+    // The shell can be locked, wiped, or reloaded while a loop is running.
+    // Callers stop the loop on those transitions and start it again when a
+    // wallet is ready, so a locked screen is actually quiet.
     // A two-bar hopper tune at 112 BPM (16th notes, 134 ms).
     const melody = [
       392, 0, 523, 0, 587, 0, 523, 0, 392, 0, 349, 0, 392, 0, 0, 0,

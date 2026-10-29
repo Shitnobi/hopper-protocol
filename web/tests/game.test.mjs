@@ -108,6 +108,10 @@ frog = chain.record(mint.sat);
 assert.equal(frog.state, 'crossing');
 assert.equal(frog.in_flight.height, chain.tipHeight());
 assert.equal(frog.in_flight.target_hops, requiredAt(chain.tipHeight()));
+// A crossing spends the frog's state output, but it is not a handoff:
+// the mock history must not publish a Transfer for the CROSS txid.
+assert.ok(!chain.events.some((e) => e.txid === cross.txid && e.action.action === 'transfer'),
+  'CROSS must not also be a Transfer event');
 
 // Timers: outcome at T+1, settlement at T+6.
 chain.mine(1);

@@ -153,6 +153,19 @@ const cache = await evaluate(`caches.keys().then(async (keys) => {
 console.log('pwa:', { serviceWorker: sw, manifest, cache });
 if (!sw || manifest !== 'HOPPER' || !cache.n) errors.push(`pwa shell: ${JSON.stringify({ sw, manifest, cache })}`);
 
+// The route change, not a data refresh, resets scroll.
+await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+await sleep(200);
+await evaluate('window.scrollTo(0, document.body.scrollHeight)');
+await sleep(120);
+const scrolled = await evaluate('window.scrollY');
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await sleep(250);
+const top = await evaluate('window.scrollY');
+if (scrolled < 100) errors.push(`scroll test did not scroll (${scrolled})`);
+if (top > 1) errors.push(`route did not reset scroll (${top})`);
+console.log('scroll: route starts at top');
+
 // 2. Mint view: set a seed and mint.
 await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
 await waitFor('document.querySelector("[data-action=mint]")');
@@ -187,6 +200,35 @@ await evaluate(`document.querySelector('[data-action=mine][data-n="6"]').click()
 await sleep(2500);
 const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
+
+// 5b. Route changes and history must not show a previous frog's record.
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await waitFor('document.querySelector(".frog-card")', 15000, 'pond after settle');
+await evaluate(`document.querySelector('.frog-card').click()`);
+await waitFor('location.hash.startsWith("#/frog/")', 15000, 'frog route');
+await evaluate('history.back()');
+await waitFor('location.hash === "#/pond"', 15000, 'back to pond');
+await evaluate('history.forward()');
+await waitFor('location.hash.startsWith("#/frog/")', 15000, 'forward to frog');
+await waitFor('document.querySelector(".frog-hero .big")?.textContent === "Test Hopper"', 15000, 'frog record after forward');
+console.log('history: frog detail survives back/forward');
+
+await evaluate(`document.querySelector('[data-action=nav][data-view=leaders]').click()`);
+await waitFor('document.querySelectorAll("tr[data-sat]").length > 1', 15000, 'leaderboard rows');
+const stranger = await evaluate(`(() => {
+  const row = [...document.querySelectorAll('tr[data-sat]')].find((r) => !/Test Hopper/.test(r.innerText));
+  if (!row) return null;
+  return { sat: Number(row.dataset.sat), name: row.querySelector('td:nth-child(3) div')?.textContent?.trim() || '' };
+})()`);
+if (!stranger) {
+  errors.push('routing: no public frog available to test stale record');
+} else {
+  await evaluate(`location.hash = '#/frog/${stranger.sat}'`);
+  await waitFor(`document.querySelector('.frog-hero .big')?.textContent === ${JSON.stringify(stranger.name)}`, 15000, 'public frog detail');
+  console.log('route: direct frog hash shows', stranger.name);
+  await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+  await waitFor('location.hash === "#/wallet"', 15000, 'wallet route after public frog');
+}
 
 // 6. Lock semantics: no silent auto-unlock, then opt-in remember.
 await call('Page.reload', { ignoreCache: true });

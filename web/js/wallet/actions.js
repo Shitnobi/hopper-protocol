@@ -102,6 +102,22 @@ export function anchorSatOf(utxo) {
   return utxo.ranges[0][0];
 }
 
+// Position of `sat` inside a coin's known ordinal ranges (inclusive ends).
+// `null` means the ranges do not cover the sat. A non-zero position is a
+// problem for PREPARE/CROSS because the consensus state output expects the
+// frog at offset 0; reject it before broadcasting an unspendable card.
+export function anchorOffsetOf(utxo, sat) {
+  if (!utxo || !utxo.ranges || !utxo.ranges.length) return null;
+  const ranges = [...utxo.ranges].sort((a, b) => a[0] - b[0]);
+  let offset = 0;
+  const target = Number(sat);
+  for (const [start, end] of ranges) {
+    if (target >= start && target <= end) return offset + (target - start);
+    offset += end - start + 1;
+  }
+  return null;
+}
+
 // --- finalization ---------------------------------------------------------
 
 // Sign, measure, and shrink change until the fee covers `rate` sat/vB.

@@ -183,7 +183,9 @@ curl -sN localhost:9770/v1/events/stream
   ordinals address; ask the indexer for UTXO ranges; optionally enumerate
   public frogs to find state outputs that live at no derivation path.
   A frog is owned when its sat is in a coin whose script this wallet can
-  spend; the indexer is never trusted for ownership.
+  spend; the indexer is never trusted for ownership. Live scans use a small
+  request pool, and live deep scan is **off by default**; demo mode always
+  scans so the simulator has something to show.
 - **Demo vs live**: `DemoBackend` implements the same interface as
   `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
   Live mode requires a secure context for WebCrypto; Electrum needs a
@@ -251,8 +253,9 @@ mainnet value on it without review.
   It validates the v6 state machine and byte encodings, not Bitcoin.
 - Live mode currently refreshes on demand; there is no background block
   subscription in the PWA. Deep discovery of state outputs is bounded to
-  300 public frogs and can be expensive on a large pond; turn it off in
-  Settings if you know your frogs.
+  300 public frogs and can be expensive on a large pond; it is off by
+  default and can be enabled in Settings if you need to recover custody
+  outputs from a fresh device.
 - No RBF/CPFP, hardware wallet, multisig, or coinbase maturity handling.
 - Snapshot/event retention and ZMQ ingest are operator concerns; see the
   module docs and `rust/crates/hopper-indexer/src/NOTES.md`.

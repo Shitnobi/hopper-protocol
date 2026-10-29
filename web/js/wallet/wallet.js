@@ -14,8 +14,32 @@ import { DemoBackend, LiveBackend } from './backend.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
-  buildBurn, buildCross, buildMint, buildPrepare, buildSend, buildTransfer, stateScripts,
+  anchorOffsetOf, buildBurn, buildCross, buildMint, buildPrepare, buildSend,
+  buildTransfer, stateScripts,
 } from './actions.js';
+
+// Bound the number of chain requests in flight. Sequential scans used to
+// take one RTT per address (and per public frog); a small pool keeps a live
+// refresh from turning into a multi-second wall of requests.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+function rateOr(value, fallback = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(1000, n));
+}
 
 export const DEFAULT_SETTINGS = {
   mode: 'demo',
@@ -26,13 +50,26 @@ export const DEFAULT_SETTINGS = {
   sound: true,
   mute: false,
   volume: 0.55,
-  deepScan: true,
+  deepScan: false,
   gap: 20,
   addressBook: [],
 };
 
 export function loadSettings() {
-  return { ...DEFAULT_SETTINGS, ...(loadJson(KEYS.settings, {}) || {}) };
+  const s = { ...DEFAULT_SETTINGS, ...(loadJson(KEYS.settings, {}) || {}) };
+  // Settings are user-editable and survive upgrades. Normalize the values
+  // that flow into fee math or the scan loop so a corrupt/empty field can
+  // never become NaN or an unbounded gap.
+  s.mode = s.mode === 'live' ? 'live' : 'demo';
+  s.feeRate = rateOr(s.feeRate);
+  const gap = Number(s.gap);
+  s.gap = Number.isFinite(gap) ? Math.max(5, Math.min(50, Math.trunc(gap))) : 20;
+  const volume = Number(s.volume);
+  s.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.55;
+  s.mute = s.mute === true;
+  s.deepScan = s.deepScan === true;
+  s.addressBook = Array.isArray(s.addressBook) ? s.addressBook : [];
+  return s;
 }
 
 export function saveSettings(settings) {
@@ -138,22 +175,34 @@ export class WalletSession {
   async refresh({ deep: deepOpt = null } = {}) {
     if (!this.backend) await this.connect();
     this._txCache.clear();
-    this.tipHeight = await this.backend.tipHeight().catch(() => this.tipHeight);
-    this.tipHash = await this.backend.tipHash().catch(() => this.tipHash);
+    const [tipHeight, tipHash] = await Promise.all([
+      this.backend.tipHeight().catch(() => this.tipHeight),
+      this.backend.tipHash().catch(() => this.tipHash),
+    ]);
+    this.tipHeight = tipHeight;
+    this.tipHash = tipHash;
 
+    // Scan the watched addresses in a small pool. The demo resolves almost
+    // instantly, but live Esplora/Electrum would otherwise spend one full
+    // RTT per address on every action.
     const utxos = [];
     const used = {};
-    for (const w of this._watched()) {
+    const scanned = await mapLimit(this._watched(), 6, async (w) => {
       let list = [];
       try { list = await this.backend.addressUtxos(w.address, w.script); } catch { list = []; }
-      for (const u of list) {
-        let dto = null;
-        try { dto = await this.backend.utxo(u.txid, u.vout); } catch { dto = null; }
-        const ranges = dto
+      const dtos = await mapLimit(list, 4, async (u) => {
+        try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
+      });
+      return { w, list, dtos };
+    });
+    for (const { w, list, dtos } of scanned) {
+      list.forEach((u, i) => {
+        const dto = dtos[i];
+        const ranges = dto && dto.ranges
           ? dto.ranges.map(([a, b]) => [a, b - 1])
           : (u.ranges || null);
         const exact = dto ? (dto.exact !== false && !(ranges && ranges.some(([a]) => a >= 4e15))) : false;
-        const frogs = dto ? dto.frogs : (u.frogs || []);
+        const frogs = dto ? (dto.frogs || []) : (u.frogs || []);
         const kind = w.kind === 'frog' ? 'frog' : 'p2wpkh';
         const key = w.kind === 'frog' ? this.keys.ord : w.key;
         utxos.push({
@@ -162,43 +211,69 @@ export class WalletSession {
           key, keyRef: { branch: w.branch, index: w.index },
           spendable: kind !== 'state' && exact && !frogs.length,
         });
-        if (w.branch !== 'ord') used[w.address] = true;
-      }
+        // Only record addresses that actually hold coins. Marking the whole
+        // gap made the old address cursor think every index was used.
+        if (w.branch !== 'ord' && list.length) used[w.address] = true;
+      });
     }
 
     // Frog candidates: imported sats, sats on our coins, and (optionally)
     // a bounded public scan so a restored wallet finds state outputs that
     // live at no derivation path.
-    const candidates = new Set(this.imported);
-    for (const u of utxos) for (const sat of u.frogs) candidates.add(Number(sat));
+    const candidates = new Set([...this.imported].map(Number).filter(Number.isSafeInteger));
+    for (const u of utxos) {
+      for (const sat of u.frogs) {
+        const n = Number(sat);
+        if (Number.isSafeInteger(n)) candidates.add(n);
+      }
+    }
     const deep = deepOpt ?? (this.settings.mode === 'demo' ? true : this.settings.deepScan);
+    const records = new Map();
     if (deep && this.backend.froggers) {
       try {
         const page = await this.backend.froggers({ limit: 300 });
-        for (const f of page.items || []) candidates.add(Number(f.sat));
+        for (const f of page.items || []) {
+          if (!f || f.sat == null) continue;
+          const sat = Number(f.sat);
+          if (!Number.isSafeInteger(sat)) continue;
+          candidates.add(sat);
+          // `/v1/froggers` already returns full records. Re-requesting every
+          // one with /v1/frogger/{sat} doubled the scan for no new data.
+          records.set(sat, f);
+        }
       } catch { /* live indexer may be absent */ }
     }
 
+    const missing = [...candidates].filter((sat) => !records.has(sat));
+    const fetched = await mapLimit(missing, 6, async (sat) => {
+      try { return [sat, await this.backend.frogger(sat)]; } catch { return [sat, null]; }
+    });
+    for (const [sat, record] of fetched) if (record) records.set(sat, record);
+
+    const ownership = await mapLimit(
+      [...candidates].filter((sat) => records.has(sat)),
+      6,
+      async (sat) => {
+        try { return [sat, records.get(sat), await this._ownsFrog(records.get(sat), utxos)]; }
+        catch { return [sat, records.get(sat), { owned: false }]; }
+      },
+    );
+
     const frogs = [];
-    for (const sat of candidates) {
-      let record = null;
-      try { record = await this.backend.frogger(sat); } catch { record = null; }
-      if (!record) continue;
-      const owned = await this._ownsFrog(record, utxos);
-      if (owned.owned) {
-        frogs.push(record);
-        if (owned.utxo) {
-          if (owned.custody) {
-            owned.utxo.kind = 'state';
-            owned.utxo.key = this.keys.ord;
-            owned.utxo.spendable = false;
-          }
-          if (!utxos.some((u) => u.txid === owned.utxo.txid && u.vout === owned.utxo.vout)) {
-            utxos.push(owned.utxo);
-          }
+    for (const [sat, record, owned] of ownership) {
+      if (!owned.owned) continue;
+      frogs.push(record);
+      if (owned.utxo) {
+        if (owned.custody) {
+          owned.utxo.kind = 'state';
+          owned.utxo.key = this.keys.ord;
+          owned.utxo.spendable = false;
         }
-        this.imported.add(Number(sat));
+        if (!utxos.some((u) => u.txid === owned.utxo.txid && u.vout === owned.utxo.vout)) {
+          utxos.push(owned.utxo);
+        }
       }
+      this.imported.add(Number(sat));
     }
 
     this.utxos = utxos.sort((a, b) => b.value - a.value);
@@ -227,6 +302,14 @@ export class WalletSession {
     // 2. A custody output commits to (sat, mint, owner): derive it and
     //    compare with the output script at the indexer's location.
     if (!record.location) return { owned: false };
+    // Still at its mint outpoint? It is not a custody output. The direct
+    // watch above already covered a mint paid to one of our addresses; do
+    // not fetch the mint transaction for every public frog in a deep scan.
+    if (record.mint_txid
+      && record.location.txid === record.mint_txid
+      && Number(record.location.vout) === Number(record.mint_index ?? 0)) {
+      return { owned: false };
+    }
     const tx = await this._getTx(record.location.txid);
     if (!tx) return { owned: false };
     const out = tx.outputs[record.location.vout];
@@ -316,10 +399,10 @@ export class WalletSession {
 
   async mint({ seed, name = '', feeRate = null, revealFeeRate = null }) {
     await this.refresh();
-    const rate = feeRate ?? this.settings.feeRate;
+    const rate = rateOr(feeRate ?? this.settings.feeRate);
     const args = {
       utxos: this._funding(), seed, name, feeRate: rate,
-      revealFeeRate: revealFeeRate ?? rate,
+      revealFeeRate: rateOr(revealFeeRate ?? rate),
     };
     let built;
     try {
@@ -348,13 +431,20 @@ export class WalletSession {
 
   async prepare(frog, { feeRate = null } = {}) {
     await this.refresh();
+    // `frog` is a UI object captured before the busy overlay/scan; use the
+    // freshly discovered record so a settlement in between cannot be missed.
+    frog = this.frogBySat(frog.sat) || frog;
     if (frog.state === 'crossing') throw new Error('the frog is on the road; wait for settlement');
     const utxo = this._frogUtxo(frog);
     if (!utxo) throw new Error('the frog output is not in this wallet');
     if (utxo.kind === 'state') throw new Error('the frog is already in custody');
+    const offset = anchorOffsetOf(utxo, frog.sat);
+    if (offset != null && offset !== 0) {
+      throw new Error('the frog sat is not first in this coin; split it before preparing');
+    }
     const built = buildPrepare({
       keys: this.keys, utxo, frog, funding: this._funding(),
-      feeRate: feeRate ?? this.settings.feeRate,
+      feeRate: rateOr(feeRate ?? this.settings.feeRate),
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'prepare', sat: frog.sat, txid: built.txid });
@@ -364,28 +454,39 @@ export class WalletSession {
 
   async cross(frog, { feeRate = null, newOwnerXonly = null } = {}) {
     await this.refresh();
+    frog = this.frogBySat(frog.sat) || frog;
     if (frog.state !== 'idle') throw new Error(`the frog is ${frog.state}; only an idle frog can cross`);
     const utxo = this._frogUtxo(frog);
     if (!utxo || utxo.kind !== 'state') throw new Error('the frog must be in custody before it can cross');
+    const offset = anchorOffsetOf(utxo, frog.sat);
+    if (offset != null && offset !== 0) {
+      throw new Error('the frog sat is not first in this card; it cannot cross safely');
+    }
     const built = buildCross({
       keys: this.keys, stateUtxo: utxo, frog, funding: this._funding(),
-      feeRate: feeRate ?? this.settings.feeRate, newOwnerXonly,
+      feeRate: rateOr(feeRate ?? this.settings.feeRate), newOwnerXonly,
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'cross', sat: frog.sat, txid: built.txid, at: new Date().toISOString() });
+    // Custody now belongs to the optional new P2TR owner. Stop carrying the
+    // sat as an owned candidate if that owner is not this wallet.
+    if (newOwnerXonly && !equalBytes(newOwnerXonly, this.keys.ord.ownerXonly)) {
+      this.imported.delete(Number(frog.sat));
+    }
     await this.refresh();
     return built;
   }
 
   async transfer(frog, address) {
-    if (frog.state === 'crossing') throw new Error('the frog is on the road; wait for settlement');
     await this.refresh();
+    frog = this.frogBySat(frog.sat) || frog;
+    if (frog.state === 'crossing') throw new Error('the frog is on the road; wait for settlement');
     const utxo = this._frogUtxo(frog);
     if (!utxo) throw new Error('the frog output is not in this wallet');
     const recipient = decodeAddress(address, this.network);
     const built = buildTransfer({
       keys: this.keys, utxo, frog, recipientScript: recipient.script,
-      feeRate: this.settings.feeRate,
+      feeRate: rateOr(this.settings.feeRate),
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'transfer', sat: frog.sat, txid: built.txid, to: address });
@@ -396,9 +497,10 @@ export class WalletSession {
 
   async burn(frog) {
     await this.refresh();
+    frog = this.frogBySat(frog.sat) || frog;
     const utxo = this._frogUtxo(frog);
     if (!utxo) throw new Error('the frog output is not in this wallet');
-    const built = buildBurn({ keys: this.keys, utxo, frog, feeRate: this.settings.feeRate });
+    const built = buildBurn({ keys: this.keys, utxo, frog, feeRate: rateOr(this.settings.feeRate) });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'burn', sat: frog.sat, txid: built.txid });
     this.imported.delete(Number(frog.sat));
@@ -414,7 +516,7 @@ export class WalletSession {
     const recipient = decodeAddress(address, this.network);
     const built = buildSend({
       keys: this.keys, utxos: this._funding(), recipientScript: recipient.script,
-      amount: BigInt(amountSats), feeRate: this.settings.feeRate,
+      amount: BigInt(amountSats), feeRate: rateOr(this.settings.feeRate),
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'send', txid: built.txid, to: address, amount: String(amountSats) });

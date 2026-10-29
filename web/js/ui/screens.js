@@ -147,7 +147,7 @@ function coinRow(u) {
 export function pond(app) {
   const w = app.w;
   const owned = w.frogs;
-  const wild = (app.leaders || []).filter((l) => !owned.some((f) => f.sat === l.sat)).slice(0, 6);
+  const wild = (app.leaders || []).filter((l) => !owned.some((f) => Number(f.sat) === Number(l.sat))).slice(0, 6);
   return `
   <section class="panel lily">
     <div class="panel-head"><h2>THE POND</h2><div class="spacer"></div>
@@ -184,7 +184,7 @@ function frogCard(f, tip) {
 }
 
 function wildCard(app, l) {
-  const owned = app.w.frogs.some((f) => f.sat === l.sat);
+  const owned = app.w.frogs.some((f) => Number(f.sat) === Number(l.sat));
   return `
     <div class="frog-card" data-action="open-frog" data-sat="${l.sat}">
       ${frogImg(l.seed, l.state === 'dead' ? 'dead' : l.state === 'home' ? 'home' : 'idle')}
@@ -332,7 +332,7 @@ export function leaders(app) {
       <thead><tr><th>#</th><th></th><th>FROG</th><th>STATE</th><th class="right">HOPS</th></tr></thead>
       <tbody>
         ${rows.map((r) => {
-          const mine = app.w.frogs.some((f) => f.sat === r.sat);
+          const mine = app.w.frogs.some((f) => Number(f.sat) === Number(r.sat));
           return `<tr class="${mine ? 'me' : ''}" data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer">
             <td class="dim">${r.rank}</td>
             <td>${frogImg(r.seed, r.state === 'dead' ? 'dead' : r.state === 'home' ? 'home' : 'idle')}</td>
@@ -355,7 +355,12 @@ export function history(app) {
   const actions = (w.actions || []).map((a) => ({
     kind: a.kind, sat: a.sat, height: a.height, txid: a.txid, at: a.at, payload: a,
   }));
-  const all = [...events, ...actions].slice(0, 80);
+  // Merge the two sources before slicing: appending all actions after all
+  // events hid new wallet actions below older chain history.
+  const all = [...events, ...actions]
+    .map((e) => ({ ...e, _sort: e.height != null ? Number(e.height) : (e.at ? Date.parse(e.at) : 0) }))
+    .sort((a, b) => b._sort - a._sort)
+    .slice(0, 80);
   return `
   <section class="panel lily">
     <div class="panel-head"><h2>HISTORY</h2><div class="spacer"></div><span class="badge">RE-DERIVABLE</span></div>
@@ -382,7 +387,8 @@ export function history(app) {
 
 export function frogDetail(app, sat) {
   const w = app.w;
-  const f = w.frogBySat(sat) || app.frogRecord;
+  const f = w.frogBySat(sat)
+    || (app.frogRecord && Number(app.frogRecord.sat) === Number(sat) ? app.frogRecord : null);
   if (!f) return `<section class="panel"><div class="empty">No frog at sat ${esc(sat)}.</div></section>`;
   const utxo = w._frogUtxo(f);
   const kind = utxo?.kind || 'none';
@@ -407,7 +413,7 @@ export function frogDetail(app, sat) {
       ${frogImg(f.seed, state === 'dead' ? 'dead' : state === 'home' ? 'home' : state === 'crossing' ? 'crossing' : 'idle', 'sprite', f.name)}
       <div class="grow">
         <div class="big">${esc(f.name || 'UNNAMED')}</div>
-        <div class="small dim">SAT ${sats(f.sat)} · ${esc(String(f.rarity || '').toUpperCase())}</div>
+        <div class="small dim">SAT ${sats(f.sat)}${f.rarity ? ` · ${esc(String(f.rarity).toUpperCase())}` : ''}</div>
         <div class="row small" style="margin-top:8px"><span class="dim">HOPS</span><span class="spacer"></span><b>${dist} / ${target}</b></div>
         <div class="bar ${state === 'dead' ? 'dead' : ''}"><i style="width:${pct}%"></i></div>
         ${inFlight ? `<div class="progress-row"><span>SETTLES AT H ${sats(inFlight.height + 6)}</span><span>${Math.max(0, inFlight.height + 6 - (w.tipHeight || 0))} BLOCKS</span></div>` : ''}
@@ -504,11 +510,11 @@ export function settings(app) {
   <section class="panel">
     <div class="panel-head"><h2>FEES & SCAN</h2></div>
     <label class="field"><span>Fee rate (sat/vB)</span><input type="number" min="1" max="1000" data-input="feeRate" value="${s.feeRate}"></label>
-    <label class="field"><span>Deep scan (enumerate public frogs to find custody outputs)</span>
+    <label class="field"><span>Deep scan (public frogs; slow on a live indexer)</span>
       <select data-input="deepScan"><option value="1" ${s.deepScan ? 'selected' : ''}>on</option><option value="0" ${!s.deepScan ? 'selected' : ''}>off</option></select>
     </label>
     <label class="field"><span>Address gap</span><input type="number" min="5" max="50" data-input="gap" value="${s.gap}"></label>
-    <div class="hint">Every coin with unknown ranges is counted but shown unspendable. Ranges are the ownership proof.</div>
+    <div class="hint">Demo mode always scans. Live mode scans only when this is on; it is off by default. Every coin with unknown ranges is counted but shown unspendable; ranges are the ownership proof.</div>
   </section>
 
   <section class="panel">

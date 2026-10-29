@@ -39,6 +39,8 @@ const app = {
 
 const sound = new Sound({ volume: app.settings.volume, mute: app.settings.mute });
 let armed = false;
+let viewSeq = 0;
+let lastLocation = null;
 function armSound() {
   if (armed) return;
   armed = true;
@@ -211,6 +213,9 @@ function lockScreen() {
 
 async function startSession({ mnemonic, network, fingerprint }) {
   app.screen = 'wallet';
+  app.view = 'wallet';
+  app.frogSat = null;
+  app.frogRecord = null;
   app.w = new WalletSession({ mnemonic, network, fingerprint, settings: loadSettings() });
   app.settings = app.w.settings;
   app.leaders = [];
@@ -219,8 +224,17 @@ async function startSession({ mnemonic, network, fingerprint }) {
   app.remember = false;
   sound.setVolume(app.settings.volume);
   sound.setMute(app.settings.mute);
-  await app.w.connect();
-  await app.w.refresh();
+  sound.startLoop();
+  try {
+    await app.w.connect();
+    await app.w.refresh();
+  } catch (e) {
+    // Keep the wallet shell alive so Settings (where the endpoint can be
+    // fixed) is reachable. A half-configured live backend must not trap the
+    // user behind a lock screen they can never satisfy.
+    console.warn('session backend unavailable', e.message || String(e));
+    toast('Chain unavailable — open Settings to fix the endpoint', 'err');
+  }
   if (app.settings.mode === 'demo' && app.w.balance.total === 0n && !app.w.actions.length) {
     try {
       await app.w.demoFund(8, 200000);
@@ -231,19 +245,9 @@ async function startSession({ mnemonic, network, fingerprint }) {
   app.mintSeedText = '9058d0fa';
   app.mintName = 'Hopkinson';
   app.previewUri = spriteUri(app.mintSeed, 'idle');
-  if (location.hash) {
-    parseHash();
-    if (app.view === 'frog') {
-      const sat = app.frogSat;
-      app.frogRecord = await app.w.backend.frogger(sat).catch(() => null);
-      navigate('frog', { push: false });
-    } else {
-      navigate(app.view, { push: false });
-    }
-  } else {
-    navigate('wallet', { push: false });
-  }
-  render();
+  if (location.hash) parseHash();
+  if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
+  navigate(app.view, { push: false });
 }
 
 async function boot() {
@@ -257,12 +261,27 @@ async function boot() {
   try {
     const kek = await idbGet('keys', 'kek');
     if (kek) {
-      const data = await unlockVault('');
-      await startSession(data);
-      return;
+      setBusy(true, 'unlocking the pond');
+      try {
+        const data = await unlockVault('');
+        await startSession(data);
+        return;
+      } finally {
+        setBusy(false);
+        render();
+      }
     }
-  } catch { /* fall through to lock */ }
+  } catch {
+    // A remembered KEK can be stale, or a live backend can be unreachable.
+    // Do not leave a half-started session behind an apparently locked UI.
+    app.w = null;
+    app.leaders = [];
+    app.road = [];
+    app.frogRecord = null;
+    sound.stopLoop();
+  }
   app.screen = 'lock';
+  app.lockError = '';
   render();
 }
 
@@ -275,22 +294,44 @@ function navigate(view, { push = true } = {}) {
   closeDrawer();
   if (push) {
     const hash = view === 'frog' ? `#/frog/${app.frogSat}` : `#/${view}`;
-    if (location.hash !== hash) history.pushState(null, '', hash);
+    if (location.hash !== hash) history.pushState({ hopper: true }, '', hash);
   }
+  lastLocation = location.hash;
+  // A route change is not a data refresh: start at the top of the new page.
+  window.scrollTo(0, 0);
   render();
   ensureViewData(view);
 }
 
+async function ensureFrogRecord(sat, seq) {
+  if (!app.w || !app.w.backend || !Number.isSafeInteger(Number(sat))) return;
+  const own = app.w.frogBySat(sat);
+  if (own) {
+    if (seq === viewSeq && app.view === 'frog') app.frogRecord = own;
+    return;
+  }
+  const record = await app.w.backend.frogger(Number(sat)).catch(() => null);
+  if (seq !== viewSeq || app.view !== 'frog' || Number(app.frogSat) !== Number(sat)) return;
+  app.frogRecord = record;
+  render();
+}
+
 async function ensureViewData(view) {
   if (!app.w) return;
+  const seq = ++viewSeq;
   try {
-    if (view === 'pond' || view === 'leaders') {
+    if (view === 'frog') {
+      await ensureFrogRecord(app.frogSat, seq);
+    } else if (view === 'pond' || view === 'leaders') {
       const rows = await app.w.leaderboard(30);
+      if (seq !== viewSeq) return;
       app.leaders = rows;
-      render();
+      if (app.view === view) render();
     } else if (view === 'road') {
-      app.road = await app.w.road();
-      render();
+      const rows = await app.w.road();
+      if (seq !== viewSeq) return;
+      app.road = rows;
+      if (app.view === view) render();
     }
   } catch (e) { /* views tolerate missing data */ }
 }
@@ -299,14 +340,40 @@ function parseHash() {
   const h = location.hash.replace(/^#\/?/, '');
   const [view, arg] = h.split('/');
   if (view === 'frog' && arg) {
-    app.frogSat = Number(arg);
-    app.view = 'frog';
+    const sat = Number(arg);
+    if (Number.isSafeInteger(sat)) {
+      if (app.frogSat !== sat) app.frogRecord = null;
+      app.frogSat = sat;
+      app.view = 'frog';
+    } else {
+      app.view = 'wallet';
+    }
   } else if (['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings', 'rules'].includes(view)) {
     app.view = view;
+  } else {
+    // An empty or unknown hash is the base route. This matters on Back from
+    // a frog detail URL: leaving app.view at 'frog' would render stale data.
+    app.view = 'wallet';
   }
 }
 
-window.addEventListener('popstate', () => { parseHash(); render(); ensureViewData(app.view); });
+function handleLocationChange() {
+  if (!app.w || app.screen !== 'wallet') return;
+  if (location.hash === lastLocation) return;
+  lastLocation = location.hash;
+  const beforeView = app.view;
+  const beforeSat = app.frogSat;
+  parseHash();
+  if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
+  if (app.view !== beforeView || app.frogSat !== beforeSat) window.scrollTo(0, 0);
+  render();
+  ensureViewData(app.view);
+}
+
+// Both events fire for hash-changing history navigation. Deduplicate them
+// by the location we last handled, otherwise every Back/Forward does the
+// render and leaderboard/road fetch twice.
+window.addEventListener('popstate', handleLocationChange);
 
 // ---------------------------------------------------------------------------
 // drawer
@@ -343,11 +410,13 @@ async function run(label, fn) {
   }
 }
 
-async function openFrog(sat) {
-  app.frogSat = Number(sat);
-  let record = app.w.frogBySat(sat);
-  if (!record && app.w.backend) record = await app.w.backend.frogger(sat).catch(() => null);
-  app.frogRecord = record;
+function openFrog(sat) {
+  const n = Number(sat);
+  app.frogSat = n;
+  // Render the owned record immediately; ensureViewData('frog') fetches a
+  // public record. The old await here could navigate after the user had
+  // already moved somewhere else.
+  app.frogRecord = app.w.frogBySat(n) || null;
   navigate('frog');
 }
 
@@ -355,7 +424,11 @@ const handlers = {
   nav(el) { navigate(el.dataset.view); },
   drawer() { openDrawer(); },
   'drawer-close'() { closeDrawer(); },
-  back() { if (history.length > 1) history.back(); else navigate('pond'); },
+  back() {
+    // A direct link has no HOPPER history to go back to; stay in the app.
+    if (history.state && history.state.hopper) history.back();
+    else navigate('pond');
+  },
 
   'ob-create'() {
     app.ob = { ...app.ob, step: 'words', mode: 'create', mnemonic: newMnemonic(12), error: '' };
@@ -392,8 +465,14 @@ const handlers = {
   },
   'use-another'() {
     if (!confirm('Replace the vault on this device? The current 12 words are the only way back.')) return;
+    sound.stopLoop();
     destroyVault();
     app.w = null;
+    app.view = 'wallet';
+    app.frogSat = null;
+    app.frogRecord = null;
+    app.leaders = [];
+    app.road = [];
     app.screen = 'onboard';
     app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false };
     app.lockError = '';
@@ -410,7 +489,18 @@ const handlers = {
         mnemonic: o.mnemonic, password: o.password, network: o.network,
         fingerprint: wallet.fingerprint, remember: !!o.remember,
       });
-      await startSession(data);
+      try {
+        await startSession(data);
+      } catch (e) {
+        // The vault exists, but the session did not start (for example a
+        // configured live backend is down). Leave a usable lock screen
+        // rather than a wallet shell with no backend.
+        app.w = null;
+        app.screen = 'lock';
+        app.lockError = e.message;
+        sound.stopLoop();
+        throw e;
+      }
       toast('Vault sealed. Welcome to the pond.', 'ok');
     });
   },
@@ -423,17 +513,26 @@ const handlers = {
         await startSession(data);
         toast('Unlocked', 'ok');
       } catch (e) {
+        app.w = null;
+        app.leaders = [];
+        app.road = [];
+        app.frogRecord = null;
         app.lockError = e.message;
         app.screen = 'lock';
+        sound.stopLoop();
         throw e;
       }
     });
   },
   lock() {
     run('locking', async () => {
+      await lockVault();
+      sound.stopLoop();
       app.w = null;
       app.remember = false;
-      await lockVault();
+      app.leaders = [];
+      app.road = [];
+      app.frogRecord = null;
       app.screen = 'lock';
       app.lockError = '';
       navigate('wallet', { push: false });
@@ -442,6 +541,7 @@ const handlers = {
   wipe() {
     if (!confirm('Wipe this device? The 12 words are the only way back.')) return;
     run('wiping', async () => {
+      sound.stopLoop();
       // Wipe every HOPPER key, not just the current ledger: settings,
       // address book, demo chain and ledger are all user data.
       for (const key of Object.keys(localStorage)) {
@@ -450,6 +550,11 @@ const handlers = {
       destroyVault();
       if (globalThis.indexedDB) indexedDB.deleteDatabase('hopper');
       app.w = null;
+      app.view = 'wallet';
+      app.frogSat = null;
+      app.frogRecord = null;
+      app.leaders = [];
+      app.road = [];
       app.screen = 'onboard';
       app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false };
       app.settings = loadSettings();
@@ -493,7 +598,6 @@ const handlers = {
         toast(`${f.name || 'frog'}: ${String(f.state).toUpperCase()}`, f.state === 'home' ? 'ok' : 'err');
         sound.sfx(f.state === 'home' ? 'win' : 'error');
       }
-      app.road = await app.w.road();
       toast(`Mined ${n} block${n === 1 ? '' : 's'}`, 'ok');
       await ensureViewData(app.view);
     });
@@ -507,7 +611,10 @@ const handlers = {
   },
   mint() {
     run('inscribing the frog (commit + reveal)', async () => {
-      const seed = hexSeed(app.mintSeedText);
+      // An empty seed means "roll a random seed" in the input handler. Reuse
+      // the seed that was drawn for the preview instead of rolling a second
+      // one at mint time.
+      const seed = app.mintSeedText.trim() ? hexSeed(app.mintSeedText) : (app.mintSeed >>> 0);
       const name = app.mintName.slice(0, 38);
       const built = await app.w.mint({ seed, name });
       sound.sfx('mint');
@@ -521,7 +628,7 @@ const handlers = {
     run('preparing custody', async () => {
       await app.w.prepare(f);
       toast('Frog is in custody (25,000-sat card)', 'ok');
-      await openFrog(f.sat);
+      openFrog(f.sat);
     });
   },
   'do-cross'(el) {
@@ -577,16 +684,34 @@ const handlers = {
   'apply-backend'() {
     run('connecting', async () => {
       const q = (k) => document.querySelector(`[data-input=${k}]`)?.value;
-      app.w.settings.mode = q('mode') || 'demo';
-      app.w.settings.esploraUrl = q('esploraUrl') || '';
-      app.w.settings.indexerUrl = q('indexerUrl') || '';
-      app.w.settings.electrumUrl = q('electrumUrl') || '';
-      saveSettings(app.w.settings);
-      app.settings = app.w.settings;
-      await app.w.connect();
-      await app.w.refresh();
-      toast(`Connected in ${app.w.settings.mode} mode`, 'ok');
-      navigate(app.view);
+      const previous = { ...app.w.settings };
+      const next = {
+        ...previous,
+        mode: q('mode') || 'demo',
+        esploraUrl: q('esploraUrl') || '',
+        indexerUrl: q('indexerUrl') || '',
+        electrumUrl: q('electrumUrl') || '',
+      };
+      try {
+        app.w.settings = next;
+        app.settings = next;
+        await app.w.connect();
+        // refresh() tolerates a missing chain (views degrade gracefully);
+        // APPLY should not. Probe the tip before adopting the new backend.
+        await app.w.backend.tipHeight();
+        await app.w.refresh();
+        saveSettings(app.w.settings);
+        toast(`Connected in ${app.w.settings.mode} mode`, 'ok');
+        navigate(app.view);
+      } catch (e) {
+        // APPLY used to save a half-applied mode/URL first, leaving the UI
+        // claiming "live" while the old backend was still in use. Restore
+        // both the backend and the settings on any connection failure.
+        app.w.settings = previous;
+        app.settings = previous;
+        try { await app.w.connect(); } catch { /* keep the old backend if possible */ }
+        throw e;
+      }
     });
   },
   'test-backend'() {
@@ -672,10 +797,13 @@ document.addEventListener('input', (ev) => {
   } else if (key === 'lock-remember') {
     app.remember = !!ev.target.checked;
   } else if (key === 'volume' && app.w) {
-    app.w.settings.volume = Number(value);
-    app.settings.volume = Number(value);
-    sound.setVolume(Number(value));
-    saveSettings(app.w.settings);
+    // Update the live gain while dragging; persist once on `change` so a
+    // range drag does not synchronously rewrite localStorage sixty times.
+    const volume = Math.max(0, Math.min(1, Number(value)));
+    if (!Number.isFinite(volume)) return;
+    app.w.settings.volume = volume;
+    app.settings.volume = volume;
+    sound.setVolume(volume);
   }
 });
 
@@ -684,11 +812,17 @@ document.addEventListener('change', (ev) => {
   if (!key || !app.w) return;
   const value = ev.target.value;
   if (key === 'fee-rate' || key === 'feeRate') {
-    app.w.settings.feeRate = Math.max(1, Number(value));
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) { ev.target.value = app.w.settings.feeRate; return; }
+    app.w.settings.feeRate = Math.max(1, Math.min(1000, raw));
     app.settings.feeRate = app.w.settings.feeRate;
+    ev.target.value = app.w.settings.feeRate;
     saveSettings(app.w.settings);
   } else if (key === 'gap') {
-    app.w.settings.gap = Math.max(5, Math.min(50, Number(value)));
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) { ev.target.value = app.w.settings.gap; return; }
+    app.w.settings.gap = Math.max(5, Math.min(50, Math.trunc(raw)));
+    ev.target.value = app.w.settings.gap;
     saveSettings(app.w.settings);
   } else if (key === 'deepScan') {
     app.w.settings.deepScan = value === '1';
@@ -700,10 +834,13 @@ document.addEventListener('change', (ev) => {
     saveSettings(app.w.settings);
     render();
   } else if (key === 'volume') {
-    app.w.settings.volume = Number(value);
-    app.settings.volume = Number(value);
-    sound.setVolume(Number(value));
+    const volume = Math.max(0, Math.min(1, Number(value)));
+    if (!Number.isFinite(volume)) return;
+    app.w.settings.volume = volume;
+    app.settings.volume = volume;
+    sound.setVolume(volume);
     saveSettings(app.w.settings);
+    render();
   } else if (['esploraUrl', 'indexerUrl', 'electrumUrl', 'mode'].includes(key)) {
     // Applied explicitly by APPLY so a half-typed URL never disconnects.
   } else if (key === 'mint-seed') {
@@ -757,12 +894,7 @@ window.addEventListener('storage', (ev) => {
 
 // ---------------------------------------------------------------------------
 
-window.addEventListener('hashchange', () => {
-  if (!app.w) return;
-  parseHash();
-  render();
-  ensureViewData(app.view);
-});
+window.addEventListener('hashchange', handleLocationChange);
 
 boot().catch((e) => {
   console.error(e);
