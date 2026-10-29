@@ -243,7 +243,8 @@ export class ElectrumClient {
     const sh = this.scripthash(script);
     const list = await this.call('blockchain.scripthash.listunspent', [sh]);
     return list.map((u) => ({
-      txid: u.tx_hash, vout: u.tx_pos, value: Number(u.value), status: { height: u.height },
+      txid: u.tx_hash, vout: u.tx_pos, value: Number(u.value),
+      status: { height: u.height, confirmed: Number(u.height) > 0 },
     }));
   }
 

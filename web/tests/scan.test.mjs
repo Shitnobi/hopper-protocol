@@ -16,6 +16,7 @@ globalThis.localStorage = {
 const {
   GAP_LIMIT, DEFAULT_SETTINGS, WalletSession, loadSettings,
   buildWatchPlan, shouldSkipChange, failureBackoffMs, isPublicEndpoint,
+  isUnconfirmedUtxo,
 } = await import('../js/wallet/wallet.js');
 
 let checks = 0;
@@ -39,6 +40,14 @@ eq('rescan never skips change', shouldSkipChange(true, false, 0, 0), false);
 eq('a used receive address keeps change in scope', shouldSkipChange(false, true, 0, 0), false);
 eq('a rotated receive address keeps change in scope', shouldSkipChange(false, false, 1, 0), false);
 eq('a restored balance keeps change in scope', shouldSkipChange(false, false, 0, 1), false);
+
+// --- mempool classification ----------------------------------------------
+eq('Esplora mempool output', isUnconfirmedUtxo({ status: { confirmed: false } }), true);
+eq('Electrum mempool output', isUnconfirmedUtxo({ status: { height: 0, confirmed: false } }), true);
+eq('Electrum unconfirmed-parent sentinel', isUnconfirmedUtxo({ status: { height: -1, confirmed: false } }), true);
+eq('confirmed Esplora output', isUnconfirmedUtxo({ status: { confirmed: true } }), false);
+eq('confirmed Electrum output', isUnconfirmedUtxo({ status: { height: 812345 } }), false);
+eq('missing status is not guessed', isUnconfirmedUtxo({}), false);
 
 // --- source policy --------------------------------------------------------
 eq('localhost is free', isPublicEndpoint('http://127.0.0.1:3002'), false);
@@ -125,6 +134,45 @@ eq('extend persists the extension', savedSettings.gapExtra, 5);
 const savedLedger = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
 eq('the gate tip persists with the ledger', savedLedger.fullScanTip, 101);
 eq('the warm plan state persists with the ledger', savedLedger.hot, []);
+
+// --- unconfirmed outputs from the same address answers --------------------
+// An unconfirmed output arrives in the UTXO list we already request. It must
+// be shown and counted without a second address/history call.
+const receive0 = wallet.keys.receive(0);
+const memTxid = 'ab'.repeat(32);
+fake.tip = 102;
+const beforeMempool = { h: fake.historyCalls, u: fake.utxoCalls };
+let mempoolAddressCalls = 0;
+fake.addressUtxos = async (address) => {
+  mempoolAddressCalls += 1;
+  return address === receive0.address
+    ? [{ txid: memTxid, vout: 1, value: 1234, status: { confirmed: false } }]
+    : [];
+};
+await wallet.refresh({ force: false });
+eq('mempool output adds only the normal warm plan', mempoolAddressCalls, 5);
+eq('mempool output adds no gap/history walk', fake.historyCalls, beforeMempool.h);
+eq('mempool output is tracked', wallet.mempool.length, 1);
+eq('mempool output keeps its txid', wallet.mempool[0].txid, memTxid);
+eq('mempool output keeps its amount', wallet.mempool[0].amount, 1234);
+eq('mempool output is flagged on the coin', wallet.utxos[0].unconfirmed, true);
+eq('mempool total is in the balance summary', String(wallet.balance.pending), '1234');
+const savedMempool = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
+eq('mempool rows persist with the ledger', savedMempool.mempool[0].txid, memTxid);
+eq('the pending total persists with the ledger', savedMempool.balance.pending, '1234');
+
+const afterMempool = mempoolAddressCalls;
+await wallet.refresh({ force: false });
+eq('an unchanged tip does not re-ask addresses for mempool rows', mempoolAddressCalls, afterMempool);
+eq('the known mempool row survives the tip gate', wallet.mempool.length, 1);
+
+const { history: historyHtml } = await import('../js/ui/screens.js');
+const html = historyHtml({
+  w: { history: [], actions: [], mempool: wallet.mempool, frogBySat: () => null },
+});
+eq('history renders the mempool label', /IN MEMPOOL/.test(html), true);
+eq('history marks the row transparent', /class="card-row mempool"/.test(html), true);
+eq('history shows the incoming amount', /\+1,234 sats/.test(html), true);
 
 // --- in-flight cadence ----------------------------------------------------
 wallet.publicSource = true;

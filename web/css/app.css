@@ -234,6 +234,12 @@ p { margin: .45em 0; }
   color: var(--car);
   font-size: 11px;
 }
+.notice-bar.mempool-bar {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+  opacity: .82;
+}
 .refusal { color: var(--danger); font-size: 11px; margin-top: 4px; }
 
 /* --------------------------------- pond --------------------------------- */
@@ -403,6 +409,16 @@ p { margin: .45em 0; }
   border: 2px solid var(--bg);
   padding: 12px;
   margin-bottom: 6px;
+}
+.card-row.mempool {
+  opacity: .62;
+  border-style: dashed;
+  background: transparent;
+}
+.card-row.mempool:hover { opacity: .82; }
+.tx-icon .coin.mempool-coin {
+  background: transparent;
+  border: 2px dashed var(--tx-in);
 }
 .tx-row { display: flex; gap: 8px; align-items: flex-start; }
 .tx-icon { flex: 0 0 32px; display: grid; place-items: center; padding-top: 2px; }

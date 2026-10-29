@@ -179,6 +179,9 @@ export function wallet(app) {
       <div class="meta">= ${btc(spendable)} BTC · ${esc(w.network)}</div>
     </div>
 
+    ${Number(b.pending) > 0 ? `
+      <div class="notice-bar mempool-bar">◌ ${sats(b.pending)} sats in mempool — waiting for confirmation.</div>` : ''}
+
     ${Number(b.unspendable) > 0 ? `
       <div class="notice-bar">⚠ ${sats(b.unspendable)} sats of this balance have no known sat ranges yet — they are counted here but cannot be spent until an ord server (or an indexer) names their sats.</div>` : ''}
 
@@ -394,7 +397,7 @@ export function history(app) {
   const rows = historyRows(app.w).slice(0, 80);
   return `
     ${heading('📜 History')}
-    <div class="sub">Every wallet transaction — sends, receives, mints and road actions. Newest first.</div>
+    <div class="sub">Every wallet transaction — sends, receives, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => txRow(app, r)).join('') : '<div class="sub">No transactions yet — they appear here as you use the wallet.</div>'}
     </div>`;
@@ -430,6 +433,19 @@ function historyRows(w) {
       outcome: null,
     });
   }
+  // Unconfirmed outputs were already in the address answers; no extra
+  // request is made to show them. A txid already represented by a local
+  // action or an indexer event is not repeated here.
+  const shownTx = new Set(rows.map((r) => r.txid).filter(Boolean));
+  for (const m of w.mempool || []) {
+    if (!m?.txid || shownTx.has(m.txid)) continue;
+    shownTx.add(m.txid);
+    rows.push({
+      kind: 'receive', height: null, txid: m.txid, sat: null, seed: undefined,
+      name: undefined, amount: m.amount, address: m.address, at: m.at ?? null,
+      chain: true, mempool: true, outcome: null,
+    });
+  }
   const seen = new Set();
   return rows
     .filter((r) => {
@@ -439,6 +455,9 @@ function historyRows(w) {
       return true;
     })
     .sort((a, b) => {
+      const ap = a.mempool ? 1 : 0;
+      const bp = b.mempool ? 1 : 0;
+      if (ap !== bp) return bp - ap;
       const ah = a.height ?? -1;
       const bh = b.height ?? -1;
       if (ah !== bh) return bh - ah;
@@ -458,7 +477,9 @@ function txRow(app, r) {
   const seed = r.seed ?? f?.seed;
   const name = r.name || f?.name;
   let icon;
-  if (r.kind === 'send' || r.kind === 'transfer') {
+  if (r.mempool) {
+    icon = '<span class="coin in mempool-coin"></span>';
+  } else if (r.kind === 'send' || r.kind === 'transfer') {
     icon = '<span class="coin out"></span>';
   } else if (r.kind === 'burn') {
     icon = '<span class="coin out"></span>';
@@ -476,6 +497,7 @@ function txRow(app, r) {
   }
 
   const detail = [];
+  if (r.mempool && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
   if (r.to) detail.push(`to ${truncTxid(r.to)}`);
@@ -492,12 +514,14 @@ function txRow(app, r) {
     amount = '<span class="tx-amt dim">amount unknown</span>';
   }
 
-  const state = r.height != null
-    ? `<span class="tiny muted">⬛ ${sats(r.height)}</span>`
-    : chip(r.at ? 'PENDING' : 'PENDING', 'accent');
+  const state = r.mempool
+    ? chip('IN MEMPOOL', 'accent')
+    : r.height != null
+      ? `<span class="tiny muted">⬛ ${sats(r.height)}</span>`
+      : chip('PENDING', 'accent');
 
   return `
-    <div class="card-row" ${r.sat != null ? `data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer"` : ''}>
+    <div class="card-row${r.mempool ? ' mempool' : ''}" ${r.sat != null ? `data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer"` : ''}>
       <div class="tx-row">
         <div class="tx-icon">${icon}</div>
         <div class="tx-main">

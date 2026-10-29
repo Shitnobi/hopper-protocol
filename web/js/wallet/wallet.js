@@ -114,6 +114,17 @@ export function shouldSkipChange(rescanning, receiveFound, receiveFloor, spendab
   return !rescanning && !receiveFound && !receiveFloor && !spendable;
 }
 
+/** An address query already tells us whether its outputs are settled.
+ *  Esplora sends `status.confirmed`; Electrum sends height 0 for mempool.
+ *  Do not make a second request just to classify a coin. */
+export function isUnconfirmedUtxo(u) {
+  const st = u?.status || {};
+  if (st.confirmed === true) return false;
+  if (st.confirmed === false) return true;
+  return (st.height != null && Number(st.height) === 0)
+    || (st.block_height != null && Number(st.block_height) === 0);
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Bound the number of chain requests in flight. Sequential scans used to
@@ -199,6 +210,7 @@ export class WalletSession {
     this.frogs = [];
     this.history = [];
     this.actions = [];
+    this.mempool = [];
     this.pending = [];
     this.imported = new Set();
     this.tipHeight = null;
@@ -206,7 +218,7 @@ export class WalletSession {
     this.receiveIndex = 0;
     this.receiveFloor = 0;
     this.receiveHistory = [];
-    this.balance = { total: 0n, spendable: 0n, cards: 0n, unspendable: 0n };
+    this.balance = { total: 0n, spendable: 0n, cards: 0n, unspendable: 0n, pending: 0n };
     // Scan state, persisted where it matters and rebuilt by the next cold
     // pass where it does not. `fullScanTip` is the FROGGER tip gate.
     this.used = {};
@@ -245,6 +257,10 @@ export class WalletSession {
     this.actions = l.actions || [];
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.history = l.history || [];
+    this.mempool = Array.isArray(l.mempool)
+      ? l.mempool.filter((m) => m && m.txid && Number.isSafeInteger(m.amount) && m.amount > 0)
+        .slice(-50)
+      : [];
     this.imported = new Set(l.imported || []);
     this.used = l.used || {};
     this.lastUsed = l.lastUsed && typeof l.lastUsed === 'object' ? l.lastUsed : {};
@@ -266,6 +282,7 @@ export class WalletSession {
       this.balance = {
         total: big(l.balance.total), spendable: big(l.balance.spendable),
         cards: big(l.balance.cards), unspendable: big(l.balance.unspendable),
+        pending: big(l.balance.pending),
       };
     }
   }
@@ -276,6 +293,7 @@ export class WalletSession {
       actions: this.actions.slice(-300),
       pending: this.pending.slice(-24),
       history: this.history.slice(-200),
+      mempool: this.mempool.slice(-50),
       imported: [...this.imported],
       used: this.used || {},
       lastUsed: this.lastUsed || {},
@@ -287,6 +305,7 @@ export class WalletSession {
       balance: {
         total: String(this.balance.total), spendable: String(this.balance.spendable),
         cards: String(this.balance.cards), unspendable: String(this.balance.unspendable),
+        pending: String(this.balance.pending || 0n),
       },
       lastRefresh: new Date().toISOString(),
       tipHeight: this.tipHeight,
@@ -566,6 +585,7 @@ export class WalletSession {
     this._txCache.clear();
     const previousUtxos = this.utxos.slice();
     const previousFrogs = this.frogs.slice();
+    const previousMempool = this.mempool.slice();
     const previousBalance = this.balance;
     const previousHot = (this.hot || []).slice();
     const used = { ...(this.used || {}) };
@@ -657,6 +677,8 @@ export class WalletSession {
     entries.push(this._entry('ord'));
 
     const utxos = [];
+    const mempoolByTx = new Map();
+    const queriedOk = new Set();
     let hotNow = [];
     let watchFailed = null;
     const prevByAddress = new Map();
@@ -673,6 +695,7 @@ export class WalletSession {
       try {
         list = await this.backend.addressUtxos(w.address, w.script);
         if (!Array.isArray(list)) list = [];
+        queriedOk.add(w.address);
       } catch (e) {
         watchFailed = e.message || String(e);
         list = prevByAddress.get(w.address) || [];
@@ -681,6 +704,20 @@ export class WalletSession {
       }
       const dtos = await mapLimit(list, 2, async (u) => {
         try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
+      });
+      // The UTXO answer already carries mempool status. Aggregate outputs
+      // from one transaction into one history row; nothing here asks the
+      // backend anything new.
+      list.forEach((u) => {
+        if (!isUnconfirmedUtxo(u)) return;
+        const txid = String(u.txid || '');
+        if (!txid) return;
+        const row = mempoolByTx.get(txid) || {
+          txid, amount: 0, address: w.address, vout: Number(u.vout) || 0, at: null,
+        };
+        row.amount += Number(u.value) || 0;
+        if (!row.address) row.address = w.address;
+        mempoolByTx.set(txid, row);
       });
       list.forEach((u, i) => {
         const dto = dtos[i];
@@ -694,6 +731,7 @@ export class WalletSession {
         utxos.push({
           txid: u.txid, vout: u.vout, value: Number(u.value), script: u.script,
           address: w.address, kind, ranges, exact, frogs,
+          status: u.status || null, unconfirmed: isUnconfirmedUtxo(u),
           key, keyRef: { branch: w.branch, index: w.index },
           spendable: kind !== 'state' && exact && !frogs.length,
         });
@@ -725,8 +763,13 @@ export class WalletSession {
       const merged = new Map();
       for (const pair of [...previousHot, ...hotNow]) merged.set(`${pair[0]}:${pair[1]}`, pair);
       hotNow = [...merged.values()];
+      for (const row of previousMempool) {
+        if (!row?.txid || queriedOk.has(row.address)) continue;
+        if (!mempoolByTx.has(row.txid)) mempoolByTx.set(row.txid, { ...row });
+      }
     }
     this.hot = hotNow;
+    this.mempool = [...mempoolByTx.values()].sort((a, b) => b.amount - a.amount);
     if (readFailed) notes.push(`gap walk stopped: ${readFailed}`);
     if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
     if (cancelled) notes.push(`scan stopped by user after ${asked} addresses`);
@@ -961,13 +1004,15 @@ export class WalletSession {
     let spendable = 0n;
     let cards = 0n;
     let unspendable = 0n;
+    let pending = 0n;
     for (const u of this.utxos) {
       total += BigInt(u.value);
+      if (u.unconfirmed) pending += BigInt(u.value);
       if (!u.exact || !u.ranges) unspendable += BigInt(u.value);
       else if (u.kind === 'p2wpkh' && !u.frogs.length) spendable += BigInt(u.value);
       else cards += BigInt(u.value);
     }
-    this.balance = { total, spendable, cards, unspendable };
+    this.balance = { total, spendable, cards, unspendable, pending };
   }
 
   summary() {
@@ -981,6 +1026,7 @@ export class WalletSession {
       frogs: this.frogs,
       history: this.history,
       actions: this.actions,
+      mempool: this.mempool,
       keys: this.keys,
       ord: this.ord,
       settings: this.settings,

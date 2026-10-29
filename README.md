@@ -242,10 +242,13 @@ curl -sN localhost:9770/v1/events/stream
   cadence only while one of our transactions is confirming; failures back
   off 5→300 s. RESCAN takes two taps, walks the gap slowly (400 ms
   per wave on a public source), reports progress and can be stopped;
-  EXTEND grows the persisted window by 20. A frog is owned when its sat is
-  in a coin whose script this wallet can spend; the indexer is never
-  trusted for ownership. Live deep scan is **off by default**; demo mode
-  always scans so the simulator has something to show.
+  EXTEND grows the persisted window by 20. An address answer already says
+  whether an output is confirmed; mempool outputs are kept as faded History
+  rows labelled IN MEMPOOL and counted in the wallet's pending total — no
+  extra request is made to find them. A frog is owned when its sat is in a
+  coin whose script this wallet can spend; the indexer is never trusted for
+  ownership. Live deep scan is **off by default**; demo mode always scans so
+  the simulator has something to show.
 - **Demo vs live**: `DemoBackend` implements the same interface as
   `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
   Live mode requires a secure context for WebCrypto; Electrum needs a
@@ -257,7 +260,7 @@ curl -sN localhost:9770/v1/events/stream
 cd web
 node tests/core.test.mjs        # 64 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → cross → settle → transfer → burn
-node tests/scan.test.mjs        # ported FROGGER scan policy: cold/warm plan, tip gate, rescan
+node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 
