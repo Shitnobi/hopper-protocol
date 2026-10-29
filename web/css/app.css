@@ -5,6 +5,14 @@
    text everywhere, wooden log buttons and lily-pad window borders.
    ========================================================================== */
 
+@font-face {
+  font-family: "Pixelify Sans";
+  src: url("../fonts/pixelify-sans-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #18241a;          /* BG      */
   --card: #223226;        /* CARD    */
@@ -27,6 +35,7 @@
   --tx-in: #5abe6e;
   --line: #3a4f3a;
   --mono: "Courier New", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --pixel: "Pixelify Sans", "Courier New", "DejaVu Sans Mono", monospace;
   --topbar-h: 72px;
   --column: 640px;
   --page: 16px;
@@ -735,6 +744,8 @@ textarea { resize: vertical; min-height: 84px; }
   z-index: 80;
   background: var(--bg);
   overflow-y: auto;
+  font-family: var(--pixel);
+  font-synthesis: none;
 }
 .rules-inner {
   width: min(var(--column), 100%);
@@ -744,26 +755,27 @@ textarea { resize: vertical; min-height: 84px; }
   display: flex;
   flex-direction: column;
 }
-.rules-kicker { color: var(--muted); font-size: 11px; }
-.rules-page-kicker { color: var(--accent); font-size: 11px; margin-top: 4px; }
-.rules-title { font-size: 22px; font-weight: 700; color: var(--ink); }
+.rules-kicker { color: var(--muted); font-size: 14px; letter-spacing: .04em; }
+.rules-page-kicker { color: var(--accent); font-size: 14px; margin-top: 4px; letter-spacing: .04em; }
+.rules-title { font-size: clamp(24px, 4vw, 30px); font-weight: 700; color: var(--ink); line-height: 1.2; letter-spacing: .02em; }
 .rules-art { height: clamp(84px, 20vh, 190px); margin: 8px 0 4px; }
 .rules-art canvas { display: block; width: 100%; height: 100%; }
 .rules-card {
   background: var(--card);
   border: 1px solid rgba(240,200,60,.35);
   border-radius: 12px;
-  padding: 14px;
-  font-size: 12px;
-  line-height: 1.55;
+  padding: 16px;
+  font-size: clamp(17px, 2.3vw, 19px);
+  line-height: 1.5;
   flex: 1 1 auto;
 }
-.rules-card p { margin: 0 0 8px; }
+.rules-card p { margin: 0 0 10px; }
 .rules-card p:last-child { margin-bottom: 0; }
 .rules-dots { display: flex; justify-content: center; gap: 14px; margin: 8px 0 4px; }
 .rules-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: block; }
 .rules-dots i.on { background: var(--accent); }
 .rules-controls { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.rules-screen .check { font-family: var(--pixel); font-size: 15px; }
 
 /* --------------------------------- intro -------------------------------- */
 

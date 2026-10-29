@@ -230,6 +230,20 @@ await sleep(200);
 await evaluate(`document.querySelector('[data-action=open-rules]').click()`);
 await waitFor('document.querySelector(".rules-screen")', 5000, 'rules walkthrough');
 {
+  await evaluate('document.fonts.ready.then(() => true)');
+  const rf = await evaluate(`(() => {
+    const card = document.querySelector('.rules-card');
+    const cs = getComputedStyle(card);
+    return {
+      family: cs.fontFamily,
+      size: parseFloat(cs.fontSize),
+      loaded: document.fonts.check('17px "Pixelify Sans"'),
+    };
+  })()`);
+  console.log('rules font:', rf);
+  if (!rf.loaded || !/Pixelify Sans/.test(rf.family) || rf.size < 16) {
+    errors.push(`rules font: ${JSON.stringify(rf)}`);
+  }
   const m = await evaluate(`({ iw: innerWidth, sw: document.documentElement.scrollWidth })`);
   if (m.sw > m.iw + 1) errors.push(`layout rules: width ${m.sw}/${m.iw}`);
 }

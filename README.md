@@ -47,6 +47,7 @@ rust/
   crates/hopper-indexer-api REST + SSE server, admin ingest, metrics
 web/
   index.html, manifest, sw.js, icons/
+  fonts/                   Pixelify Sans (SIL OFL) for the rules walkthrough
   css/app.css              mobile-first dark lily-pad UI
   js/core/                 hex, params, settles, envelopes, inscriptions,
                            v6 leaves, fold replay, art, PNG, mint document
