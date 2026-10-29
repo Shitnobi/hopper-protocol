@@ -1,10 +1,12 @@
 // HOPPER PWA — boot, vault, routing, and event handling.
 
 import {
-  busy, closeOverlay, copyText, esc, frogImg, openOverlay, seedText,
+  busy, closeOverlay, copyText, esc, openOverlay, seedText,
   shortHash, sats, spriteUri, toast,
 } from './ui/dom.js';
 import * as screens from './ui/screens.js';
+import { decorate, frogMarkSvg } from './ui/theme.js';
+import { paintRulesArt, playIntro } from './ui/tour.js';
 import { Sound } from './sound.js';
 import {
   DEFAULT_SETTINGS, WalletSession, loadSettings, saveSettings,
@@ -34,6 +36,13 @@ const app = {
   frogLogo: spriteUri(0x9058d0fa, 'idle'),
   previewUri: '',
   screen: 'boot',
+  menuOpen: false,
+  intro: false,
+  rulesWalk: null,
+  frogRefusal: null,
+  navChosen: false,
+  seenFirstFrog: false,
+  booted: false,
 };
 
 // The mint seed is wallet-local randomness, not a user choice. Rotate it
@@ -79,30 +88,94 @@ function viewHtml() {
     case 'leaders': return screens.leaders(app);
     case 'history': return screens.history(app);
     case 'settings': return screens.settings(app);
-    case 'rules': return screens.rules(app);
+    case 'rules': return screens.rulesPage(app);
+    case 'bio': return screens.bio(app, app.frogSat);
     case 'frog': return screens.frogDetail(app, app.frogSat);
     default: return screens.wallet(app);
   }
 }
 
+/** FROGGER's landing rule: the WALLET page until the wallet's first
+ *  frog is detected; once a frog exists, THE POND is always first. */
+function applyLanding() {
+  if (!app.w || app.rulesWalk || app.intro) return;
+  if (app.seenFirstFrog) return;
+  if (app.w.frogs.length) {
+    app.seenFirstFrog = true;
+    if (!app.navChosen && app.view === 'wallet') app.view = 'pond';
+  } else if (!app.navChosen && app.w.tipHeight != null && app.view === 'pond') {
+    app.view = 'wallet';
+  }
+}
+
+let rulesRaf = 0;
+function startRulesLoop() {
+  cancelAnimationFrame(rulesRaf);
+  const tick = () => {
+    if (!app.rulesWalk) { rulesRaf = 0; return; }
+    const cv = document.querySelector('canvas[data-rule-art]');
+    if (cv) paintRulesArt(cv, cv.dataset.ruleArt, app.rulesWalk.page, performance.now() / 1000);
+    rulesRaf = requestAnimationFrame(tick);
+  };
+  rulesRaf = requestAnimationFrame(tick);
+}
+
+function mountVolume() {
+  const track = document.querySelector('[data-volume-track]');
+  if (!track || !app.w) return;
+  const fill = track.querySelector('[data-volume-fill]');
+  const thumb = track.querySelector('[data-volume-thumb]');
+  const pctEl = document.querySelector('[data-volume-pct]');
+  const set = (clientX) => {
+    const r = track.getBoundingClientRect();
+    const v = Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+    app.w.settings.volume = v;
+    app.settings.volume = v;
+    sound.setVolume(v);
+    const pct = Math.round(v * 100);
+    if (fill) fill.style.width = `${pct}%`;
+    if (thumb) thumb.style.left = `calc(${pct}% - 3px)`;
+    if (pctEl) pctEl.textContent = `${pct}%`;
+  };
+  track.onpointerdown = (ev) => {
+    track.setPointerCapture(ev.pointerId);
+    set(ev.clientX);
+    track.onpointermove = (move) => set(move.clientX);
+  };
+  track.onpointerup = () => {
+    track.onpointermove = null;
+    if (app.w) saveSettings(app.w.settings);
+  };
+  track.onpointercancel = () => { track.onpointermove = null; };
+}
+
 function render() {
   const root = document.getElementById('app');
   if (!root) return;
+  applyLanding();
   if (app.screen === 'onboard') root.innerHTML = onboarding();
   else if (app.screen === 'lock') root.innerHTML = lockScreen();
+  else if (app.rulesWalk) root.innerHTML = screens.rulesPage(app);
   else if (app.w) root.innerHTML = screens.topbar(app) + viewHtml();
   else root.innerHTML = '';
 
   const drawer = document.getElementById('drawer');
-  if (drawer) drawer.innerHTML = app.w ? screens.drawer(app) : '';
-  const tabbar = document.getElementById('tabbar');
-  if (tabbar) {
-    tabbar.hidden = !app.w;
-    tabbar.innerHTML = app.w ? screens.tabbar(app) : '';
+  if (drawer) {
+    drawer.innerHTML = app.w && !app.rulesWalk ? screens.drawer(app) : '';
+    if (app.w && !app.rulesWalk) drawer.dataset.lily = 'accent';
+    else delete drawer.dataset.lily;
+    drawer.classList.toggle('open', !!app.menuOpen && !app.rulesWalk);
   }
+  const backdrop = document.getElementById('drawer-backdrop');
+  if (backdrop) backdrop.classList.toggle('open', !!app.menuOpen && !app.rulesWalk);
+  const tabbar = document.getElementById('tabbar');
+  if (tabbar) { tabbar.hidden = true; tabbar.innerHTML = ''; }
   const b = document.getElementById('busy');
   if (b) b.hidden = !app.busy;
+  decorate(document);
+  mountVolume();
   updateMintPreview();
+  if (app.rulesWalk) startRulesLoop();
 }
 
 function setBusy(on, text = 'working…') {
@@ -128,24 +201,34 @@ function updateMintPreview() {
 // onboarding / lock
 // ---------------------------------------------------------------------------
 
+function logoMark(tag = 'THE POND ON BITCOIN') {
+  return `<div class="logo">${frogMarkSvg(96)}<span class="word">HOPPER</span><span class="tag">${esc(tag)}</span></div>`;
+}
+
+function button(label, action, edge = 'dim', cls = '', attrs = '') {
+  return `<button class="btn ${cls}" data-action="${action}" data-edge="${edge}" ${attrs}>${label}</button>`;
+}
+
 function onboarding() {
   const o = app.ob;
-  const logo = `<div class="logo"><img src="${app.frogLogo}" alt=""><span class="word">HOPPER</span><span class="tag">THE POND ON BITCOIN</span></div>`;
+  const logo = logoMark();
   if (o.step === 'welcome') {
     return `<div class="onboard"><div class="stage" style="text-align:center">
       ${logo}
-      <div class="panel lily" style="text-align:left">
-        <h2>NO SERVER ON THE ART'S TRUST PATH</h2>
-        <p class="muted">A Hopper is a satoshi whose life is a sequence of Bitcoin transactions. The wallet signs; the chain decides. Twelve words are the only backup.</p>
-        <div class="panel bark" style="padding:12px;margin-top:12px">
-          <div class="kv"><dt>Wire</dt><dd>v6 · 0x06</dd><dt>Cards</dt><dd>25,000 sats</dd><dt>Finality</dt><dd>6 blocks</dd></div>
+      <div class="window" data-lily="accent" style="text-align:left">
+        <div style="font-weight:700;font-size:17px">NO SERVER ON THE ART'S TRUST PATH</div>
+        <p class="muted small">A Hopper is a satoshi whose life is a sequence of Bitcoin transactions. The wallet signs; the chain decides. Twelve words are the only backup.</p>
+        <div class="stat-grid mt10">
+          <dt>Wire</dt><dd>v6 · 0x06</dd>
+          <dt>Cards</dt><dd>25,000 sats</dd>
+          <dt>Finality</dt><dd>6 blocks</dd>
         </div>
-        <div class="actions" style="margin-top:14px">
-          <button class="btn primary" data-action="ob-create">CREATE A WALLET</button>
-          <button class="btn" data-action="ob-import">IMPORT 12 WORDS</button>
+        <div class="actions mt14">
+          ${button('CREATE A WALLET', 'ob-create', 'accent')}
+          ${button('IMPORT 12 WORDS', 'ob-import', 'dim')}
         </div>
-        ${hasVault() ? '<button class="btn ghost wide small" style="margin-top:10px" data-action="ob-lock">I HAVE A VAULT — UNLOCK</button>' : ''}
-        <div class="hint" style="margin-top:10px">Demo mode runs against an in-browser chain. Switch to a live indexer in Settings at any time.</div>
+        ${hasVault() ? `<div class="mt10">${button('I HAVE A VAULT — UNLOCK', 'ob-lock', 'dim', 'small block')}</div>` : ''}
+        <div class="hint">Demo mode runs against an in-browser chain. Switch to a live indexer in Settings at any time.</div>
       </div>
       <div class="footer">HOPPER v6 · HOPPER-PROTOCOL</div>
     </div></div>`;
@@ -154,29 +237,29 @@ function onboarding() {
     const words = o.mnemonic.trim().split(/\s+/);
     return `<div class="onboard"><div class="stage">
       ${logo}
-      <div class="panel lily">
-        <div class="row"><h2>YOUR 12 WORDS</h2><div class="spacer"></div><span class="badge warn">ONLY BACKUP</span></div>
-        <div class="warnbox" style="margin-top:10px">Write these on paper. Anyone who reads them owns every frog at this address. Never a screenshot, never a chat.</div>
-        <div class="words" style="margin-top:12px">${words.map((w, i) => `<span><b>${i + 1}</b>${esc(w)}</span>`).join('')}</div>
-        <div class="actions" style="margin-top:12px">
-          <button class="btn ghost" data-action="copy" data-text="${esc(words.join(' '))}">COPY</button>
-          <button class="btn primary" data-action="ob-words-done">I WROTE THEM DOWN</button>
+      <div class="window" data-lily="accent">
+        <div class="row"><div style="font-weight:700;font-size:17px">YOUR 12 WORDS</div><div class="spacer"></div><span class="chip-ui accent">ONLY BACKUP</span></div>
+        <div class="warnbox mt10">Write these on paper. Anyone who reads them owns every frog at this address. Never a screenshot, never a chat.</div>
+        <div class="words mt10">${words.map((w, i) => `<span><b>${i + 1}</b>${esc(w)}</span>`).join('')}</div>
+        <div class="actions mt10">
+          ${button('COPY', 'copy', 'dim', '', `data-text="${esc(words.join(' '))}"`)}
+          ${button('I WROTE THEM DOWN', 'ob-words-done', 'accent')}
         </div>
-        <button class="btn ghost small" style="margin-top:8px" data-action="ob-back">BACK</button>
+        <div class="mt10">${button('BACK', 'ob-back', 'dim', 'small')}</div>
       </div>
     </div></div>`;
   }
   if (o.step === 'import') {
     return `<div class="onboard"><div class="stage">
       ${logo}
-      <div class="panel lily">
-        <h2>IMPORT A WALLET</h2>
+      <div class="window" data-lily="accent">
+        <div style="font-weight:700;font-size:17px">IMPORT A WALLET</div>
         <p class="muted small">Twelve lowercase words, separated by spaces.</p>
         <textarea data-input="ob-mnemonic" spellcheck="false" autocomplete="off" placeholder="deliver cat inch coyote …">${esc(o.mnemonic)}</textarea>
-        ${o.error ? `<div class="warnbox" style="margin-top:8px;border-color:var(--danger)">${esc(o.error)}</div>` : ''}
-        <div class="actions" style="margin-top:12px">
-          <button class="btn ghost" data-action="ob-back">BACK</button>
-          <button class="btn primary" data-action="ob-import-next">CONTINUE</button>
+        ${o.error ? `<div class="warnbox bad mt10">${esc(o.error)}</div>` : ''}
+        <div class="actions mt10">
+          ${button('BACK', 'ob-back', 'dim')}
+          ${button('CONTINUE', 'ob-import-next', 'accent')}
         </div>
       </div>
     </div></div>`;
@@ -185,8 +268,8 @@ function onboarding() {
   const networks = [['regtest', 'Regtest (local)'], ['testnet', 'Testnet'], ['signet', 'Signet'], ['mainnet', 'Mainnet']];
   return `<div class="onboard"><div class="stage">
     ${logo}
-    <div class="panel lily">
-      <h2>SEAL THE VAULT</h2>
+    <div class="window" data-lily="accent">
+      <div style="font-weight:700;font-size:17px">SEAL THE VAULT</div>
       <p class="muted small">AES-256-GCM under a non-extractable WebCrypto KEK. The password never leaves this device.</p>
       <label class="field"><span>Password (min 6)</span><input type="password" data-input="ob-password" value="${esc(o.password)}" autocomplete="new-password"></label>
       <label class="field"><span>Confirm</span><input type="password" data-input="ob-confirm" value="${esc(o.confirm)}" autocomplete="new-password"></label>
@@ -195,10 +278,10 @@ function onboarding() {
       </label>
       <label class="check"><input type="checkbox" data-input="ob-remember" ${o.remember ? 'checked' : ''}> <span>Keep this device unlocked</span></label>
       <div class="hint">Coin type: mainnet 0, everything else 1. No password is stored; the KEK stays in this browser only if you ask. The 12 words are the only recovery.</div>
-      ${o.error ? `<div class="warnbox" style="margin-top:8px;border-color:var(--danger)">${esc(o.error)}</div>` : ''}
-      <div class="actions" style="margin-top:12px">
-        <button class="btn ghost" data-action="ob-back">BACK</button>
-        <button class="btn primary" data-action="ob-finish">OPEN THE POND</button>
+      ${o.error ? `<div class="warnbox bad mt10">${esc(o.error)}</div>` : ''}
+      <div class="actions mt10">
+        ${button('BACK', 'ob-back', 'dim')}
+        ${button('OPEN THE POND', 'ob-finish', 'accent')}
       </div>
     </div>
   </div></div>`;
@@ -207,22 +290,22 @@ function onboarding() {
 function lockScreen() {
   const info = vaultInfo();
   return `<div class="onboard"><div class="stage" style="max-width:520px">
-    <div class="logo"><img src="${app.frogLogo}" alt=""><span class="word">HOPPER</span><span class="tag">LOCKED</span></div>
-    <div class="panel lily">
-      <div class="kv">
+    ${logoMark('LOCKED')}
+    <div class="window" data-lily="accent">
+      <div class="stat-grid">
         <dt>Network</dt><dd>${esc(info?.network || '—')}</dd>
         <dt>Fingerprint</dt><dd>${esc(info?.fingerprint || '—')}</dd>
         <dt>Backup</dt><dd>${info?.words || 12} words</dd>
       </div>
-      <label class="field" style="margin-top:12px"><span>Password</span>
+      <label class="field mt10"><span>Password</span>
         <input type="password" data-input="lock-password" autocomplete="current-password" placeholder="••••••••">
       </label>
       <label class="check"><input type="checkbox" data-input="lock-remember" ${app.remember ? 'checked' : ''}> <span>Keep this device unlocked</span></label>
-      ${app.lockError ? `<div class="warnbox" style="border-color:var(--danger);margin-bottom:10px">${esc(app.lockError)}</div>` : ''}
-      <button class="btn primary wide" data-action="unlock">UNLOCK</button>
-      <div class="actions" style="margin-top:10px">
-        <button class="btn ghost small" data-action="use-another">USE ANOTHER VAULT</button>
-        <button class="btn danger small" data-action="wipe">WIPE DEVICE</button>
+      ${app.lockError ? `<div class="warnbox bad mt10">${esc(app.lockError)}</div>` : ''}
+      <div class="mt10">${button('UNLOCK', 'unlock', 'accent', 'block')}</div>
+      <div class="actions mt10">
+        ${button('USE ANOTHER VAULT', 'use-another', 'dim', 'small')}
+        ${button('WIPE DEVICE', 'wipe', 'dead', 'small danger')}
       </div>
       <div class="hint">Wrong passwords never decrypt. The KEK is derived with PBKDF2 (210,000 rounds, SHA-256) and is non-extractable.</div>
     </div>
@@ -264,9 +347,45 @@ async function startSession({ mnemonic, network, fingerprint }) {
     } catch (e) { /* faucet is optional */ }
   }
   resetMintDraft();
-  if (location.hash) parseHash();
+  app.seenFirstFrog = false;
+  app.navChosen = false;
+  if (location.hash) { parseHash(); app.navChosen = true; }
   if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
   navigate(app.view, { push: false });
+  if (!app.booted) {
+    app.booted = true;
+    beginBootIntro();
+  }
+}
+
+// The boot splash runs once per page load (the egui app plays it every
+// boot); the rules walkthrough follows the first splash until the visitor
+// asks never to see them again.
+function beginBootIntro() {
+  const host = document.getElementById('intro');
+  if (!host) { maybeShowRules(); render(); return; }
+  app.intro = true;
+  playIntro(host, () => {
+    app.intro = false;
+    maybeShowRules();
+    render();
+  });
+}
+
+function maybeShowRules() {
+  if (app.rulesWalk) return;
+  try {
+    if (!localStorage.getItem('hopper.rulesSeen')) app.rulesWalk = { page: 0, neverAgain: false };
+  } catch { /* storage can be denied */ }
+}
+
+function finishRules() {
+  const walk = app.rulesWalk;
+  if (walk?.neverAgain) {
+    try { localStorage.setItem('hopper.rulesSeen', '1'); } catch { /* ignore */ }
+  }
+  app.rulesWalk = null;
+  render();
 }
 
 async function boot() {
@@ -308,11 +427,14 @@ async function boot() {
 // routing
 // ---------------------------------------------------------------------------
 
-function navigate(view, { push = true } = {}) {
+function navigate(view, { push = true, chosen = push } = {}) {
   app.view = view;
+  if (chosen) app.navChosen = true;
   closeDrawer();
   if (push) {
-    const hash = view === 'frog' ? `#/frog/${app.frogSat}` : `#/${view}`;
+    const hash = (view === 'frog' || view === 'bio')
+      ? `#/${view}/${app.frogSat}`
+      : `#/${view}`;
     if (location.hash !== hash) history.pushState({ hopper: true }, '', hash);
   }
   lastLocation = location.hash;
@@ -326,11 +448,11 @@ async function ensureFrogRecord(sat, seq) {
   if (!app.w || !app.w.backend || !Number.isSafeInteger(Number(sat))) return;
   const own = app.w.frogBySat(sat);
   if (own) {
-    if (seq === viewSeq && app.view === 'frog') app.frogRecord = own;
+    if (seq === viewSeq && (app.view === 'frog' || app.view === 'bio')) app.frogRecord = own;
     return;
   }
   const record = await app.w.backend.frogger(Number(sat)).catch(() => null);
-  if (seq !== viewSeq || app.view !== 'frog' || Number(app.frogSat) !== Number(sat)) return;
+  if (seq !== viewSeq || (app.view !== 'frog' && app.view !== 'bio') || Number(app.frogSat) !== Number(sat)) return;
   app.frogRecord = record;
   render();
 }
@@ -339,7 +461,7 @@ async function ensureViewData(view) {
   if (!app.w) return;
   const seq = ++viewSeq;
   try {
-    if (view === 'frog') {
+    if (view === 'frog' || view === 'bio') {
       await ensureFrogRecord(app.frogSat, seq);
     } else if (view === 'pond' || view === 'leaders') {
       const rows = await app.w.leaderboard(30);
@@ -358,16 +480,19 @@ async function ensureViewData(view) {
 function parseHash() {
   const h = location.hash.replace(/^#\/?/, '');
   const [view, arg] = h.split('/');
-  if (view === 'frog' && arg) {
+  if ((view === 'frog' || view === 'bio') && arg) {
     const sat = Number(arg);
     if (Number.isSafeInteger(sat)) {
       if (app.frogSat !== sat) app.frogRecord = null;
       app.frogSat = sat;
-      app.view = 'frog';
+      app.view = view;
     } else {
       app.view = 'wallet';
     }
-  } else if (['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings', 'rules'].includes(view)) {
+  } else if (view === 'rules') {
+    app.view = 'wallet';
+    app.rulesWalk = { page: 0, neverAgain: false };
+  } else if (['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings'].includes(view)) {
     app.view = view;
   } else {
     // An empty or unknown hash is the base route. This matters on Back from
@@ -382,8 +507,9 @@ function handleLocationChange() {
   lastLocation = location.hash;
   const beforeView = app.view;
   const beforeSat = app.frogSat;
+  app.navChosen = true;
   parseHash();
-  if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
+  if (app.view === 'frog' || app.view === 'bio') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
   if (app.view !== beforeView || app.frogSat !== beforeSat) window.scrollTo(0, 0);
   render();
   ensureViewData(app.view);
@@ -399,10 +525,13 @@ window.addEventListener('popstate', handleLocationChange);
 // ---------------------------------------------------------------------------
 
 function openDrawer() {
+  app.menuOpen = true;
   document.getElementById('drawer')?.classList.add('open');
   document.getElementById('drawer-backdrop')?.classList.add('open');
+  render();
 }
 function closeDrawer() {
+  app.menuOpen = false;
   document.getElementById('drawer')?.classList.remove('open');
   document.getElementById('drawer-backdrop')?.classList.remove('open');
 }
@@ -441,12 +570,82 @@ function openFrog(sat) {
 
 const handlers = {
   nav(el) { navigate(el.dataset.view); },
-  drawer() { openDrawer(); },
-  'drawer-close'() { closeDrawer(); },
+  drawer() {
+    if (app.menuOpen) { closeDrawer(); render(); } else openDrawer();
+  },
+  'drawer-close'() { closeDrawer(); render(); },
   back() {
     // A direct link has no HOPPER history to go back to; stay in the app.
     if (history.state && history.state.hopper) history.back();
-    else navigate('pond');
+    else if (app.w?.frogs?.length) navigate('pond');
+    else navigate('wallet');
+  },
+  'menu-mute'() {
+    if (!app.w) return;
+    app.w.settings.mute = !app.w.settings.mute;
+    app.settings.mute = app.w.settings.mute;
+    sound.setMute(app.w.settings.mute);
+    saveSettings(app.w.settings);
+    render();
+  },
+  qr() {
+    toast('Camera scanning is not wired in this browser build — paste the address instead.', 'err');
+  },
+  refresh() {
+    run('refreshing', async () => {
+      await app.w.refresh();
+      toast('refreshing…', 'ok');
+    });
+  },
+  'on-road'() {
+    app.frogRefusal = 'finish (or die on) the road first — sending mid-crossing would retreat it';
+    render();
+  },
+  'dead-frogs'() {
+    openOverlay(screens.deadFrogs(app));
+  },
+  bio(el) {
+    const sat = Number(el.dataset.sat);
+    if (!Number.isSafeInteger(sat)) return;
+    app.frogSat = sat;
+    app.frogRecord = app.w.frogBySat(sat) || app.frogRecord;
+    navigate('bio');
+  },
+  detail(el) {
+    const sat = Number(el.dataset.sat ?? app.frogSat);
+    if (!Number.isSafeInteger(sat)) return;
+    app.frogSat = sat;
+    app.frogRecord = app.w.frogBySat(sat) || app.frogRecord;
+    navigate('frog');
+  },
+  'rule-next'() {
+    if (!app.rulesWalk) return;
+    app.rulesWalk.page = Math.min(screens.RULES.length - 1, (app.rulesWalk.page || 0) + 1);
+    render();
+  },
+  'rule-prev'() {
+    if (!app.rulesWalk) return;
+    app.rulesWalk.page = Math.max(0, (app.rulesWalk.page || 0) - 1);
+    render();
+  },
+  'rule-start'() {
+    if (!app.rulesWalk) return;
+    finishRules();
+  },
+  'rule-skip'() {
+    finishRules();
+  },
+  'open-rules'() {
+    app.rulesWalk = { page: 0, neverAgain: false };
+    app.menuOpen = false;
+    render();
+  },
+  'replay-intro'() {
+    const host = document.getElementById('intro');
+    if (!host) return;
+    app.menuOpen = false;
+    app.intro = true;
+    playIntro(host, () => { app.intro = false; render(); });
   },
 
   'ob-create'() {
@@ -585,8 +784,8 @@ const handlers = {
   'reveal-words'() {
     openOverlay(screens.wordsModal(app));
   },
-  'sheet-receive'() { openOverlay(screens.receiveSheet(app)); },
-  'sheet-send'() { openOverlay(screens.sendSheet(app)); },
+  'sheet-receive'() { openOverlay(screens.receiveSheet(app), { type: 'sheet' }); },
+  'sheet-send'() { openOverlay(screens.sendSheet(app), { type: 'sheet' }); },
   'sheet-transfer'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
     if (f) openOverlay(screens.transferSheet(app, f));
@@ -777,8 +976,6 @@ const handlers = {
       navigate('wallet');
     });
   },
-  'rule-next'() { app.rulePage = Math.min(screens.RULES.length - 1, (app.rulePage || 0) + 1); render(); },
-  'rule-prev'() { app.rulePage = Math.max(0, (app.rulePage || 0) - 1); render(); },
 };
 
 // ---------------------------------------------------------------------------
@@ -815,6 +1012,8 @@ document.addEventListener('input', (ev) => {
     app.ob = { ...app.ob, remember: !!ev.target.checked };
   } else if (key === 'lock-remember') {
     app.remember = !!ev.target.checked;
+  } else if (key === 'rules-never') {
+    if (app.rulesWalk) app.rulesWalk.neverAgain = !!ev.target.checked;
   } else if (key === 'volume' && app.w) {
     // Update the live gain while dragging; persist once on `change` so a
     // range drag does not synchronously rewrite localStorage sixty times.
@@ -872,7 +1071,7 @@ document.getElementById('overlay')?.addEventListener('click', (ev) => {
   if (ev.target.id === 'overlay' && ev.target.dataset.dismissable !== '0') closeOverlay();
   if (ev.target.closest('[data-action=close-overlay]')) closeOverlay();
 });
-document.getElementById('drawer-backdrop')?.addEventListener('click', closeDrawer);
+document.getElementById('drawer-backdrop')?.addEventListener('click', () => { closeDrawer(); render(); });
 
 // The shell is static; a service worker makes the demo (and the UI over a
 // flaky link) work offline. Live chain calls are always network-only.
@@ -882,7 +1081,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   });
 }
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape') { closeOverlay(); closeDrawer(); }
+  if (ev.key === 'Escape') { closeOverlay(); closeDrawer(); render(); }
   if (ev.key === 'Enter' && app.screen === 'lock') {
     const el = document.querySelector('[data-action=unlock]');
     if (el) el.click();

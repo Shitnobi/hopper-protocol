@@ -18,13 +18,14 @@
 </head>
 <body>
 <div id="app" class="app" aria-live="polite"></div>
+<div id="intro" class="intro" hidden><canvas></canvas></div>
 <div id="overlay" class="overlay" hidden></div>
 <div id="drawer-backdrop" class="drawer-backdrop"></div>
 <aside id="drawer" class="drawer" aria-label="menu"></aside>
 <nav id="tabbar" class="tabbar" hidden></nav>
 <div id="toasts" class="toasts"></div>
 <div id="busy" class="busy" hidden>
-  <div class="box">
+  <div class="box" data-lily="accent">
     <img class="frog" alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" id="busy-frog">
     <div id="busy-text" class="small muted">working…</div>
   </div>

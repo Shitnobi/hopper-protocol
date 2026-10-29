@@ -68,6 +68,28 @@ async function waitFor(expr, timeout = 12000, what = expr) {
 }
 
 const click = (action) => evaluate(`document.querySelector('[data-action="${action}"]').click()`);
+
+// The ported FROGGER GUI opens with the boot splash and (on a first visit)
+// the eight-page rules walkthrough. Programmatic taps still reach the page
+// behind the splash, but the shell is not in the DOM during the rules, so
+// both are dismissed before any screen assertions run.
+async function skipTour() {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 12000) {
+    const intro = await evaluate('document.querySelector("#intro") && !document.querySelector("#intro").hidden');
+    if (intro) {
+      await evaluate('document.querySelector("#intro").click()');
+      await sleep(250);
+    }
+    if (await evaluate('!!document.querySelector(".rules-screen")')) {
+      await evaluate('document.querySelector("[data-action=rule-skip]").click()');
+      await sleep(250);
+    }
+    if (await evaluate('!!document.querySelector(".topbar")')) return;
+    await sleep(150);
+  }
+  throw new Error('tour did not finish');
+}
 const fill = (input, value) => evaluate(`(() => {
   const el = document.querySelector('[data-input="${input}"]');
   el.value = ${JSON.stringify(value)};
@@ -100,14 +122,15 @@ await fill('ob-password', 'hopper-demo-1');
 await fill('ob-confirm', 'hopper-demo-1');
 await evaluate(`(() => { const s=document.querySelector('[data-input=ob-network]'); s.value='regtest'; s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
 await click('ob-finish');
-await waitFor('document.querySelector(".topbar")', 30000, 'wallet shell');
-await waitFor('document.querySelector(".frog-card") || document.querySelector("[data-action=faucet]")', 30000, 'demo faucet visible');
+await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'wallet shell');
+await skipTour();
+await waitFor('document.querySelector(".balance") || document.querySelector("[data-action=sheet-send]")', 30000, 'wallet rendered');
 await sleep(600);
-const balance = await evaluate('document.querySelector(".bank")?.innerText');
+const balance = await evaluate('document.querySelector(".balance")?.innerText');
 console.log('wallet:', balance?.replace(/\n/g, ' | '));
 
 // 1b. Every screen must fit the phone width.
-for (const v of ['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings', 'rules']) {
+for (const v of ['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings']) {
   await evaluate(`document.querySelector('[data-action=nav][data-view=${v}]').click()`);
   await sleep(180);
   const m = await evaluate(`(() => {
@@ -153,9 +176,24 @@ const cache = await evaluate(`caches.keys().then(async (keys) => {
 console.log('pwa:', { serviceWorker: sw, manifest, cache });
 if (!sw || manifest !== 'HOPPER' || !cache.n) errors.push(`pwa shell: ${JSON.stringify({ sw, manifest, cache })}`);
 
-// The route change, not a data refresh, resets scroll.
-await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+// The rules walkthrough is a settings entry (the egui app has no drawer
+// item for it either): open it, check it fits, and close it.
+await evaluate(`location.hash='#/settings'`);
 await sleep(200);
+await evaluate(`document.querySelector('[data-action=open-rules]').click()`);
+await waitFor('document.querySelector(".rules-screen")', 5000, 'rules walkthrough');
+{
+  const m = await evaluate(`({ iw: innerWidth, sw: document.documentElement.scrollWidth })`);
+  if (m.sw > m.iw + 1) errors.push(`layout rules: width ${m.sw}/${m.iw}`);
+}
+await evaluate(`document.querySelector('[data-action=rule-skip]').click()`);
+await sleep(200);
+
+// The route change, not a data refresh, resets scroll. The WALLET page is
+// deliberately a short centered block (FROGGER's balance hero), so the
+// scrollable page for this test is SETTINGS.
+await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await sleep(300);
 await evaluate('window.scrollTo(0, document.body.scrollHeight)');
 await sleep(120);
 const scrolled = await evaluate('window.scrollY');
@@ -173,33 +211,27 @@ await waitFor('document.querySelector("[data-action=mint]")');
 const draft = await evaluate(`({
   seed: document.querySelector('[data-seed-label]')?.textContent || '',
   name: document.querySelector('[data-input=mint-name]')?.value,
-  field: document.querySelector('[data-seed-value]')?.value || '',
-  hasSeedInput: Boolean(document.querySelector('[data-seed-value]')),
-  seedReadonly: document.querySelector('[data-seed-value]')?.readOnly === true,
   hasDice: Boolean(document.querySelector('[data-action=random-seed]')),
 })`);
 console.log('mint draft:', draft);
 if (!draft.seed) errors.push('mint: seed label is missing');
-if (!draft.hasSeedInput || !draft.seedReadonly) errors.push('mint: seed field is missing or editable');
 if (!draft.hasDice) errors.push('mint: dice button is missing');
 if (draft.name !== '') errors.push(`mint: default name is not blank (${JSON.stringify(draft.name)})`);
 await click('random-seed');
 await sleep(100);
 const rolled = await evaluate(`({
   seed: document.querySelector('[data-seed-label]')?.textContent || '',
-  field: document.querySelector('[data-seed-value]')?.value || '',
   name: document.querySelector('[data-input=mint-name]')?.value,
 })`);
 console.log('diced mint draft:', rolled);
 if (rolled.seed === draft.seed) errors.push('mint: dice did not change the seed');
-if (!rolled.field || rolled.field === draft.field) errors.push('mint: seed field did not update');
 if (rolled.name !== '') errors.push('mint: dice changed the name');
 await fill('mint-name', 'Test Hopper');
 await sleep(300);
 await click('mint');
 await waitFor('location.hash === "#/pond"', 40000, 'mint to navigate to pond');
-await waitFor('document.querySelectorAll(".frog-card").length > 0', 20000, 'minted frog card');
-const pond = await evaluate('document.querySelector(".panel.lily")?.innerText');
+await waitFor('document.querySelectorAll(".pond-item").length > 0', 20000, 'minted frog card');
+const pond = await evaluate('document.querySelector("#app")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
 if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
 
@@ -214,14 +246,14 @@ console.log('next mint draft:', nextDraft);
 if (nextDraft.seed === rolled.seed) errors.push('mint: seed was not rotated after broadcast');
 if (nextDraft.name !== '') errors.push(`mint: name was not cleared after broadcast (${JSON.stringify(nextDraft.name)})`);
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
-await waitFor('document.querySelector(".frog-card")', 15000, 'pond after mint draft check');
+await waitFor('document.querySelector(".pond-item")', 15000, 'pond after mint draft check');
 
 // 3. Open frog, prepare custody.
-await evaluate(`document.querySelector('.frog-card').click()`);
+await evaluate(`document.querySelector('.pond-item [data-action=open-frog]').click()`);
 await waitFor('document.querySelector("[data-action=prepare]")', 15000, 'prepare button');
 await click('prepare');
 await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cross button after prepare');
-console.log('frog detail:', (await evaluate('document.querySelector(".frog-hero")?.innerText')).replace(/\n/g, ' | '));
+console.log('frog detail:', (await evaluate('document.querySelector(".detail-head")?.innerText')).replace(/\n/g, ' | '));
 
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);
@@ -239,29 +271,43 @@ const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
 
 // 5b. Route changes and history must not show a previous frog's record.
+// A crossing can kill (25% at the genesis target): the living pond then
+// shows nothing and the frog lives on the graveyard's road.
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
-await waitFor('document.querySelector(".frog-card")', 15000, 'pond after settle');
-await evaluate(`document.querySelector('.frog-card').click()`);
-await waitFor('location.hash.startsWith("#/frog/")', 15000, 'frog route');
+await sleep(400);
+const alive = await evaluate('!!document.querySelector(".pond-item")');
+if (alive) {
+  await waitFor('document.querySelector(".pond-item")', 15000, 'pond after settle');
+  await evaluate(`document.querySelector('.pond-item [data-action=open-frog]').click()`);
+  await waitFor('location.hash.startsWith("#/frog/")', 15000, 'frog route');
+} else {
+  await waitFor('document.querySelector(".pond-road")', 15000, 'graveyard road');
+  await evaluate(`document.querySelector('.pond-road').click()`);
+  await waitFor('document.querySelector(".overlay [data-action=bio]")', 15000, 'graveyard hopper');
+  await evaluate(`document.querySelector('.overlay [data-action=bio]').click()`);
+  await waitFor('location.hash.startsWith("#/bio/")', 15000, 'bio route for the dead hopper');
+  await sleep(250);
+}
+const entryHash = await evaluate('location.hash');
 await evaluate('history.back()');
 await waitFor('location.hash === "#/pond"', 15000, 'back to pond');
 await evaluate('history.forward()');
-await waitFor('location.hash.startsWith("#/frog/")', 15000, 'forward to frog');
-await waitFor('document.querySelector(".frog-hero .big")?.textContent === "Test Hopper"', 15000, 'frog record after forward');
+await waitFor(`location.hash === ${JSON.stringify(entryHash)}`, 15000, 'forward to frog');
+await waitFor('document.querySelector(".detail-name")?.textContent === "Test Hopper"', 15000, 'frog record after forward');
 console.log('history: frog detail survives back/forward');
 
 await evaluate(`document.querySelector('[data-action=nav][data-view=leaders]').click()`);
-await waitFor('document.querySelectorAll("tr[data-sat]").length > 1', 15000, 'leaderboard rows');
+await waitFor('document.querySelectorAll(".leader-row[data-sat]").length > 1', 15000, 'leaderboard rows');
 const stranger = await evaluate(`(() => {
-  const row = [...document.querySelectorAll('tr[data-sat]')].find((r) => !/Test Hopper/.test(r.innerText));
+  const row = [...document.querySelectorAll('.leader-row[data-sat]')].find((r) => !/Test Hopper/.test(r.innerText));
   if (!row) return null;
-  return { sat: Number(row.dataset.sat), name: row.querySelector('td:nth-child(3) div')?.textContent?.trim() || '' };
+  return { sat: Number(row.dataset.sat), name: row.querySelector('.name')?.textContent?.replace('YOU', '').trim() || '' };
 })()`);
 if (!stranger) {
   errors.push('routing: no public frog available to test stale record');
 } else {
   await evaluate(`location.hash = '#/frog/${stranger.sat}'`);
-  await waitFor(`document.querySelector('.frog-hero .big')?.textContent === ${JSON.stringify(stranger.name)}`, 15000, 'public frog detail');
+  await waitFor(`document.querySelector('.detail-name')?.textContent === ${JSON.stringify(stranger.name)}`, 15000, 'public frog detail');
   console.log('route: direct frog hash shows', stranger.name);
   await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
   await waitFor('location.hash === "#/wallet"', 15000, 'wallet route after public frog');
@@ -273,16 +319,19 @@ await waitFor('document.querySelector("[data-input=lock-password]")', 15000, 'lo
 console.log('lock: reload asks for the password');
 await fill('lock-password', 'hopper-demo-1');
 await click('unlock');
-await waitFor('document.querySelector(".topbar")', 30000, 'unlock');
+await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'unlock');
+await skipTour();
 await call('Page.reload', { ignoreCache: true });
 await waitFor('document.querySelector("[data-input=lock-password]")', 15000, 'lock after opt-out reload');
 console.log('lock: password-only unlock is not remembered');
 await fill('lock-password', 'hopper-demo-1');
 await evaluate(`document.querySelector('[data-input=lock-remember]').checked = true`);
 await click('unlock');
-await waitFor('document.querySelector(".topbar")', 30000, 'unlock remembered');
+await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'unlock remembered');
+await skipTour();
 await call('Page.reload', { ignoreCache: true });
-await waitFor('document.querySelector(".topbar")', 30000, 'auto unlock');
+await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'auto unlock');
+await skipTour();
 console.log('lock: remembered KEK auto-unlocks');
 
 // Persist a screenshot path for inspection.

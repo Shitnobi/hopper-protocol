@@ -54,7 +54,14 @@ web/
                            tx parser, backends, vault, storage, session,
                            mint worker + client
   js/mock/chain.js         in-browser v6 demo chain
-  js/ui/                   screens, DOM helpers
+  js/ui/screens.js         the screens (wallet, pond, road, mint, history,
+                           leaderboard, detail, bio, settings, rules)
+  js/ui/theme.js           the FROGGER egui materials: wood log-frames,
+                           lily-pad window borders, pond/road/grave/sprite
+                           painters, mounted on canvases after each render
+  js/ui/tour.js            the boot splash (a hop into the road) and the
+                           eight animated rules pictures
+  js/ui/dom.js             formatting, sprites, toasts, overlays
   js/main.js               boot, onboarding/lock, routing, action wiring
   js/sound.js              WebAudio chip loop and SFX (gesture-gated)
   js/vendor/               pinned noble/scure bundle (generated)
@@ -91,6 +98,16 @@ web/
   state. **Burn**: spending the frog's sat to fees sets `location = burned`
   (an idle frog becomes `burned`; a dead frog stays dead; an in-flight
   crossing settles `burned`).
+
+The browser frontend is a JavaScript reimplementation of the FROGGER
+wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
+palette, monospace text, wooden log buttons, lily-pad floating windows,
+pond water, lane-dashed asphalt, crossing pips and pixel art. It is not a
+screenshot of egui — it is DOM text and events over canvas-painted
+materials, so the wallet stays selectable, accessible and installable.
+The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
+Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
+boot intro and the eight-page rules walkthrough.
 
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):

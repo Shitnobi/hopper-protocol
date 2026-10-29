@@ -4,6 +4,7 @@ import { bytesToBase64, hexToBytes } from '../core/hex.js';
 import { renderSprite } from '../core/art.js';
 import { encodePng } from '../core/png.js';
 import { requiredAt } from '../core/params.js';
+import { decorate } from './theme.js';
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -76,12 +77,25 @@ export function badge(text, kind = '') {
 export function toast(message, kind = '') {
   const host = document.getElementById('toasts');
   if (!host) return;
+  while (host.children.length >= 5) host.firstElementChild.remove();
   const node = document.createElement('div');
-  node.className = `toast ${kind}`;
-  node.textContent = message;
+  node.className = `toast ${kind === 'err' ? 'err' : ''}`;
+  const text = document.createElement('span');
+  text.textContent = message;
+  const count = document.createElement('span');
+  count.className = 'tiny muted';
+  node.append(text, count);
   host.appendChild(node);
-  setTimeout(() => { node.style.opacity = '0'; node.style.transition = 'opacity .3s'; }, 4200);
-  setTimeout(() => node.remove(), 4700);
+  let secs = 4;
+  const paint = () => { count.textContent = `  ·  ${secs}s`; };
+  paint();
+  const timer = setInterval(() => {
+    secs -= 1;
+    if (secs <= 0) {
+      clearInterval(timer);
+      node.remove();
+    } else paint();
+  }, 1000);
 }
 
 export function busy(on, text = 'working…') {
@@ -92,14 +106,18 @@ export function busy(on, text = 'working…') {
   if (t) t.textContent = text;
   const frog = document.getElementById('busy-frog');
   if (frog) frog.src = spriteUri(0x9058d0fa, 'idle');
+  if (on) decorate(node);
 }
 
-export function openOverlay(html, { dismissable = true } = {}) {
+export function openOverlay(html, { dismissable = true, type = 'modal' } = {}) {
   const node = document.getElementById('overlay');
   if (!node) return;
-  node.innerHTML = `<div class="modal" data-modal>${html}</div>`;
+  const cls = type === 'sheet' ? 'sheet' : 'modal';
+  node.innerHTML = `<div class="${cls}" data-modal data-lily="accent">${html}</div>`;
   node.hidden = false;
   node.dataset.dismissable = dismissable ? '1' : '0';
+  node.classList.toggle('bottom', type === 'sheet');
+  decorate(node);
 }
 
 export function closeOverlay() {
