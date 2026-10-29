@@ -880,7 +880,7 @@ export function settings(app) {
         <label>Esplora</label>
         <input type="text" data-input="esploraUrl" value="${esc(s.esploraUrl || '')}" placeholder="https://blockstream.info/api (mainnet default)">
         <label>Indexer</label>
-        <input type="text" data-input="indexerUrl" value="${esc(s.indexerUrl || '')}" placeholder="http://…">
+        <input type="text" data-input="indexerUrl" value="${esc(s.indexerUrl || '')}" placeholder="https://… (optional)">
         <label>Ord</label>
         <input type="text" data-input="ordUrl" value="${esc(s.ordUrl || '')}" placeholder="https://ordinals.com (mainnet default)">
         <label>Electrum</label>
@@ -897,8 +897,8 @@ export function settings(app) {
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">Esplora empty on mainnet uses blockstream.info/api, unless an Electrum URL is set. Ord empty uses ordinals.com on mainnet.</div>
-      <div class="hint">Sat ranges come from the HOPPER indexer when it knows the coin; otherwise this ord server names them. Point it at your own ord to keep the query local.</div>
+      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet.</div>
+      <div class="hint">An empty Indexer means no HOPPER indexer: coins and sat ranges still work through ord, but frogs, the road and the leaderboard need one. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
     </div>
 
     <div class="window" data-lily="home">

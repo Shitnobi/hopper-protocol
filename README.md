@@ -5,8 +5,8 @@ A reference implementation of **HOPPER v6** ([`SPEC.md`](SPEC.md)):
 - **`rust/`** — the consensus core, a standalone Bitcoin indexer and its
   REST/SSE API.
 - **`web/`** — a non-custodial browser wallet, game client and installable
-  PWA that builds real consensus transactions and can run against either a
-  local demo chain or the live indexer.
+  PWA that builds real consensus transactions. It starts live on mainnet
+  with public backends, and can be switched to the local demo chain.
 
 HOPPER does not mint a token. A frog **is** an ordinal satoshi. Its state is
 the chain's answer to "which UTXO currently holds this sat", and a crossing
@@ -14,12 +14,13 @@ is an inscription whose outcome is fixed by a future block hash.
 
 ---
 
-## Quick start (demo, no node, no indexer)
+## Quick start (mainnet, public defaults)
 
-The demo chain runs entirely in the browser: FIFO sat assignment, mint
-validation, prepare/cross state scripts, the T+1 death decree, T+6
-settlement, transfers, fee sweeps, NPC residents and a faucet. It persists to
-`localStorage`.
+The web app starts in **live mode on mainnet**. Blank backend fields resolve
+to `https://blockstream.info/api` for chain data and `https://ordinals.com`
+for sat ranges. No HOPPER indexer is configured by default: coins, balances
+and ordinary spends work through Esplora + ord, while frog discovery, the
+public road and the leaderboard need an indexer.
 
 ```sh
 cd web
@@ -27,13 +28,23 @@ python3 -m http.server 8130
 # open http://127.0.0.1:8130/
 ```
 
-Create a wallet, keep the 12 words, and use the faucet. Every broadcast
-mines one demo block, so `MINE 6` settles a crossing. The service worker
-makes the app shell and demo work offline after the first load (localhost is
-a secure context; a plain-HTTP LAN address is not).
+Create a wallet and keep the 12 words. Mainnet is selected by default. The
+service worker makes the app shell work offline after the first load
+(localhost is a secure context; a plain-HTTP LAN address is not).
 
-> The demo chain is **not** Bitcoin. Switch to live mode only when you have
-> an indexer and a chain port.
+> Mainnet is real Bitcoin, and this reference implementation is not audited.
+> Set your own Esplora/Ord/Indexer in Settings if you do not want to use the
+> public defaults, or switch to Demo before putting value anywhere near it.
+
+### Demo chain
+
+Settings → **Mode** → **Demo** runs everything in the browser: FIFO sat
+assignment, mint validation, prepare/cross state scripts, the T+1 death
+decree, T+6 settlement, transfers, fee sweeps, NPC residents and a faucet.
+It persists to `localStorage`. Every broadcast mines one demo block, so
+`MINE 6` settles a crossing.
+
+> The demo chain is **not** Bitcoin.
 
 ## Layout
 
@@ -276,14 +287,18 @@ curl -sN localhost:9770/v1/events/stream
   coin whose script this wallet can spend; the indexer is never trusted for
   ownership. Live deep scan is **off by default**; demo mode always scans so
   the simulator has something to show.
-- **Demo vs live**: `DemoBackend` implements the same interface as
-  `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
+- **Demo vs live**: new wallets start in **live** mode; `DemoBackend`
+  implements the same interface as `EsploraClient`/`ElectrumClient` +
+  `IndexerClient` and is opt-in from Settings. Apply URLs in Settings.
   On mainnet an empty **Esplora** field uses `https://blockstream.info/api`
-  unless an Electrum URL is set; regtest/testnet/signet have no public
-  default and need an explicit source. Live mode requires a secure context
-  for WebCrypto; Electrum needs a WebSocket endpoint. `electrs` itself
-  speaks TCP, so a browser needs a loopback WS-to-TCP bridge (the page
-  talks `ws://127.0.0.1:…`, never a raw TCP socket).
+  unless an Electrum URL is set, and an empty **Ord** field uses
+  `https://ordinals.com`; regtest/testnet/signet have no public defaults
+  and need an explicit source. The **Indexer** starts empty because a
+  local indexer is not a public backend; set a reachable one for frogs,
+  road and leaderboard. Live mode requires a secure context for WebCrypto;
+  Electrum needs a WebSocket endpoint. `electrs` itself speaks TCP, so a
+  browser needs a loopback WS-to-TCP bridge (the page talks
+  `ws://127.0.0.1:…`, never a raw TCP socket).
 - **Sat ranges**: the indexer deliberately does not model the coinbase
   subsidy (`rust/crates/hopper-indexer/src/NOTES.md`), so a freshly mined
   coin starts with shadow/empty ranges. When a wallet asks `/v1/utxo`

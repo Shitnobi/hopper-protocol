@@ -29,9 +29,19 @@ eq('an explicit Esplora URL wins', effectiveEsploraUrl({ esploraUrl: 'http://127
 eq('whitespace is still empty', effectiveEsploraUrl({ esploraUrl: '   ' }, 'mainnet'), BLOCKSTREAM_ESPLORA);
 eq('Electrum suppresses the Blockstream default', effectiveEsploraUrl({ electrumUrl: 'ws://127.0.0.1:50032' }, 'mainnet'), '');
 eq('an explicit Esplora still wins over Electrum', effectiveEsploraUrl({ esploraUrl: 'http://127.0.0.1:3002', electrumUrl: 'ws://127.0.0.1:50032' }, 'mainnet'), 'http://127.0.0.1:3002');
-eq('default settings leave the field blank', DEFAULT_SETTINGS.esploraUrl, '');
+eq('default settings leave the Esplora field blank', DEFAULT_SETTINGS.esploraUrl, '');
+eq('default settings start live on mainnet defaults', DEFAULT_SETTINGS.mode, 'live');
+eq('default settings leave the Indexer blank', DEFAULT_SETTINGS.indexerUrl, '');
+eq('default settings leave the Ord field blank', DEFAULT_SETTINGS.ordUrl, '');
 const liveDefault = new LiveBackend({ esploraUrl: effectiveEsploraUrl({}, 'mainnet') });
 eq('LiveBackend is built on Blockstream by default', liveDefault.esplora.base, BLOCKSTREAM_ESPLORA);
+const mainnetDefaults = new LiveBackend({
+  esploraUrl: effectiveEsploraUrl(DEFAULT_SETTINGS, 'mainnet'),
+  indexerUrl: DEFAULT_SETTINGS.indexerUrl,
+  ordUrl: effectiveOrdUrl(DEFAULT_SETTINGS, 'mainnet'),
+});
+eq('default backends include no local indexer', mainnetDefaults.indexer, null);
+eq('default backends point ord at ordinals.com', mainnetDefaults.ord.base, ORDINALS_COM);
 
 const TXID = '11'.repeat(32);
 const realFetch = globalThis.fetch;

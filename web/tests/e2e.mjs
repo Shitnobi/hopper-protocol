@@ -132,6 +132,23 @@ await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboa
 const title = await evaluate('document.title');
 console.log('title:', title);
 
+// The app starts on the public mainnet defaults. The demo flow below is a
+// deliberate test override so this run never touches Bitcoin.
+const defaults = await evaluate(`import('./js/wallet/wallet.js').then((m) => ({
+  mode: m.DEFAULT_SETTINGS.mode,
+  esplora: m.DEFAULT_SETTINGS.esploraUrl,
+  indexer: m.DEFAULT_SETTINGS.indexerUrl,
+  ord: m.DEFAULT_SETTINGS.ordUrl,
+}))`);
+console.log('app defaults:', defaults);
+if (defaults.mode !== 'live') errors.push(`default mode is not live: ${JSON.stringify(defaults)}`);
+if (defaults.esplora !== '' || defaults.indexer !== '' || defaults.ord !== '') {
+  errors.push(`default backends should be empty fields: ${JSON.stringify(defaults)}`);
+}
+await evaluate(`localStorage.setItem('hopper.settings.v1', JSON.stringify({ mode: 'demo' })); true`);
+await call('Page.reload', { ignoreCache: true });
+await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboarding after demo override');
+
 // 1. Create wallet.
 await click('ob-create');
 await waitFor('document.querySelector(".words")');
@@ -142,7 +159,10 @@ await click('ob-words-done');
 await waitFor('document.querySelector("[data-input=ob-password]")');
 await fill('ob-password', 'hopper-demo-1');
 await fill('ob-confirm', 'hopper-demo-1');
-await evaluate(`(() => { const s=document.querySelector('[data-input=ob-network]'); s.value='regtest'; s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
+const defaultNetwork = await evaluate(`document.querySelector('[data-input=ob-network]')?.value`);
+console.log('default onboarding network:', defaultNetwork);
+if (defaultNetwork !== 'mainnet') errors.push(`onboarding did not default to mainnet: ${defaultNetwork}`);
+await evaluate(`(() => { const s=document.querySelector('[data-input=ob-network]'); s.value='regtest'; s.dispatchEvent(new Event('input',{bubbles:true})); s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
 await click('ob-finish');
 await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'wallet shell');
 await skipTour();
@@ -287,12 +307,16 @@ const settingsRules = await evaluate(`({
   ord: document.querySelector('#app [data-input=ordUrl]')?.getAttribute('placeholder') || '',
   esplora: document.querySelector('#app [data-input=esploraUrl]')?.getAttribute('placeholder') || '',
   esploraValue: document.querySelector('#app [data-input=esploraUrl]')?.value ?? null,
+  indexerValue: document.querySelector('#app [data-input=indexerUrl]')?.value ?? null,
+  mode: document.querySelector('#app [data-input=mode]')?.value ?? null,
 })`);
 if (settingsRules.read) errors.push('settings still has READ THE RULES');
 if (!settingsRules.replay) errors.push('settings lost REPLAY THE INTRO');
 if (!/ordinals\.com/.test(settingsRules.ord)) errors.push(`settings lost the ORD endpoint: ${JSON.stringify(settingsRules)}`);
 if (!/blockstream\.info\/api/.test(settingsRules.esplora)) errors.push(`settings lost the Esplora default: ${JSON.stringify(settingsRules)}`);
 if (settingsRules.esploraValue !== '') errors.push(`Esplora field is not empty by default: ${JSON.stringify(settingsRules)}`);
+if (settingsRules.indexerValue !== '') errors.push(`Indexer field is not empty by default: ${JSON.stringify(settingsRules)}`);
+if (settingsRules.mode !== 'demo') errors.push(`e2e demo override did not apply: ${JSON.stringify(settingsRules)}`);
 await evaluate(`document.querySelector('[data-action=drawer]').click()`);
 await sleep(200);
 const menu = await evaluate(`[...document.querySelectorAll('#drawer .nav button')].map((b) => b.textContent.trim())`);

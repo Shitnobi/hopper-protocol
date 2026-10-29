@@ -153,9 +153,9 @@ function rateOr(value, fallback = 2) {
 }
 
 export const DEFAULT_SETTINGS = {
-  mode: 'demo',
+  mode: 'live',
   esploraUrl: '',
-  indexerUrl: 'http://127.0.0.1:9770',
+  indexerUrl: '',
   electrumUrl: '',
   ordUrl: '',
   feeRate: 2,
@@ -201,7 +201,7 @@ export function saveSettings(settings) {
 }
 
 export class WalletSession {
-  constructor({ mnemonic, network = 'regtest', fingerprint, settings = null }) {
+  constructor({ mnemonic, network = 'mainnet', fingerprint, settings = null }) {
     this.mnemonic = mnemonic;
     this.network = network;
     this.settings = settings || loadSettings();

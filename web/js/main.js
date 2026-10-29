@@ -31,7 +31,7 @@ const app = {
   frogRecord: null,
   mintSeed: 0,
   mintName: '',
-  ob: { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false },
+  ob: { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'mainnet', remember: false },
   lockError: '',
   frogLogo: spriteUri(0x9058d0fa, 'idle'),
   previewUri: '',
@@ -249,7 +249,7 @@ function onboarding() {
           ${button('IMPORT 12 WORDS', 'ob-import', 'dim')}
         </div>
         ${hasVault() ? `<div class="mt10">${button('I HAVE A VAULT — UNLOCK', 'ob-lock', 'dim', 'small block')}</div>` : ''}
-        <div class="hint">Demo mode runs against an in-browser chain. Switch to a live indexer in Settings at any time.</div>
+        <div class="hint">Mainnet is real Bitcoin. New wallets start live on the public defaults — Blockstream Esplora and ordinals.com. The HOPPER indexer is optional; choose Demo in Settings for the in-browser chain.</div>
       </div>
       <div class="footer">HOPPER v6 · HOPPER-PROTOCOL</div>
     </div></div>`;
@@ -286,7 +286,7 @@ function onboarding() {
     </div></div>`;
   }
   // password step
-  const networks = [['regtest', 'Regtest (local)'], ['testnet', 'Testnet'], ['signet', 'Signet'], ['mainnet', 'Mainnet']];
+  const networks = [['mainnet', 'Mainnet'], ['testnet', 'Testnet'], ['signet', 'Signet'], ['regtest', 'Regtest (local)']];
   return `<div class="onboard"><div class="stage">
     ${logo}
     <div class="window" data-lily="accent">
@@ -299,6 +299,7 @@ function onboarding() {
       </label>
       <label class="check"><input type="checkbox" data-input="ob-remember" ${o.remember ? 'checked' : ''}> <span>Keep this device unlocked</span></label>
       <div class="hint">Coin type: mainnet 0, everything else 1. No password is stored; the KEK stays in this browser only if you ask. The 12 words are the only recovery.</div>
+      <div class="hint">Mainnet uses real sats. Its default backends are Blockstream Esplora and ordinals.com; set your own in Settings to avoid third parties.</div>
       ${o.error ? `<div class="warnbox bad mt10">${esc(o.error)}</div>` : ''}
       <div class="actions mt10">
         ${button('BACK', 'ob-back', 'dim')}
@@ -762,7 +763,7 @@ const handlers = {
     app.leaders = [];
     app.road = [];
     app.screen = 'onboard';
-    app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false };
+    app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'mainnet', remember: false };
     app.lockError = '';
     history.replaceState(null, '', location.pathname);
     render();
@@ -844,7 +845,7 @@ const handlers = {
       app.leaders = [];
       app.road = [];
       app.screen = 'onboard';
-      app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false };
+      app.ob = { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'mainnet', remember: false };
       app.settings = loadSettings();
       history.replaceState(null, '', location.pathname);
       // Reload closes the IndexedDB connection so the delete can finish.
@@ -999,7 +1000,7 @@ const handlers = {
       const previous = { ...app.w.settings };
       const next = {
         ...previous,
-        mode: q('mode') || 'demo',
+        mode: q('mode') || 'live',
         esploraUrl: q('esploraUrl') || '',
         indexerUrl: q('indexerUrl') || '',
         electrumUrl: q('electrumUrl') || '',
