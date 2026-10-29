@@ -161,10 +161,7 @@ like FROGGER, it starts on the first gesture on any screen — onboarding,
 the lock, or the wallet — and survives locking. The drawer (and Settings)
 shows a live line such as `♪ PLAYING · 7635 NOTES`, or names the reason it
 is silent (`MUTED`, `VOLUME 0%`, `SUSPENDED — TAP TO RETRY`, a load
-error). `♪ TEST SOUND` sends a short arpeggio straight to the output,
-ignoring the fader on purpose, to separate "this tab may make sound" from
-"the score is muted or not loaded". `hopperSound.status()` reports the
-same state in the console.
+error). `hopperSound.status()` reports the same state in the console.
 
 Browsers require one gesture before audio may start, so the first
 tap/click/key starts the score (later gestures retry if the browser
@@ -326,6 +323,7 @@ node tests/game.test.mjs        # mint → prepare → cross → settle → tran
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
+node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 

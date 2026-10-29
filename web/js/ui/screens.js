@@ -139,7 +139,6 @@ export function drawer(app) {
     <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
     <div class="stack mt10">
       ${logBtn(w?.settings?.mute ? 'SOUND: MUTED' : 'SOUND: ON', 'menu-mute', { edge: w?.settings?.mute ? 'dim' : 'accent', cls: 'small block' })}
-      ${logBtn('♪ TEST SOUND', 'test-sound', { edge: 'dim', cls: 'small block' })}
       ${w ? logBtn('🔒 LOCK WALLET', 'lock', { edge: 'dim', cls: 'small block' }) : ''}
     </div>
     <div class="foot">
@@ -918,8 +917,6 @@ export function settings(app) {
         <input type="range" min="0" max="100" data-input="volume" value="${Math.round((s.volume ?? 0.55) * 100)}">
       </div>
       <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
-      <div class="actions mt10">${logBtn('♪ TEST SOUND', 'test-sound', { edge: 'dim', cls: 'small' })}</div>
-      <div class="hint">The test tone ignores the fader on purpose: it proves the tab may make sound. If it is audible but the score is not, the state line above names the reason.</div>
     </div>
 
     <div class="window" data-lily="accent">
@@ -936,7 +933,8 @@ export function settings(app) {
       </div>
     </div>
 
-    <div class="window" data-lily="${s.mode === 'demo' ? 'accent' : 'dim'}">
+    ${s.mode === 'demo' ? `
+    <div class="window" data-lily="accent">
       <div style="font-weight:700">DEMO CHAIN</div>
       <div class="sub">${esc(w.network)} · the in-browser chain. Not Bitcoin.</div>
       <div class="actions mt10">
@@ -945,7 +943,7 @@ export function settings(app) {
         ${logBtn('MINE 6', 'mine', { edge: 'dim', cls: 'small', attrs: 'data-n="6"' })}
         ${logBtn('RESET DEMO', 'reset-demo', { edge: 'dead', cls: 'small danger' })}
       </div>
-    </div>
+    </div>` : ''}
 
     <div class="window" data-lily="dim">
       <div style="font-weight:700">ADDRESS BOOK</div>

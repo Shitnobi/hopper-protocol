@@ -309,6 +309,9 @@ const settingsRules = await evaluate(`({
   esploraValue: document.querySelector('#app [data-input=esploraUrl]')?.value ?? null,
   indexerValue: document.querySelector('#app [data-input=indexerUrl]')?.value ?? null,
   mode: document.querySelector('#app [data-input=mode]')?.value ?? null,
+  testSound: Boolean(document.querySelector('#app [data-action=test-sound]')),
+  demoButtons: [...document.querySelectorAll('#app [data-action=faucet], #app [data-action=mine], #app [data-action=reset-demo]')]
+    .map((b) => b.textContent.trim()),
 })`);
 if (settingsRules.read) errors.push('settings still has READ THE RULES');
 if (!settingsRules.replay) errors.push('settings lost REPLAY THE INTRO');
@@ -317,10 +320,16 @@ if (!/blockstream\.info\/api/.test(settingsRules.esplora)) errors.push(`settings
 if (settingsRules.esploraValue !== '') errors.push(`Esplora field is not empty by default: ${JSON.stringify(settingsRules)}`);
 if (settingsRules.indexerValue !== '') errors.push(`Indexer field is not empty by default: ${JSON.stringify(settingsRules)}`);
 if (settingsRules.mode !== 'demo') errors.push(`e2e demo override did not apply: ${JSON.stringify(settingsRules)}`);
+if (settingsRules.testSound) errors.push('settings still has TEST SOUND');
+if (!['FAUCET', 'MINE 1', 'MINE 6', 'RESET DEMO'].every((label) => settingsRules.demoButtons.includes(label))) {
+  errors.push(`demo settings lost its chain controls: ${JSON.stringify(settingsRules.demoButtons)}`);
+}
 await evaluate(`document.querySelector('[data-action=drawer]').click()`);
 await sleep(200);
 const menu = await evaluate(`[...document.querySelectorAll('#drawer .nav button')].map((b) => b.textContent.trim())`);
 console.log('drawer menu:', menu);
+const drawerTestSound = await evaluate(`document.querySelectorAll('#drawer [data-action=test-sound]').length`);
+if (drawerTestSound) errors.push(`drawer still has TEST SOUND: ${drawerTestSound}`);
 if (menu.at(-1) !== '⚙ SETTINGS' || menu.at(-2) !== '📖 READ THE RULES') {
   errors.push(`drawer rules placement: ${JSON.stringify(menu)}`);
 }
