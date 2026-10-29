@@ -19,6 +19,7 @@
 // accessible.
 
 import { renderSprite } from '../core/art.js';
+import { paintQR } from './qr.js';
 
 // ---------------------------------------------------------------------------
 // Palette — exact RGB values from theme.rs.
@@ -585,6 +586,7 @@ export function decorate(root = document) {
   root.querySelectorAll('canvas[data-squished]').forEach(mountSquished);
   root.querySelectorAll('canvas[data-empty-lily]').forEach(mountEmptyLily);
   root.querySelectorAll('canvas[data-pond-water]').forEach(mountWater);
+  root.querySelectorAll('canvas[data-qr]').forEach((cv) => paintQR(cv, cv.dataset.qr));
 }
 
 if (typeof window !== 'undefined') {

@@ -751,3 +751,99 @@ textarea { resize: vertical; min-height: 84px; }
 
 /* The label keeps its own layer above the painted log frame. */
 .btn .btn-label { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 7px; }
+
+/* --------------------------- receive window ---------------------------- */
+/* The warning band is the header (the one instruction a sender must get
+   right), and it flips with the tab. */
+.receive-warning {
+  position: relative;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 42px;
+  margin-bottom: 10px;
+  text-align: center;
+  font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 18px);
+  line-height: 1.15;
+  letter-spacing: .01em;
+}
+.receive-warning.red { background: #340e0e; color: #ff6a5e; }
+.receive-warning.green { background: #0c2c16; color: var(--tx-in); }
+.receive-x {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.receive-x:hover { color: var(--ink); }
+
+.receive-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.receive-tab {
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 2px solid var(--card);
+  border-radius: 0;
+  background: var(--card);
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .08em;
+}
+.receive-tab.on {
+  border-color: var(--accent);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.qr-wrap { display: flex; justify-content: center; margin: 6px 0 10px; }
+.qr-canvas {
+  display: block;
+  width: min(260px, 100%);
+  aspect-ratio: 1 / 1;
+  height: auto;
+  background: #f2f6f0;
+}
+.qr-wrap-full { margin: 12px 0; }
+.qr-wrap-full .qr-canvas { width: min(300px, 78vw); }
+
+.receive-address {
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 2px 0 6px;
+  user-select: all;
+}
+.receive-note { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.receive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.receive-actions .btn { flex: 1 1 auto; }
+.receive-book-row { margin-top: 8px; }
+.receive-book-row .btn { width: 100%; }
+
+.address-row { padding: 9px 0; border-bottom: 2px solid var(--line); }
+.address-row:last-of-type { border-bottom: 0; }
+.address-row .row { align-items: baseline; }
+.lane-dashes {
+  height: 8px;
+  margin: 12px 0 2px;
+  background-image: repeating-linear-gradient(90deg, rgba(240,200,60,.5) 0 26px, transparent 26px 44px);
+}

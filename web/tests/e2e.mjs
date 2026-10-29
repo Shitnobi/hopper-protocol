@@ -129,6 +129,48 @@ await sleep(600);
 const balance = await evaluate('document.querySelector(".balance")?.innerText');
 console.log('wallet:', balance?.replace(/\n/g, ' | '));
 
+// 1a. RECEIVE is the egui window: BITCOIN | HOPPERS tabs, a warning band,
+// and a scannable QR with real ink (not a placeholder).
+await click('sheet-receive');
+await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window');
+{
+  const first = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-qr]');
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let dark = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 60 && d[i + 1] < 60) dark++;
+    return {
+      warning: document.querySelector('.receive-warning')?.textContent.trim(),
+      tabs: [...document.querySelectorAll('.receive-tab')].map((b) => b.textContent.trim()),
+      address: document.querySelector('.receive-address')?.textContent.trim(),
+      dark,
+    };
+  })()`);
+  console.log('receive:', first);
+  if (!first.warning.includes("DON'T SEND HOPPERS")) errors.push('receive: missing the bitcoin warning');
+  if (first.tabs.join(',') !== 'BITCOIN,HOPPERS') errors.push(`receive: tabs ${JSON.stringify(first.tabs)}`);
+  if (first.dark < 1000) errors.push(`receive: QR has no ink (${first.dark})`);
+  await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=ord]').click()`);
+  await sleep(250);
+  const ord = await evaluate(`({
+    warning: document.querySelector('.receive-warning')?.textContent.trim(),
+    address: document.querySelector('.receive-address')?.textContent.trim(),
+    hasNew: Boolean(document.querySelector('[data-action=new-receive]')),
+  })`);
+  if (!ord.warning.includes('ONLY SEND HOPPERS')) errors.push('receive: missing the hoppers warning');
+  if (ord.hasNew) errors.push('receive: the fixed hoppers tab must not offer NEW ADDRESS');
+  if (ord.address === first.address) errors.push('receive: the two tabs show the same address');
+  await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=btc]').click()`);
+  await sleep(200);
+  const before = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
+  await click('new-receive');
+  await sleep(250);
+  const after = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
+  if (!after || after === before) errors.push('receive: NEW ADDRESS did not rotate');
+  await click('close-overlay');
+  await sleep(150);
+}
+
 // 1b. Every screen must fit the phone width.
 for (const v of ['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings']) {
   await evaluate(`document.querySelector('[data-action=nav][data-view=${v}]').click()`);

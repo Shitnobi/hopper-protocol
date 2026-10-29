@@ -109,11 +109,11 @@ export function busy(on, text = 'working…') {
   if (on) decorate(node);
 }
 
-export function openOverlay(html, { dismissable = true, type = 'modal' } = {}) {
+export function openOverlay(html, { dismissable = true, type = 'modal', lily = 'accent' } = {}) {
   const node = document.getElementById('overlay');
   if (!node) return;
   const cls = type === 'sheet' ? 'sheet' : 'modal';
-  node.innerHTML = `<div class="${cls}" data-modal data-lily="accent">${html}</div>`;
+  node.innerHTML = `<div class="${cls}" data-modal data-lily="${esc(lily)}">${html}</div>`;
   node.hidden = false;
   node.dataset.dismissable = dismissable ? '1' : '0';
   node.classList.toggle('bottom', type === 'sheet');

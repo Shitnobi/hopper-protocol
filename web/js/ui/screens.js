@@ -987,22 +987,69 @@ export function rulesPage(app) {
 
 export function receiveSheet(app) {
   const w = app.w;
-  const rows = [0, 1, 2].map((i) => w.keys.receive(i).address);
-  const frogAddress = w.keys.frogAddress();
+  const tab = app.receiveTab === 'ord' ? 'ord' : 'btc';
+  const address = tab === 'ord' ? w.keys.frogAddress() : w.receiveAddress();
+  const warning = tab === 'ord'
+    ? { cls: 'green', text: '🐸 ONLY SEND HOPPERS HERE' }
+    : { cls: 'red', text: "DON'T SEND HOPPERS HERE" };
+  const note = tab === 'ord'
+    ? 'FROGS / INSCRIPTIONS — the same TAPROOT address forever. Give it to anyone sending you a Hopper or an inscription. Sats here are never spent automatically (that keeps Hoppers safe), so they cannot fund a mint or a send: fund the wallet from the BITCOIN tab.'
+    : 'Fresh address — it rotates after it is paid. Ordinary Bitcoin only; sats sent here can fund mints and sends.';
   return `
-    <div class="row"><h2>RECEIVE</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">BIP84 P2WPKH · ${esc(w.network)}</div>
+    <div class="receive-warning ${warning.cls}" data-warning="${tab}">
+      <span>${esc(warning.text)}</span>
+      <button class="receive-x" data-action="close-overlay" aria-label="close">✖</button>
+    </div>
+    <div class="receive-tabs" role="tablist" aria-label="receive address kind">
+      <button class="receive-tab ${tab === 'btc' ? 'on' : ''}" role="tab" aria-selected="${tab === 'btc'}" data-action="receive-tab" data-tab="btc">BITCOIN</button>
+      <button class="receive-tab ${tab === 'ord' ? 'on' : ''}" role="tab" aria-selected="${tab === 'ord'}" data-action="receive-tab" data-tab="ord">HOPPERS</button>
+    </div>
+    <div class="qr-wrap">
+      <canvas class="qr-canvas" data-qr="${esc(address)}" width="260" height="260" role="img" aria-label="QR code for ${esc(address)}"></canvas>
+    </div>
+    <div class="receive-address wrap">${esc(address)}</div>
+    <div class="receive-note">${esc(note)}</div>
+    <div class="receive-actions">
+      ${logBtn('📋 COPY', 'copy', { edge: 'dim', cls: 'small', attrs: `data-text="${esc(address)}"` })}
+      ${logBtn('⛶ FULL QR', 'full-qr', { edge: 'dim', cls: 'small', attrs: `data-text="${esc(address)}"` })}
+      ${tab === 'btc' ? logBtn('✚ NEW ADDRESS', 'new-receive', { edge: 'accent', cls: 'small' }) : ''}
+    </div>
+    ${tab === 'btc' ? `<div class="receive-book-row">${logBtn('USED ADDRESSES', 'receive-book', { edge: 'dim', cls: 'small' })}</div>` : ''}
     <div class="sep"></div>
-    ${rows.map((a, i) => `
-      <div class="mt10">
-        <div class="tiny muted">${i === 0 ? 'MAIN' : `INDEX ${i}`}</div>
-        <div class="wrap small">${esc(a)}</div>
-        <button class="copy" data-action="copy" data-text="${esc(a)}">COPY</button>
-      </div>`).join('')}
-    <div class="mt10 tiny muted">FROG ADDRESS</div>
-    <div class="wrap small">${esc(frogAddress)}</div>
-    <button class="copy" data-action="copy" data-text="${esc(frogAddress)}">COPY</button>
-    <div class="hint mt10">Coins arriving here are ordinary P2WPKH. A frog arrives as the anchor sat inside a coin; PREPARE re-enters custody.</div>`;
+    <div class="sub">${tab === 'btc' ? 'BIP84 P2WPKH' : 'BIP86 P2TR'} · ${esc(w.network)}</div>`;
+}
+
+export function qrSheet(app, address) {
+  return `
+    <div class="row"><h2>SCAN TO RECEIVE</h2><div class="spacer"></div>${logBtn('✖', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="qr-wrap qr-wrap-full">
+      <canvas class="qr-canvas" data-qr="${esc(address)}" width="300" height="300" role="img" aria-label="QR code for ${esc(address)}"></canvas>
+    </div>
+    <div class="receive-address wrap">${esc(address)}</div>
+    <div class="mt14">${logBtn('📋 COPY ADDRESS', 'copy', { edge: 'accent', cls: 'block', attrs: `data-text="${esc(address)}"` })}</div>`;
+}
+
+export function receiveBook(app) {
+  const rows = app.w.receiveAddresses();
+  return `
+    <div class="row"><h2>ADDRESSES THIS WALLET USED</h2><div class="spacer"></div>${logBtn('✖', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">Every Bitcoin receive address this wallet generated — newest first. The frogs' address is one fixed thing and is not in this rotation.</div>
+    <div class="sep"></div>
+    ${rows.length ? rows.map((r) => `
+      <div class="address-row">
+        <div class="row">
+          <span class="tiny strong">BITCOIN #${r.index}${r.current ? ' · CURRENT' : ''}</span>
+          <div class="spacer"></div>
+          <span class="tiny ${r.sats ? 'good' : 'muted'}">${r.sats ? `${sats(r.sats)} sats` : 'empty'}</span>
+        </div>
+        <div class="wrap small">${esc(r.address)}</div>
+        <div class="row tiny muted">
+          <span>${r.used ? 'used' : 'never paid'}</span>
+          <div class="spacer"></div>
+          <button class="copy" data-action="copy" data-text="${esc(r.address)}">COPY</button>
+        </div>
+      </div>`).join('') : '<div class="muted small">no addresses have been generated yet</div>'}
+    <div class="lane-dashes" aria-hidden="true"></div>`;
 }
 
 export function sendSheet(app) {

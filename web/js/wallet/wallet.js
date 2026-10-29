@@ -93,6 +93,8 @@ export class WalletSession {
     this.imported = new Set();
     this.tipHeight = null;
     this.tipHash = null;
+    this.receiveIndex = 0;
+    this.receiveHistory = [];
     this.balance = { total: 0n, spendable: 0n, cards: 0n, unspendable: 0n };
     this._txCache = new Map();
     this._loadLedger();
@@ -109,6 +111,10 @@ export class WalletSession {
     this.history = l.history || [];
     this.imported = new Set(l.imported || []);
     this.used = l.used || {};
+    const gap = this.settings.gap || 20;
+    const index = Number(l.receiveIndex);
+    this.receiveIndex = Number.isInteger(index) && index >= 0 && index < gap ? index : 0;
+    this.receiveHistory = Array.isArray(l.receiveHistory) ? l.receiveHistory.slice(-gap * 4) : [];
   }
 
   _saveLedger() {
@@ -118,6 +124,8 @@ export class WalletSession {
       history: this.history.slice(-200),
       imported: [...this.imported],
       used: this.used || {},
+      receiveIndex: this.receiveIndex || 0,
+      receiveHistory: this.receiveHistory || [],
       lastRefresh: new Date().toISOString(),
       tipHeight: this.tipHeight,
     });
@@ -186,7 +194,7 @@ export class WalletSession {
     // instantly, but live Esplora/Electrum would otherwise spend one full
     // RTT per address on every action.
     const utxos = [];
-    const used = {};
+    const used = { ...(this.used || {}) };
     const scanned = await mapLimit(this._watched(), 6, async (w) => {
       let list = [];
       try { list = await this.backend.addressUtxos(w.address, w.script); } catch { list = []; }
@@ -213,7 +221,12 @@ export class WalletSession {
         });
         // Only record addresses that actually hold coins. Marking the whole
         // gap made the old address cursor think every index was used.
-        if (w.branch !== 'ord' && list.length) used[w.address] = true;
+        // The map is merged across refreshes: an address that was paid and
+        // later spent stays in the address book.
+        if (w.branch === 'receive' && list.length) {
+          used[w.address] = true;
+          this._noteReceiveAddress(w.address);
+        }
       });
     }
 
@@ -371,11 +384,72 @@ export class WalletSession {
     }
   }
 
+  // --- receive addresses -------------------------------------------------
+
+  /** The address the BITCOIN tab shows: a fresh BIP84 address that rotates. */
+  receiveAddress() {
+    const gap = this.settings.gap || 20;
+    if (!(this.receiveIndex >= 0 && this.receiveIndex < gap)) this.receiveIndex = 0;
+    const address = this.keys.receive(this.receiveIndex).address;
+    this._noteReceiveAddress(address);
+    return address;
+  }
+
+  _noteReceiveAddress(address) {
+    if (!Array.isArray(this.receiveHistory)) this.receiveHistory = [];
+    if (!this.receiveHistory.includes(address)) {
+      this.receiveHistory.push(address);
+      if (this.receiveHistory.length > Math.max(80, (this.settings.gap || 20) * 4)) {
+        this.receiveHistory = this.receiveHistory.slice(-Math.max(80, (this.settings.gap || 20) * 4));
+      }
+      this._saveLedger();
+    }
+  }
+
+  /** Rotate to a previously-unused receive address (never the frogs' one). */
+  newReceiveAddress() {
+    const gap = Math.max(1, this.settings.gap || 20);
+    const history = new Set(this.receiveHistory || []);
+    let next = (this.receiveIndex + 1) % gap;
+    for (let step = 1; step <= gap; step += 1) {
+      const candidate = (this.receiveIndex + step) % gap;
+      if (!history.has(this.keys.receive(candidate).address)) { next = candidate; break; }
+    }
+    this.receiveIndex = next;
+    const address = this.receiveAddress();
+    this._saveLedger();
+    this.dispatch('receive-address', { address, index: next });
+    return address;
+  }
+
+  /** Every bitcoin receive address handed out, newest first. */
+  receiveAddresses() {
+    const gap = Math.max(1, this.settings.gap || 20);
+    const history = new Set(this.receiveHistory || []);
+    // The current address is always handed out, even before it is paid.
+    history.add(this.keys.receive(this.receiveIndex || 0).address);
+    const rows = [];
+    for (let i = 0; i < gap; i += 1) {
+      const key = this.keys.receive(i);
+      if (!history.has(key.address)) continue;
+      const coins = this.utxos.filter((u) => u.address === key.address);
+      rows.push({
+        index: i,
+        address: key.address,
+        current: i === (this.receiveIndex || 0),
+        used: !!this.used?.[key.address],
+        sats: coins.reduce((n, u) => n + Number(u.value || 0), 0),
+        txs: 0,
+      });
+    }
+    return rows.sort((a, b) => b.index - a.index);
+  }
+
   // --- demo faucet -------------------------------------------------------
 
   async demoFund(coins = 8, value = 200000) {
     if (this.settings.mode !== 'demo') throw new Error('the faucet only exists in demo mode');
-    const receive = this.keys.receive(0);
+    const receive = this.keys.receive(this.receiveIndex || 0);
     await this.backend.fund(receive.script, value, coins);
     await this.refresh();
   }

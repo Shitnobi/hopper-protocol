@@ -61,10 +61,12 @@ web/
                            painters, mounted on canvases after each render
   js/ui/tour.js            the boot splash (a hop into the road) and the
                            eight animated rules pictures
+  js/ui/qr.js              the QR widget (quiet zone, paper/ink, placeholder)
   js/ui/dom.js             formatting, sprites, toasts, overlays
   js/main.js               boot, onboarding/lock, routing, action wiring
-  js/sound.js              WebAudio chip loop and SFX (gesture-gated)
-  js/vendor/               pinned noble/scure bundle (generated)
+  js/sound.js              the MIDI score player and the short SFX
+  music.mid                the score (the same file as frogger-wallet-pwa)
+  js/vendor/               pinned noble/scure bundle and qr.js (generated)
   tests/                   core vectors, game lifecycle, indexer seam,
                            headless browser e2e
   vendor-src/              the pinned npm project that builds the bundle
@@ -108,6 +110,15 @@ materials, so the wallet stays selectable, accessible and installable.
 The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
 boot intro and the eight-page rules walkthrough.
+
+RECEIVE is the egui bottom window, not an address list: a tab for
+**BITCOIN** (the rotating BIP84 receive branch, with NEW ADDRESS and USED
+ADDRESSES) and a tab for **HOPPERS** (the fixed BIP86 frog address), each
+with the warning band the tab demands ("DON'T SEND HOPPERS HERE" /
+"🐸 ONLY SEND HOPPERS HERE"), a scannable QR with the spec's quiet zone,
+the selectable address, COPY and FULL QR. The music is the egui app's
+`music.mid` played through WebAudio with the same tempo map, voice and
+master fader; the mute and volume still live in the wallet settings.
 
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):
@@ -247,7 +258,8 @@ node tests/e2e.mjs http://127.0.0.1:8130
 ```
 
 It creates a wallet, checks every screen fits a phone width, verifies the
-PWA manifest/service worker, mints through the worker, prepares, crosses,
+PWA manifest/service worker, opens both RECEIVE tabs (and checks the QR
+gets real ink), mints through the worker, prepares, crosses,
 mines six blocks, reloads without and with "keep this device unlocked", and
 fails on console errors or horizontal overflow. Screenshots land in
 `.shots/` (ignored).
@@ -256,6 +268,7 @@ Rebuild the vendored crypto bundle and the protocol vectors:
 
 ```sh
 cd web/vendor-src && npm ci && npm run build   # → js/vendor/bitcoin-lib.js
+cd web/vendor-src && npm run build:qr           # → js/vendor/qr.js
 cd rust && cargo run -p hopper-core --example vectors > ../web/tests/rust-vectors.json
 cd web && node tools/make-icons.mjs            # deterministic PWA icons
 ```

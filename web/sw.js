@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v6-18';
+const VERSION = 'hopper-v6-19';
 const SHELL = [
   './',
   'index.html',
@@ -11,6 +11,7 @@ const SHELL = [
   'icons/favicon-32.png',
   'js/main.js',
   'js/sound.js',
+  'music.mid',
   'js/core/art.js',
   'js/core/envelope.js',
   'js/core/fold.js',
@@ -28,6 +29,7 @@ const SHELL = [
   'js/ui/dom.js',
   'js/ui/screens.js',
   'js/ui/theme.js',
+  'js/ui/qr.js',
   'js/ui/tour.js',
   'js/wallet/actions.js',
   'js/wallet/addresses.js',
@@ -41,6 +43,7 @@ const SHELL = [
   'js/wallet/vault.js',
   'js/wallet/wallet.js',
   'js/vendor/bitcoin-lib.js',
+  'js/vendor/qr.js',
 ];
 
 self.addEventListener('install', (event) => {

@@ -39,6 +39,7 @@ const app = {
   menuOpen: false,
   intro: false,
   rulesWalk: null,
+  receiveTab: 'btc',
   frogRefusal: null,
   navChosen: false,
   seenFirstFrog: false,
@@ -74,6 +75,7 @@ function armSound() {
   sound.arm();
 }
 document.addEventListener('pointerdown', armSound, { once: true });
+document.addEventListener('touchstart', armSound, { once: true, passive: true });
 document.addEventListener('keydown', armSound, { once: true });
 
 // ---------------------------------------------------------------------------
@@ -784,7 +786,23 @@ const handlers = {
   'reveal-words'() {
     openOverlay(screens.wordsModal(app));
   },
-  'sheet-receive'() { openOverlay(screens.receiveSheet(app), { type: 'sheet' }); },
+  'sheet-receive'() { openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' }); },
+  'receive-tab'(el) {
+    app.receiveTab = el.dataset.tab === 'ord' ? 'ord' : 'btc';
+    openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
+  },
+  'new-receive'() {
+    if (!app.w) return;
+    app.w.newReceiveAddress();
+    app.receiveTab = 'btc';
+    openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
+    toast('new receive address', 'ok');
+  },
+  'full-qr'(el) {
+    const address = el.dataset.text || app.w?.receiveAddress() || '';
+    openOverlay(screens.qrSheet(app, address), { lily: 'home' });
+  },
+  'receive-book'() { openOverlay(screens.receiveBook(app), { lily: 'home' }); },
   'sheet-send'() { openOverlay(screens.sendSheet(app), { type: 'sheet' }); },
   'sheet-transfer'(el) {
     const f = app.w.frogBySat(el.dataset.sat);

@@ -5,11 +5,12 @@
   "type": "module",
   "description": "HOPPER v6 browser wallet, game client and PWA",
   "scripts": {
-    "test": "node tests/core.test.mjs && node tests/game.test.mjs",
+    "test": "node tests/core.test.mjs && node tests/game.test.mjs && node tests/media.test.mjs",
     "test:core": "node tests/core.test.mjs",
     "test:game": "node tests/game.test.mjs",
     "test:indexer": "node tests/indexer-e2e.mjs",
     "serve": "python3 -m http.server 8130",
-    "icons": "node tools/make-icons.mjs"
+    "icons": "node tools/make-icons.mjs",
+    "test:media": "node tests/media.test.mjs"
   }
 }
