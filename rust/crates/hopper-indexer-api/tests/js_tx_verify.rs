@@ -158,7 +158,7 @@ fn verify(case: &Case) {
 #[test]
 fn javascript_wallet_signatures_are_valid() {
     let cases = cases();
-    assert!(cases.len() >= 7, "expected the full lifecycle fixture");
+    assert!(cases.len() >= 6, "expected the full lifecycle fixture");
     for case in &cases {
         verify(case);
     }
@@ -170,7 +170,6 @@ fn javascript_wallet_signatures_are_valid() {
         "cross",
         "transfer",
         "send",
-        "burn",
     ] {
         assert!(labels.contains(&want), "fixture missing {want}");
     }

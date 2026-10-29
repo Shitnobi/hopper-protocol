@@ -973,17 +973,6 @@ const handlers = {
       navigate('road');
     });
   },
-  burn(el) {
-    const f = app.w.frogBySat(el.dataset.sat);
-    if (!f) return;
-    if (!confirm(`Burn ${f.name || 'this frog'}? The state output becomes a fee and the sat is gone forever. This cannot be undone.`)) return;
-    run('burning the frog', async () => {
-      const built = await app.w.burn(f);
-      sound.sfx('error');
-      toast(`Burned ${f.name || 'frog'} in ${shortHash(built.txid, 6)}`, 'ok');
-      navigate('pond');
-    });
-  },
   'do-transfer'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
     if (!f) return;

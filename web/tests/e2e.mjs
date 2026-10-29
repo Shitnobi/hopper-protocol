@@ -531,6 +531,21 @@ else {
   if (detailPips.right > detailPips.innerWidth + 1) errors.push(`pips: row overflows (${JSON.stringify(detailPips)})`);
 }
 
+// There must be no burn action anywhere in the app, no burn builder in the
+// wallet module, and no BURN control on an owned Hopper's detail page.
+const burnSurface = await evaluate(`(async () => {
+  const actions = await import('./js/wallet/actions.js');
+  return {
+    builder: typeof actions.buildBurn,
+    buttons: document.querySelectorAll('[data-action=burn]').length,
+    detail: document.querySelector('.detail-info')?.innerText || '',
+  };
+})()`);
+console.log('burn surface:', burnSurface);
+if (burnSurface.builder !== 'undefined') errors.push('wallet still exports buildBurn');
+if (burnSurface.buttons !== 0) errors.push(`burn controls in the app: ${burnSurface.buttons}`);
+if (/\bBURN\b/.test(burnSurface.detail)) errors.push('frog detail still offers BURN');
+
 // A high-target frog must still wrap inside a 320px pond column rather
 // than shrinking beyond legibility or pushing the page sideways.
 const bigPips = await evaluate(`(async () => {

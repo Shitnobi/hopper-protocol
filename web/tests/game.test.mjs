@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 import { deriveWallet } from '../js/wallet/keys.js';
 import { DemoBackend } from '../js/wallet/backend.js';
-import { buildMint, buildPrepare, buildCross, buildTransfer, buildSend, buildBurn } from '../js/wallet/actions.js';
+import { buildMint, buildPrepare, buildCross, buildTransfer, buildSend } from '../js/wallet/actions.js';
 import { stateScripts } from '../js/wallet/actions.js';
+import * as actions from '../js/wallet/actions.js';
 import { requiredAt, CARD_VALUE } from '../js/core/params.js';
 import { p2trScript } from '../js/wallet/addresses.js';
-import { bytesToHex, hexToBytes } from '../js/core/hex.js';
 import { parseTx } from '../js/wallet/txparse.js';
 import { writeFileSync } from 'node:fs';
 
@@ -15,6 +15,32 @@ const MNEMONIC = 'deliver cat inch coyote consider beyond extend fence fish grai
 const wallet = deriveWallet(MNEMONIC, 'regtest');
 const backend = new DemoBackend('regtest', { fresh: true });
 const chain = backend.chain;
+
+// The wallet has no burn path: no builder, and funding selection refuses
+// every coin that is not a plain BIP84 P2WPKH output.
+assert.equal('buildBurn' in actions, false, 'the wallet must not expose a burn builder');
+const fundShape = { spendable: true, exact: true, frogs: [], txid: '00'.repeat(32), vout: 0, value: 1000 };
+assert.equal(actions.isFundingUtxo({ ...fundShape, kind: 'p2wpkh' }), true);
+for (const kind of ['frog', 'state', 'p2tr', undefined]) {
+  assert.equal(actions.isFundingUtxo({ ...fundShape, kind }), false, `${kind} is never funding`);
+}
+assert.equal(actions.isFundingUtxo({ ...fundShape, kind: 'p2wpkh', frogs: [1] }), false);
+assert.throws(
+  () => actions.selectFunding([{ ...fundShape, kind: 'frog', frogs: [1] }], 1n),
+  /insufficient funds/,
+  'a frog coin can never buy a fee',
+);
+assert.throws(
+  () => actions.buildSend({
+    keys: wallet,
+    utxos: [{ ...fundShape, kind: 'frog', frogs: [1], script: p2trScript(wallet.ord.outputXonly) }],
+    recipientScript: wallet.receive(3).script,
+    amount: 10000,
+    feeRate: 2,
+  }),
+  /insufficient funds/,
+  'an ordinary send cannot spend a frog coin',
+);
 
 // Every signed transaction is exported with its prevouts so the Rust
 // test `hopper-indexer-api/tests/js_tx_verify.rs` can verify the
@@ -151,29 +177,6 @@ if (plain) {
   assert.equal(chain.tipHeight(), before + 1);
   const got = await backend.addressUtxos(wallet.receive(3).address, wallet.receive(3).script);
   assert.ok(got.some((u) => u.value === 10000), 'recipient got the send');
-}
-
-// BURN: the card to fees, no frog output.
-if (frog.location) {
-  const at = chain.utxo(frog.location.txid, frog.location.vout);
-  const burnState = stateScripts(frog, wallet.ord.ownerXonly);
-  const atScript = hexToBytes(at.scriptHex);
-  const isState = bytesToHex(atScript) === bytesToHex(burnState.script);
-  const burnUtxo = {
-    txid: frog.location.txid, vout: frog.location.vout, value: at.value,
-    script: atScript, kind: isState ? 'state' : 'p2wpkh',
-    key: isState ? undefined : wallet.receive(1),
-    exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat],
-  };
-  const stateBefore = frog.state;
-  const burn = buildBurn({ keys: wallet, utxo: burnUtxo, frog, feeRate: 2 });
-  collect('burn', burn.hex);
-  chain.submit(burn.hex);
-  const burned = chain.record(mint.sat);
-  // A dead frog stays dead; the sat is still gone and the burn is recorded.
-  assert.equal(burned.state, stateBefore === 'dead' ? 'dead' : 'burned');
-  assert.equal(burned.location, null);
-  assert.equal(burned.burn_txid, burn.txid);
 }
 
 writeFileSync(new URL('./js-txs.json', import.meta.url), JSON.stringify(exported, null, 1));

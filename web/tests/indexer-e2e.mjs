@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { deriveWallet } from '../js/wallet/keys.js';
 import { DemoBackend } from '../js/wallet/backend.js';
-import { buildMint, buildPrepare, buildCross, buildBurn } from '../js/wallet/actions.js';
+import { buildMint, buildPrepare, buildCross } from '../js/wallet/actions.js';
 import { stateScripts } from '../js/wallet/actions.js';
 import { CARD_VALUE, GENESIS, requiredAt } from '../js/core/params.js';
 import { p2trScript } from '../js/wallet/addresses.js';
@@ -168,25 +168,6 @@ rec = await (await fetch(`${API}/v1/frogger/${mint.sat}`)).json();
 assert.equal(rec.in_flight, undefined);
 assert.ok(['idle', 'home', 'dead', 'burned'].includes(rec.state), rec.state);
 assert.equal(rec.crossings_settled, 1);
-
-// BURN: the whole card to fees, no frog output. The indexer marks the
-// location burned and the state becomes absorbing.
-if (rec.location) {
-  const burnState = stateScripts(rec, wallet.ord.ownerXonly);
-  const burnUtxo = {
-    txid: rec.location.txid, vout: rec.location.vout, value: Number(CARD_VALUE),
-    script: burnState.script, kind: 'state', exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat],
-  };
-  const stateBefore = rec.state;
-  const burn = buildBurn({ keys: wallet, utxo: burnUtxo, frog: rec, feeRate: 2 });
-  await submitTx(burn.hex, 'burn');
-  rec = await (await fetch(`${API}/v1/frogger/${mint.sat}`)).json();
-  // Only an idle frog becomes `burned`; a dead frog stays dead but the
-  // location is burned and the burn txid is recorded.
-  assert.equal(rec.state, stateBefore === 'dead' ? 'dead' : 'burned');
-  assert.ok(rec.location == null);
-  assert.equal(rec.burn_txid, burn.txid);
-}
 
 const root = await (await fetch(`${API}/v1/state/root`)).json();
 console.log('indexer e2e: ok');

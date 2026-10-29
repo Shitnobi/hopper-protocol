@@ -77,7 +77,14 @@ function actualTypes(tx, types) {
 // --- coin selection -------------------------------------------------------
 
 export function isFundingUtxo(u) {
-  return u.spendable !== false && u.kind !== 'state' && !(u.frogs && u.frogs.length) && u.exact !== false;
+  // Funding is BIP84 P2WPKH only. The frog address (P2TR) and every state
+  // card are excluded here as well as in Wallet._funding(), so no ordinary
+  // send, mint, TRAVEL TO ROAD or CROSS can ever select the anchor sat as a
+  // fee input. There is deliberately no burn builder in this file.
+  return u.kind === 'p2wpkh'
+    && u.spendable !== false
+    && !(u.frogs && u.frogs.length)
+    && u.exact !== false;
 }
 
 export function selectFunding(utxos, target, exclude = []) {
@@ -430,39 +437,6 @@ export function buildTransfer({
     fee,
     valueToRecipient: tx.outputs[0].value,
   };
-}
-
-// --- BURN: spend the frog's sat to fees -----------------------------------
-// The state output pays one zero-value OP_RETURN and nothing else, so the
-// whole card is fee. FIFO assignment leaves the frog sat unassigned; the
-// indexer marks the location burned (SPEC §4.5). Burning is a forfeit: the
-// sat is gone and no later crossing can bring it home.
-
-export function buildBurn({ keys, utxo, frog = null, feeRate = 2 }) {
-  const ord = keys.ord;
-  const kind = utxo.kind || (frog ? 'state' : 'p2wpkh');
-  const state = kind === 'state' ? stateScripts(frog, ord.ownerXonly) : null;
-  const script = kind === 'state' ? state.sendLeaf : null;
-  const tx = makeTx({
-    inputs: [inputFromUtxo(utxo)],
-    outputs: [output(0n, Uint8Array.of(0x6a))],
-  });
-  const type = kind === 'state'
-    ? { type: 'tapscript', scriptLen: script.length }
-    : kind === 'p2wpkh' ? { type: 'p2wpkh' } : { type: 'p2tr-key' };
-  const total = BigInt(utxo.value);
-  const minimum = feeFor(estimateVsize(tx, [type]), Math.max(1, feeRate));
-  if (total < minimum) throw new Error('coin too small to pay its own fee');
-  if (kind === 'state') {
-    signTapscript(tx, 0, ord.ownerPrivate, script, state.sendControl, [{
-      value: total, script: utxo.script,
-    }]);
-  } else if (kind === 'p2tr' || kind === 'frog') {
-    signTaprootKeyPath(tx, 0, ord.ownerPrivate, [{ value: total, script: utxo.script }]);
-  } else {
-    signP2wpkh(tx, 0, utxo.key.privateKey, utxo.key.publicKey, utxo.value);
-  }
-  return { tx, hex: bytesToHex(serializeTx(tx, true)), txid: txid(tx), fee: total };
 }
 
 // --- ordinary send (never touches a frog) ---------------------------------

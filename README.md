@@ -18,7 +18,7 @@ is an inscription whose outcome is fixed by a future block hash.
 
 The demo chain runs entirely in the browser: FIFO sat assignment, mint
 validation, prepare/cross state scripts, the T+1 death decree, T+6
-settlement, transfers, burns, NPC residents and a faucet. It persists to
+settlement, transfers, fee sweeps, NPC residents and a faucet. It persists to
 `localStorage`.
 
 ```sh
@@ -101,9 +101,16 @@ web/
   death_bps(target) * 2^32`. No floats. Settlement at `T+6`: survive →
   `dist++`, `home` at `dist >= target`; otherwise `dead`.
 - **Transfer**: an ordinary spend; it publishes no envelope and changes no
-  state. **Burn**: spending the frog's sat to fees sets `location = burned`
-  (an idle frog becomes `burned`; a dead frog stays dead; an in-flight
-  crossing settles `burned`).
+  state. **Fee-swept sats**: spending the frog's sat to fees sets
+  `location = burned` (an idle frog becomes `burned`; a dead frog stays
+  dead; an in-flight crossing settles `burned`).
+
+The wallet has no BURN action. There is no button, no `buildBurn`, and no
+session method that pays a Hopper's anchor sat to fees; `TRANSFER` moves
+the sat to a recipient, while TRAVEL TO ROAD and CROSS keep it at offset 0
+of the card. The indexer still recognizes a fee-swept anchor from a
+transaction built elsewhere, so an externally lost Hopper can be shown
+honestly instead of disappearing.
 
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
@@ -231,8 +238,10 @@ curl -sN localhost:9770/v1/events/stream
   verifies the JS signatures, so a witness bug cannot hide behind the
   witness-free indexer.
 - **Actions**: `buildMint` (commit + reveal), `buildPrepare`, `buildCross`,
-  `buildTransfer`, `buildSend`, `buildBurn`, all fee-sized from the actual
-  scripts. The session runs `buildMint` in a module worker so hashing and
+  `buildTransfer`, `buildSend`, all fee-sized from the actual scripts, and
+  deliberately no burn builder. Funding selection accepts only plain BIP84
+  P2WPKH coins, never the frog address or a state card. The session runs
+  `buildMint` in a module worker so hashing and
   signing the 14 KiB mint document cannot make the page unresponsive; if a
   browser cannot start the worker it falls back to the main thread.
 - **Travel To Road**: the UI name for `buildPrepare`. A warning explains
@@ -275,7 +284,7 @@ curl -sN localhost:9770/v1/events/stream
 ```sh
 cd web
 node tests/core.test.mjs        # 64 checks against Rust vectors
-node tests/game.test.mjs        # mint → prepare → cross → settle → transfer → burn
+node tests/game.test.mjs        # mint → prepare → cross → settle → transfer (and no burn path)
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
@@ -294,8 +303,7 @@ cargo test -p hopper-indexer-api --test js_tx_verify
 The indexer seam starts a fresh Rust API with
 `HOPPER_INSCRIPTION_ACTIVATION_HEIGHT=0`, seeds the demo faucet coins via
 `/v1/admin/seed`, submits JS-built blocks through `/v1/admin/block`, and
-asserts the Rust state machine reaches the same mint, crossing, settlement
-and burn.
+asserts the Rust state machine reaches the same mint, crossing and settlement.
 
 Headless UI test (Chromium):
 

@@ -14,7 +14,7 @@ import { DemoBackend, LiveBackend } from './backend.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
-  anchorOffsetOf, buildBurn, buildCross, buildMint, buildPrepare, buildSend,
+  anchorOffsetOf, buildCross, buildMint, buildPrepare, buildSend,
   buildTransfer, stateScripts,
 } from './actions.js';
 
@@ -1243,19 +1243,6 @@ export class WalletSession {
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'transfer', sat: frog.sat, txid: built.txid, to: address });
-    this.imported.delete(Number(frog.sat));
-    await this.refresh();
-    return built;
-  }
-
-  async burn(frog) {
-    await this.refresh();
-    frog = this.frogBySat(frog.sat) || frog;
-    const utxo = this._frogUtxo(frog);
-    if (!utxo) throw new Error('the frog output is not in this wallet');
-    const built = buildBurn({ keys: this.keys, utxo, frog, feeRate: rateOr(this.settings.feeRate) });
-    await this.backend.broadcast(built.hex);
-    this._recordAction({ kind: 'burn', sat: frog.sat, txid: built.txid });
     this.imported.delete(Number(frog.sat));
     await this.refresh();
     return built;

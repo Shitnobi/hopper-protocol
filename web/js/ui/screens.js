@@ -461,8 +461,11 @@ function historyRows(w) {
 
 const KIND_LABEL = {
   mint: 'MINT', prepare: 'TRAVEL TO ROAD', cross: 'CROSS', settle: 'SETTLE',
-  transfer: 'TRANSFER', burn: 'BURN', send: 'SEND', receive: 'RECEIVE',
-  faucet: 'RECEIVE', chain: 'CHAIN',
+  transfer: 'TRANSFER', send: 'SEND', receive: 'RECEIVE', faucet: 'RECEIVE',
+  chain: 'CHAIN',
+  // Only an indexer event from a transaction built elsewhere. The wallet
+  // has no burn action and never constructs one.
+  burn: 'FEE SWEEP',
 };
 
 function txRow(app, r) {
@@ -639,7 +642,6 @@ export function frogDetail(app, sat) {
   const canPrepare = owned && f.state === 'idle' && utxo && kind !== 'state';
   const canCross = owned && f.state === 'idle' && utxo && kind === 'state';
   const canTransfer = owned && !!utxo && !['burned', 'crossing', 'retired'].includes(f.state);
-  const canBurn = owned && !!utxo && !['burned', 'retired'].includes(f.state);
   const state = f.state || 'idle';
   const target = targetOf(f, w.tipHeight || 0);
   const targetLabel = state === 'idle' ? 'Next hop target'
@@ -688,7 +690,6 @@ export function frogDetail(app, sat) {
         ${owned && !f.commit_pending ? `
         <div class="actions mt10">
           ${canTransfer ? logBtn('TRANSFER', 'sheet-transfer', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` }) : ''}
-          ${canBurn ? logBtn('BURN', 'burn', { edge: 'dead', cls: 'small danger', attrs: `data-sat="${f.sat}"` }) : ''}
         </div>` : ''}
       </div>
     </div>

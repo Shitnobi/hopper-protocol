@@ -520,14 +520,20 @@ in_flight = None; provisional_dead = None
 emit Settle event
 ```
 
-### 4.5 TRANSFER and BURN
+### 4.5 TRANSFER and fee-swept sats
 
 A spend of the frog's outpoint without a valid crossing envelope is a
 transfer: update `location`; state unchanged. A spend that sends the anchor
-sat to fees marks `location = burned`, sets `burn_height/burn_txid`, and:
+sat to fees is a fee sweep. A wallet MUST NOT build, offer, or expose any
+operation whose purpose or effect is to send the anchor sat to fees. The
+indexer still classifies such a spend, built elsewhere, and marks
+`location = burned`, sets `burn_height/burn_txid`, and:
 
 * an idle frog becomes `burned` immediately (nothing else will observe it);
 * an in-flight crossing keeps its timer and settles as `burned` at finality.
+
+`burned` and the `burn` event name are retained for indexer/API
+compatibility, not as a wallet action.
 
 ### 4.6 Events
 
@@ -538,7 +544,7 @@ The indexer publishes a re-derivable log keyed by
 mint    { frogger_sat, seed, name }
 transfer{ frogger_sat }
 settle  { frogger_sat, outcome: dead|crossed }
-burn    { frogger_sat }
+burn    { frogger_sat }   # legacy name for a fee-swept anchor; no wallet action
 ```
 
 ### 4.7 Reorgs
