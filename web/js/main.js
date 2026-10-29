@@ -852,7 +852,10 @@ const handlers = {
     });
   },
   'reveal-words'() {
-    openOverlay(screens.wordsModal(app));
+    if (app.w) openOverlay(screens.seedWarning(), { lily: 'dead' });
+  },
+  'reveal-words-approved'() {
+    if (app.w) openOverlay(screens.wordsModal(app), { lily: 'dead' });
   },
   'sheet-receive'() { openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' }); },
   'receive-tab'(el) {
@@ -931,13 +934,24 @@ const handlers = {
       navigate('pond');
     });
   },
-  prepare(el) {
-    const f = app.w.frogBySat(el.dataset.sat);
+  'travel-to-road'(el) {
+    const f = app.w?.frogBySat(el.dataset.sat);
+    if (f) openOverlay(screens.travelWarning(app, f), { lily: 'accent' });
+  },
+  'travel-approved'(el) {
+    const f = app.w?.frogBySat(el.dataset.sat);
     if (!f) return;
-    run('preparing custody', async () => {
-      await app.w.prepare(f);
-      toast('Frog is in custody (25,000-sat card)', 'ok');
-      openFrog(f.sat);
+    const staged = app.w._frogUtxo?.(f)?.kind === 'state';
+    closeOverlay();
+    if (staged) {
+      toast('This Hopper is already staged on The Road', 'ok');
+      navigate('road');
+      return;
+    }
+    run('traveling to The Road', async () => {
+      const built = await app.w.prepare(f);
+      toast(`Staged on The Road in ${shortHash(built.txid, 6)} · normal spends still work`, 'ok');
+      navigate('road');
     });
   },
   'do-cross'(el) {
@@ -949,7 +963,7 @@ const handlers = {
       let newOwnerXonly = null;
       if (ownerAddr) {
         const d = decodeAddress(ownerAddr, app.w.network);
-        if (d.type !== 'p2tr') throw new Error('Custody owner must be a P2TR address');
+        if (d.type !== 'p2tr') throw new Error('The new owner must be a P2TR address');
         newOwnerXonly = d.program;
       }
       const built = await app.w.cross(f, { feeRate: fee, newOwnerXonly });

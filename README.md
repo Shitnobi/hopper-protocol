@@ -229,6 +229,11 @@ curl -sN localhost:9770/v1/events/stream
   scripts. The session runs `buildMint` in a module worker so hashing and
   signing the 14 KiB mint document cannot make the page unresponsive; if a
   browser cannot start the worker it falls back to the main thread.
+- **Travel To Road**: the UI name for `buildPrepare`. A warning explains
+  that approval stages the Hopper in the tapscript state address the game
+  watches, that this is not a crossing, and that normal SEND/TRANSFER still
+  works from that address. Nothing is broadcast until the approval button
+  is pressed. The 12-word backup is likewise behind a warning gate.
 - **Mint draft**: the name starts blank and is optional. The seed is
   wallet-generated and read-only in the form; DICE rerolls it, and it is
   rotated as soon as the reveal broadcast is accepted so a finished seed
@@ -296,10 +301,10 @@ node tests/e2e.mjs http://127.0.0.1:8130
 
 It creates a wallet, checks every screen fits a phone width, verifies the
 PWA manifest/service worker, opens both RECEIVE tabs (and checks the QR
-gets real ink), mints through the worker, prepares, crosses,
-mines six blocks, reloads without and with "keep this device unlocked", and
-fails on console errors or horizontal overflow. Screenshots land in
-`.shots/` (ignored).
+gets real ink), mints through the worker, approves TRAVEL TO ROAD at its
+warning, crosses, mines six blocks, reloads without and with "keep this
+device unlocked", and fails on console errors or horizontal overflow.
+Screenshots land in `.shots/` (ignored).
 
 Rebuild the vendored crypto bundle and the protocol vectors:
 

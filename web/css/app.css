@@ -343,7 +343,8 @@ p { margin: .45em 0; }
 }
 .pf-name { display: block; text-align: center; font-weight: 700; font-size: 14px; color: var(--ink); margin-top: 2px; }
 .pf-sub { display: block; text-align: center; font-size: 10px; color: var(--muted); }
-.pf-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.pf-actions { display: flex; justify-content: flex-end; gap: 5px; margin-top: 4px; }
+.pf-actions .btn { flex: 0 0 auto; min-width: 0; padding: 5px 6px; font-size: 10px; letter-spacing: 0; white-space: nowrap; }
 
 .water-box {
   position: relative;

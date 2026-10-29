@@ -366,6 +366,31 @@ console.log('scan policy:', scanPanel.text.replace(/\n/g, ' | '));
 if (!scanPanel.hasRescan || !scanPanel.hasExtend || !/SCAN|Scan window/i.test(scanPanel.text)) {
   errors.push(`settings: scan policy is incomplete ${JSON.stringify(scanPanel)}`);
 }
+// The seed is behind a warning gate. It must not be in the DOM until the
+// explicit approval button is pressed.
+await evaluate(`document.querySelector('[data-action=reveal-words]').click()`);
+await sleep(150);
+const seedGate = await evaluate(`({
+  words: document.querySelectorAll('.overlay .words span').length,
+  approve: Boolean(document.querySelector('.overlay [data-action=reveal-words-approved]')),
+  text: document.querySelector('.overlay')?.innerText || '',
+})`);
+console.log('seed warning:', { words: seedGate.words, approve: seedGate.approve });
+if (seedGate.words !== 0 || !seedGate.approve || !/ANYONE WHO SEES/i.test(seedGate.text)) {
+  errors.push(`settings: seed warning gate is incomplete ${JSON.stringify({ words: seedGate.words, approve: seedGate.approve })}`);
+}
+const seedFit = await evaluate(`(() => {
+  const m = document.querySelector('.overlay .modal');
+  return m ? { sw: m.scrollWidth, cw: m.clientWidth } : null;
+})()`);
+if (!seedFit || seedFit.sw > seedFit.cw + 1) errors.push(`seed warning overflows horizontally: ${JSON.stringify(seedFit)}`);
+await evaluate(`document.querySelector('.overlay [data-action=reveal-words-approved]').click()`);
+await sleep(150);
+const revealedWords = await evaluate(`document.querySelectorAll('.overlay .words span').length`);
+if (revealedWords !== 12) errors.push(`settings: approval did not reveal 12 words (${revealedWords})`);
+await click('close-overlay');
+await sleep(100);
+
 await click('rescan');
 await sleep(150);
 await click('rescan');
@@ -416,6 +441,22 @@ const pond = await evaluate('document.querySelector("#app")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
 if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
 
+// The pond card offers SEND and TRAVEL TO ROAD side by side.
+const pondActions = await evaluate(`(() => {
+  const item = document.querySelector('.pond-item');
+  const buttons = [...item.querySelectorAll('.pf-actions .btn')];
+  const r = buttons.map((b) => b.getBoundingClientRect());
+  return {
+    labels: buttons.map((b) => b.textContent.trim()),
+    sameRow: r.length === 2 && Math.abs(r[0].top - r[1].top) < 1,
+    fits: r.length === 2 && r[1].right <= item.getBoundingClientRect().right + 1,
+  };
+})()`);
+console.log('pond actions:', pondActions);
+if (pondActions.labels.join('|') !== 'SEND|TRAVEL TO ROAD' || !pondActions.sameRow || !pondActions.fits) {
+  errors.push(`pond travel button: ${JSON.stringify(pondActions)}`);
+}
+
 // The wallet shrinks the pond to a small generic preview. It is one link,
 // not the full grid, and it opens The Pond.
 await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
@@ -453,12 +494,28 @@ if (nextDraft.name !== '') errors.push(`mint: name was not cleared after broadca
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelector(".pond-item")', 15000, 'pond after mint draft check');
 
-// 3. Open frog, prepare custody.
+// 3. Open the frog. Travel To Road must explain the staging transaction
+// and wait for approval before anything is broadcast.
 await evaluate(`document.querySelector('.pond-item [data-action=open-frog]').click()`);
-await waitFor('document.querySelector("[data-action=prepare]")', 15000, 'prepare button');
-await click('prepare');
-await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cross button after prepare');
+await waitFor('document.querySelector("[data-action=travel-to-road]")', 15000, 'travel button');
+const detailTravel = await evaluate(`document.querySelector('[data-action=travel-to-road]').textContent.trim()`);
+if (detailTravel !== 'TRAVEL TO ROAD') errors.push(`detail travel label: ${JSON.stringify(detailTravel)}`);
 console.log('frog detail:', (await evaluate('document.querySelector(".detail-head")?.innerText')).replace(/\n/g, ' | '));
+await click('travel-to-road');
+await waitFor('document.querySelector(".overlay [data-action=travel-approved]")', 5000, 'travel warning');
+const travelWarn = await evaluate(`document.querySelector('.overlay').innerText`);
+if (!/tapscript/i.test(travelWarn) || !/normal spends/i.test(travelWarn) || !/not a crossing/i.test(travelWarn)) {
+  errors.push(`travel warning copy: ${JSON.stringify(travelWarn.slice(0, 500))}`);
+}
+if (!/APPROVE/i.test(travelWarn)) errors.push('travel warning has no approval action');
+const travelFit = await evaluate(`(() => {
+  const m = document.querySelector('.overlay .modal');
+  return m ? { sw: m.scrollWidth, cw: m.clientWidth } : null;
+})()`);
+if (!travelFit || travelFit.sw > travelFit.cw + 1) errors.push(`travel warning overflows horizontally: ${JSON.stringify(travelFit)}`);
+await evaluate(`document.querySelector('.overlay [data-action=travel-approved]').click()`);
+await waitFor('location.hash === "#/road"', 30000, 'road after travel approval');
+await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cross button after travel');
 
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);

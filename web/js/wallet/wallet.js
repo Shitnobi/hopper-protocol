@@ -1190,10 +1190,10 @@ export class WalletSession {
     if (frog.state === 'crossing') throw new Error('the frog is on the road; wait for settlement');
     const utxo = this._frogUtxo(frog);
     if (!utxo) throw new Error('the frog output is not in this wallet');
-    if (utxo.kind === 'state') throw new Error('the frog is already in custody');
+    if (utxo.kind === 'state') throw new Error('the Hopper is already staged on The Road');
     const offset = anchorOffsetOf(utxo, frog.sat);
     if (offset != null && offset !== 0) {
-      throw new Error('the frog sat is not first in this coin; split it before preparing');
+      throw new Error('the Hopper sat is not first in this coin; transfer it to its own output before traveling to The Road');
     }
     const built = buildPrepare({
       keys: this.keys, utxo, frog, funding: this._funding(),
@@ -1210,7 +1210,7 @@ export class WalletSession {
     frog = this.frogBySat(frog.sat) || frog;
     if (frog.state !== 'idle') throw new Error(`the frog is ${frog.state}; only an idle frog can cross`);
     const utxo = this._frogUtxo(frog);
-    if (!utxo || utxo.kind !== 'state') throw new Error('the frog must be in custody before it can cross');
+    if (!utxo || utxo.kind !== 'state') throw new Error('TRAVEL TO ROAD before crossing');
     const offset = anchorOffsetOf(utxo, frog.sat);
     if (offset != null && offset !== 0) {
       throw new Error('the frog sat is not first in this card; it cannot cross safely');

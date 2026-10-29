@@ -241,16 +241,18 @@ function pondItem(app, f, { mode } = {}) {
   } else if (crossing && mode !== 'road') {
     action = logBtn('🚫 ON ROAD', 'on-road', { edge: 'dim', cls: 'small' });
   } else if (mode === 'road') {
-    // HOPPER custody: a minted frog still sits in its mint output and must
-    // be prepared into the 25,000-sat state output before a crossing can
-    // be signed. The egui app's one-tap CROSS is preserved for frogs that
-    // are already in custody.
+    // A minted Hopper still sits in its mint output and must be staged in
+    // the 25,000-sat tapscript state output before a crossing can be signed.
     const utxo = app.w._frogUtxo?.(f);
     action = utxo?.kind === 'state'
       ? logBtn('🚦 CROSS', 'sheet-cross', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` })
-      : logBtn('PREPARE', 'prepare', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
+      : logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
   } else if (mode === 'wallet' || mode === 'pond') {
+    const utxo = app.w._frogUtxo?.(f);
     action = logBtn('SEND', 'sheet-transfer', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
+    if (utxo && f.state === 'idle') {
+      action += logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` });
+    }
   }
   const sub = pending
     ? '<span class="tiny muted">✏ INSCRIBING</span>'
@@ -462,7 +464,7 @@ function historyRows(w) {
 }
 
 const KIND_LABEL = {
-  mint: 'MINT', prepare: 'PREPARE', cross: 'CROSS', settle: 'SETTLE',
+  mint: 'MINT', prepare: 'TRAVEL TO ROAD', cross: 'CROSS', settle: 'SETTLE',
   transfer: 'TRANSFER', burn: 'BURN', send: 'SEND', receive: 'RECEIVE',
   faucet: 'RECEIVE', chain: 'CHAIN',
 };
@@ -673,7 +675,7 @@ export function frogDetail(app, sat) {
           ${state === 'idle' && !f.commit_pending ? (canCross
     ? logBtn('🚦 CROSS THE ROAD', 'sheet-cross', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
     : canPrepare
-      ? logBtn('PREPARE CUSTODY', 'prepare', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
+      ? logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
       : '') : ''}
           ${f.commit_pending ? '<div class="life-note">✏ INSCRIBING — the reveal is being confirmed. Crossing unlocks right after.</div>' : ''}
           ${state === 'crossing' ? `<div class="life-note">On the road… see The Road screen.</div><div class="mt6">${logBtn('Go to The Road', 'nav', { edge: 'dim', cls: 'small', attrs: 'data-view="road"' })}</div>` : ''}
@@ -892,7 +894,7 @@ export function settings(app) {
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">A live backend needs an indexer or ord server for sat ranges; Esplora alone can answer coins, not frog custody.</div>
+      <div class="hint">A live backend needs an indexer or ord server for sat ranges; Esplora alone can answer coins, not frog staging.</div>
     </div>
 
     <div class="window" data-lily="home">
@@ -1179,7 +1181,7 @@ export function transferSheet(app, f) {
       <dt>State</dt><dd>${esc(String(f.state || '').toUpperCase())}</dd>
     </div>
     <label class="field"><span>Recipient address</span><input type="text" data-input="transfer-to" placeholder="bcrt1…"></label>
-    <div class="hint">The recipient re-enters custody with PREPARE on their next action.</div>
+    <div class="hint">The recipient can stage it on The Road again with TRAVEL TO ROAD.</div>
     <div class="mt14">${logBtn('TRANSFER', 'do-transfer', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
 }
 
@@ -1197,6 +1199,54 @@ export function crossSheet(app, f) {
     <label class="field"><span>New owner P2TR address (optional)</span><input type="text" data-input="cross-owner" placeholder="leave empty to keep this wallet"></label>
     <label class="field"><span>Fee rate (sat/vB)</span><input type="number" min="1" data-input="cross-fee" value="${app.settings.feeRate}"></label>
     <div class="mt14">${logBtn('CROSS', 'do-cross', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
+}
+
+export function travelWarning(app, f) {
+  const name = esc(f?.name || 'THIS HOPPER');
+  const utxo = f ? app.w?._frogUtxo?.(f) : null;
+  const staged = utxo?.kind === 'state';
+  const unavailable = !utxo;
+  return `
+    <div class="row"><h2>🚦 TRAVEL TO ROAD</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="warnbox mt10">
+      <b>${unavailable ? 'NO SPENDABLE OUTPUT.' : staged ? 'ALREADY STAGED.' : 'THIS IS A STAGING TRANSACTION.'}</b><br>
+      ${unavailable
+        ? `This wallet cannot find a spendable output for ${name} right now. Nothing will be signed or broadcast.`
+        : staged
+          ? `${name} is already in the HOPPER tapscript staging address used to play the game. No new transaction will be broadcast.`
+          : `Approving moves ${name} into the HOPPER tapscript staging address used to play the game. It is not a crossing: no road result starts yet.`}
+    </div>
+    <div class="stat-grid mt10">
+      <dt>Hopper</dt><dd>${name}</dd>
+      ${f ? `<dt>Sat</dt><dd>${sats(f.sat)}</dd>` : ''}
+      <dt>State card</dt><dd>25,000 sats, still yours</dd>
+      <dt>Broadcast</dt><dd>${unavailable ? 'unavailable' : staged ? 'none — already staged' : 'on approval'}</dd>
+    </div>
+    ${unavailable ? '' : `<div class="warnbox mt10"><b>NORMAL SPENDS ARE STILL POSSIBLE.</b><br>
+      You can SEND or TRANSFER the Hopper normally from this tapscript address without crossing.
+      Traveling to The Road only makes it ready for a future CROSS. The 25,000-sat card stays
+      yours; only the Bitcoin miner fee leaves the wallet.
+    </div>`}
+    <div class="hint">${unavailable ? 'Close this window and refresh the wallet after its scan finishes.' : 'The approval button is the last step. Nothing is signed or broadcast before it.'}</div>
+    <div class="actions mt14">
+      ${logBtn('CANCEL', 'close-overlay', { edge: 'dim', cls: 'small' })}
+      ${f && !unavailable ? logBtn(staged ? 'GO TO THE ROAD' : '✓ APPROVE & TRAVEL', 'travel-approved', { edge: 'accent', attrs: `data-sat="${f.sat}"` }) : ''}
+    </div>`;
+}
+
+export function seedWarning() {
+  return `
+    <div class="row"><h2>⚠ REVEAL BACKUP</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="warnbox bad mt10">
+      <b>ANYONE WHO SEES THESE 12 WORDS OWNS THE WALLET.</b><br>
+      They can move every sat and take every Hopper. The words are shown on this screen only —
+      they are never sent to a server — but a person, camera, screen share or recording can still see them.
+    </div>
+    <div class="hint">Make sure nobody is watching. Never photograph the words, paste them into a website, or store them in a screenshot. Write them on paper and keep that paper offline.</div>
+    <div class="actions mt14">
+      ${logBtn('CANCEL', 'close-overlay', { edge: 'dim', cls: 'small' })}
+      ${logBtn('✓ SHOW THE 12 WORDS', 'reveal-words-approved', { edge: 'accent' })}
+    </div>`;
 }
 
 export function wordsModal(app) {
