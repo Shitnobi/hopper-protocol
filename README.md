@@ -175,6 +175,9 @@ curl -sN localhost:9770/v1/events/stream
   scripts. The session runs `buildMint` in a module worker so hashing and
   signing the 14 KiB mint document cannot make the page unresponsive; if a
   browser cannot start the worker it falls back to the main thread.
+- **Mint draft**: the name starts blank and is optional. The seed is
+  wallet-generated, shown read-only, and rotated as soon as the reveal
+  broadcast is accepted, so a finished seed cannot be reused.
 - **Vault**: AES-256-GCM under a PBKDF2-SHA-256 (210,000 rounds)
   non-extractable WebCrypto KEK. The KEK is cached in IndexedDB **only**
   when "keep this device unlocked" is checked; locking deletes it. Wiping

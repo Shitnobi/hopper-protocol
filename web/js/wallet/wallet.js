@@ -397,7 +397,7 @@ export class WalletSession {
     this._saveLedger();
   }
 
-  async mint({ seed, name = '', feeRate = null, revealFeeRate = null }) {
+  async mint({ seed, name = '', feeRate = null, revealFeeRate = null, onBroadcast = null }) {
     await this.refresh();
     const rate = rateOr(feeRate ?? this.settings.feeRate);
     const args = {
@@ -419,6 +419,13 @@ export class WalletSession {
     }
     await this.backend.broadcast(built.commit.hex);
     await this.backend.broadcast(built.reveal.hex);
+    // The reveal is the mint. Tell the UI immediately so its seed draft can
+    // rotate even if the post-broadcast refresh (below) fails.
+    if (onBroadcast) {
+      try { onBroadcast(built); } catch (e) {
+        console.warn('mint broadcast callback failed', e.message || String(e));
+      }
+    }
     this._recordAction({
       kind: 'mint', sat: built.sat, seed, name,
       txid: built.reveal.txid, commit: built.commit.txid, inscriptionId: built.reveal.inscriptionId,

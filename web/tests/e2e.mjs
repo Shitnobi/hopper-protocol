@@ -166,10 +166,19 @@ if (scrolled < 100) errors.push(`scroll test did not scroll (${scrolled})`);
 if (top > 1) errors.push(`route did not reset scroll (${top})`);
 console.log('scroll: route starts at top');
 
-// 2. Mint view: set a seed and mint.
+// 2. Mint view: the seed is wallet-assigned and read-only; the name starts blank.
 await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
 await waitFor('document.querySelector("[data-action=mint]")');
-await fill('mint-seed', 'deadbeef');
+const draft = await evaluate(`({
+  seed: document.querySelector('[data-seed-label]')?.textContent || '',
+  name: document.querySelector('[data-input=mint-name]')?.value,
+  hasSeedInput: Boolean(document.querySelector('[data-input=mint-seed]')),
+  hasDice: Boolean(document.querySelector('[data-action=random-seed]')),
+})`);
+console.log('mint draft:', draft);
+if (!draft.seed) errors.push('mint: seed label is missing');
+if (draft.hasSeedInput || draft.hasDice) errors.push('mint: seed is user-editable');
+if (draft.name !== '') errors.push(`mint: default name is not blank (${JSON.stringify(draft.name)})`);
 await fill('mint-name', 'Test Hopper');
 await sleep(300);
 await click('mint');
@@ -178,6 +187,19 @@ await waitFor('document.querySelectorAll(".frog-card").length > 0', 20000, 'mint
 const pond = await evaluate('document.querySelector(".panel.lily")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
 if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
+
+// A broadcast mint must replace the seed and clear the next draft.
+await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
+await waitFor('document.querySelector("[data-input=mint-name]")', 10000, 'mint draft after broadcast');
+const nextDraft = await evaluate(`({
+  seed: document.querySelector('[data-seed-label]')?.textContent || '',
+  name: document.querySelector('[data-input=mint-name]')?.value,
+})`);
+console.log('next mint draft:', nextDraft);
+if (nextDraft.seed === draft.seed) errors.push('mint: seed was not rotated after broadcast');
+if (nextDraft.name !== '') errors.push(`mint: name was not cleared after broadcast (${JSON.stringify(nextDraft.name)})`);
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await waitFor('document.querySelector(".frog-card")', 15000, 'pond after mint draft check');
 
 // 3. Open frog, prepare custody.
 await evaluate(`document.querySelector('.frog-card').click()`);

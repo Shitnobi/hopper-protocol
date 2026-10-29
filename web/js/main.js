@@ -1,7 +1,7 @@
 // HOPPER PWA — boot, vault, routing, and event handling.
 
 import {
-  busy, closeOverlay, copyText, esc, frogImg, hexSeed, openOverlay, seedText,
+  busy, closeOverlay, copyText, esc, frogImg, openOverlay, seedText,
   shortHash, sats, spriteUri, toast,
 } from './ui/dom.js';
 import * as screens from './ui/screens.js';
@@ -27,15 +27,33 @@ const app = {
   rulePage: 0,
   frogSat: null,
   frogRecord: null,
-  mintSeedText: '9058d0fa',
-  mintSeed: 0x9058d0fa,
-  mintName: 'Hopkinson',
+  mintSeed: 0,
+  mintName: '',
   ob: { step: 'welcome', mode: 'create', mnemonic: '', password: '', confirm: '', network: 'regtest', remember: false },
   lockError: '',
   frogLogo: spriteUri(0x9058d0fa, 'idle'),
-  previewUri: spriteUri(0x9058d0fa, 'idle'),
+  previewUri: '',
   screen: 'boot',
 };
+
+// The mint seed is wallet-local randomness, not a user choice. Rotate it
+// whenever a mint draft is finished so an old seed cannot be reused by
+// accident (or by replaying the previous form).
+function newMintSeed() {
+  const previous = app.mintSeed >>> 0;
+  let seed = previous;
+  while (seed === previous) seed = crypto.getRandomValues(new Uint32Array(1))[0] >>> 0;
+  app.mintSeed = seed;
+  app.previewUri = spriteUri(seed, 'idle');
+  return seed;
+}
+
+function resetMintDraft() {
+  newMintSeed();
+  app.mintName = '';
+}
+
+newMintSeed();
 
 const sound = new Sound({ volume: app.settings.volume, mute: app.settings.mute });
 let armed = false;
@@ -98,8 +116,9 @@ function updateMintPreview() {
   if (img) img.src = spriteUri(app.mintSeed, 'idle');
   const name = document.getElementById('mint-name-preview');
   if (name) name.textContent = app.mintName || 'UNNAMED';
-  const seedLabel = document.querySelector('[data-seed-label]');
-  if (seedLabel) seedLabel.textContent = `SEED ${seedText(app.mintSeed)}`;
+  for (const seedLabel of document.querySelectorAll('[data-seed-label]')) {
+    seedLabel.textContent = `SEED ${seedText(app.mintSeed)}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -241,10 +260,7 @@ async function startSession({ mnemonic, network, fingerprint }) {
       toast('Demo faucet: 8 coins funded', 'ok');
     } catch (e) { /* faucet is optional */ }
   }
-  app.mintSeed = 0x9058d0fa;
-  app.mintSeedText = '9058d0fa';
-  app.mintName = 'Hopkinson';
-  app.previewUri = spriteUri(app.mintSeed, 'idle');
+  resetMintDraft();
   if (location.hash) parseHash();
   if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
   navigate(app.view, { push: false });
@@ -602,21 +618,22 @@ const handlers = {
       await ensureViewData(app.view);
     });
   },
-  'random-seed'() {
-    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    app.mintSeed = seed;
-    app.mintSeedText = seed.toString(16).padStart(8, '0');
-    app.previewUri = spriteUri(seed, 'idle');
-    render();
-  },
   mint() {
     run('inscribing the frog (commit + reveal)', async () => {
-      // An empty seed means "roll a random seed" in the input handler. Reuse
-      // the seed that was drawn for the preview instead of rolling a second
-      // one at mint time.
-      const seed = app.mintSeedText.trim() ? hexSeed(app.mintSeedText) : (app.mintSeed >>> 0);
+      const seed = app.mintSeed >>> 0;
       const name = app.mintName.slice(0, 38);
-      const built = await app.w.mint({ seed, name });
+      let rotated = false;
+      const rotateDraft = () => {
+        if (rotated) return;
+        rotated = true;
+        resetMintDraft();
+        updateMintPreview();
+      };
+      // The wallet calls this as soon as the reveal transaction is broadcast,
+      // before its post-broadcast refresh. The fallback covers an alternate
+      // wallet path that returns without invoking the hook.
+      const built = await app.w.mint({ seed, name, onBroadcast: rotateDraft });
+      rotateDraft();
       sound.sfx('mint');
       toast(`Minted ${name || 'frog'} on sat ${sats(built.sat)}`, 'ok');
       navigate('pond');
@@ -776,12 +793,7 @@ document.addEventListener('input', (ev) => {
   const key = ev.target.dataset?.input;
   if (!key) return;
   const value = ev.target.value;
-  if (key === 'mint-seed') {
-    app.mintSeedText = value;
-    app.mintSeed = hexSeed(value);
-    app.previewUri = spriteUri(app.mintSeed, 'idle');
-    updateMintPreview();
-  } else if (key === 'mint-name') {
+  if (key === 'mint-name') {
     app.mintName = value;
     updateMintPreview();
   } else if (key === 'ob-mnemonic') {
@@ -843,11 +855,6 @@ document.addEventListener('change', (ev) => {
     render();
   } else if (['esploraUrl', 'indexerUrl', 'electrumUrl', 'mode'].includes(key)) {
     // Applied explicitly by APPLY so a half-typed URL never disconnects.
-  } else if (key === 'mint-seed') {
-    app.mintSeedText = value;
-    app.mintSeed = hexSeed(value);
-    app.previewUri = spriteUri(app.mintSeed, 'idle');
-    updateMintPreview();
   } else if (key === 'mint-name') {
     app.mintName = value;
     updateMintPreview();
