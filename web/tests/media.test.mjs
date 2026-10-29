@@ -2,7 +2,7 @@
 // score (and its parser) and the QR encoder. The players are exercised in
 // a real browser by e2e.mjs; these checks are the pure-computation half.
 import { readFileSync } from 'node:fs';
-import { parseMidi } from '../js/sound.js';
+import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
 
 let checks = 0;
@@ -19,6 +19,12 @@ ok(song.notes.every((n) => Number.isFinite(n.t0) && Number.isFinite(n.t1)
   && n.t1 >= n.t0 && n.note >= 0 && n.note <= 127), 'every note has sane timing and pitch');
 ok(song.notes.some((n) => n.vel > 0 && n.vel <= 127), 'every note carries a MIDI velocity');
 ok(song.pan.every(Array.isArray) && song.chanVol.every(Array.isArray), 'mixer lanes are arrays');
+
+// The player is the app's soundtrack, not a wallet-only effect: it wants
+// to play before any vault is opened (FROGGER parity), and reports it.
+const player = new Sound({ volume: 0.4, mute: false });
+ok(player.status().wanted, 'the score is wanted before a wallet is unlocked');
+ok(player.status().mute === false && player.status().volume === 0.4, 'the player mirrors its fader and mute');
 
 // ---- QR --------------------------------------------------------------
 const address = 'bcrt1qzztk65v4te28ta2uxw7lk994zjzt6ktkm7xtzf';

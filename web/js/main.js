@@ -66,6 +66,7 @@ function resetMintDraft() {
 newMintSeed();
 
 const sound = new Sound({ volume: app.settings.volume, mute: app.settings.mute });
+app.sound = sound;
 if (typeof window !== 'undefined') window.hopperSound = sound;
 let viewSeq = 0;
 let lastLocation = null;
@@ -395,6 +396,9 @@ function finishRules() {
 
 async function boot() {
   app.screen = 'boot';
+  // The score belongs to the whole app, not to an unlocked wallet: ask for
+  // it before onboarding/lock so the first gesture can start it anywhere.
+  sound.startLoop();
   if (!hasVault()) {
     app.screen = 'onboard';
     render();
@@ -592,6 +596,20 @@ const handlers = {
     sound.setMute(app.w.settings.mute);
     saveSettings(app.w.settings);
     render();
+  },
+  'test-sound'() {
+    sound.startLoop();
+    const state = sound.testTone();
+    if (state === 'no audio context') {
+      toast('This browser has no AudioContext.', 'err');
+    } else if (app.w?.settings.mute) {
+      toast('Test tone sent. Music is muted — tap SOUND: ON.', 'ok');
+    } else if ((app.w?.settings.volume ?? app.settings.volume) <= 0) {
+      toast('Test tone sent. Music volume is 0% — raise the fader.', 'ok');
+    } else {
+      toast(`Test tone sent (${state}). If you cannot hear it, this tab or the system output is muted.`, 'ok');
+    }
+    refreshSoundLines();
   },
   qr() {
     toast('Camera scanning is not wired in this browser build — paste the address instead.', 'err');
@@ -1130,6 +1148,13 @@ window.addEventListener('storage', (ev) => {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('hashchange', handleLocationChange);
+
+function refreshSoundLines() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  const text = screens.soundLine(app);
+  for (const el of document.querySelectorAll('[data-sound-line]')) el.textContent = text;
+}
+setInterval(refreshSoundLines, 1000);
 
 boot().catch((e) => {
   console.error(e);

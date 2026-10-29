@@ -564,6 +564,17 @@ p { margin: .45em 0; }
 .drawer .nav button.active { background: var(--bg); border-color: var(--accent); color: var(--ink); }
 .drawer .foot { margin-top: auto; padding-top: 12px; color: var(--muted); font-size: 11px; }
 
+.sound-line {
+  margin-top: 8px;
+  padding: 5px 7px;
+  border-left: 2px solid var(--accent);
+  background: rgba(0, 0, 0, .18);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
 .slider-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 12px; }
 .track { position: relative; height: 24px; margin-top: 4px; background: var(--bg); border: 2px solid var(--card); cursor: pointer; }
 .track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(240,200,60,.45); }

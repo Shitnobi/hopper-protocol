@@ -38,6 +38,26 @@ function rarityClass(f) {
   return `rarity-${String(rarityOf(f)).toLowerCase()}`;
 }
 
+/**
+ * The honest state of the soundtrack, for the drawer and Settings. A
+ * silent app should be able to say why: muted, volume at zero, waiting
+ * for the browser's first gesture, a suspended context, a score that
+ * failed to load, or actually playing.
+ */
+export function soundLine(app) {
+  const s = app?.sound?.status?.();
+  if (!s) return '♪ no player';
+  if (s.mute) return '♪ MUTED — tap SOUND: ON';
+  if (s.volume <= 0) return '♪ VOLUME 0% — raise the fader';
+  if (!s.armed) return '♪ TAP ONCE TO START (browser policy)';
+  if (s.error) return `♪ ${s.error}`;
+  if (s.state === 'none') return '♪ NO AUDIO CONTEXT IN THIS BROWSER';
+  if (s.state !== 'running') return `♪ ${String(s.state).toUpperCase()} — TAP TO RETRY`;
+  if (!s.notes) return '♪ LOADING THE SCORE…';
+  if (!s.timer) return `♪ READY · ${s.notes} NOTES`;
+  return `♪ PLAYING · ${s.notes} NOTES`;
+}
+
 function chip(text, tone = 'dim') {
   return `<span class="chip-ui ${esc(tone)}">${esc(text)}</span>`;
 }
@@ -120,8 +140,10 @@ export function drawer(app) {
       <div class="fill" data-volume-fill style="width:${Math.round((w?.settings?.volume ?? app.settings.volume) * 100)}%"></div>
       <div class="thumb" data-volume-thumb style="left:calc(${Math.round((w?.settings?.volume ?? app.settings.volume) * 100)}% - 3px)"></div>
     </div>
-    <div class="stack mt14">
+    <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
+    <div class="stack mt10">
       ${logBtn(w?.settings?.mute ? 'SOUND: MUTED' : 'SOUND: ON', 'menu-mute', { edge: w?.settings?.mute ? 'dim' : 'accent', cls: 'small block' })}
+      ${logBtn('♪ TEST SOUND', 'test-sound', { edge: 'dim', cls: 'small block' })}
       ${w ? logBtn('🔒 LOCK WALLET', 'lock', { edge: 'dim', cls: 'small block' }) : ''}
     </div>
     <div class="foot">
@@ -811,6 +833,9 @@ export function settings(app) {
         <label>Volume</label>
         <input type="range" min="0" max="100" data-input="volume" value="${Math.round((s.volume ?? 0.55) * 100)}">
       </div>
+      <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
+      <div class="actions mt10">${logBtn('♪ TEST SOUND', 'test-sound', { edge: 'dim', cls: 'small' })}</div>
+      <div class="hint">The test tone ignores the fader on purpose: it proves the tab may make sound. If it is audible but the score is not, the state line above names the reason.</div>
     </div>
 
     <div class="window" data-lily="accent">

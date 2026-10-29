@@ -122,12 +122,24 @@ flipping BITCOIN/HOPPERS never moves or resizes it.
 
 The music is the egui app's `music.mid` played through WebAudio with the
 same tempo map, voice and master fader; the mute and volume still live in
-the wallet settings. Browsers require one gesture before audio may start,
-so the first tap/click/key starts the score (later gestures retry if the
-browser suspended it). If it is silent, the drawer should read
-`SOUND: ON` with a non-zero volume; `hopperSound.status()` in the console
-reports `state: "running"`, `notes: 7635`. After an update, reload once
-more so the new service-worker shell replaces the cached scripts.
+the wallet settings. It is the app's soundtrack, not a wallet-only effect:
+like FROGGER, it starts on the first gesture on any screen — onboarding,
+the lock, or the wallet — and survives locking. The drawer (and Settings)
+shows a live line such as `♪ PLAYING · 7635 NOTES`, or names the reason it
+is silent (`MUTED`, `VOLUME 0%`, `SUSPENDED — TAP TO RETRY`, a load
+error). `♪ TEST SOUND` sends a short arpeggio straight to the output,
+ignoring the fader on purpose, to separate "this tab may make sound" from
+"the score is muted or not loaded". `hopperSound.status()` reports the
+same state in the console.
+
+Browsers require one gesture before audio may start, so the first
+tap/click/key starts the score (later gestures retry if the browser
+suspended it). A stale service worker is the other common cause: scripts
+are cache-first, so an old worker can keep serving the old player. Each
+shell now checks for its own cache on load and, if it is missing,
+unregisters the old worker and reloads once (`js/shell-reset.js`); after
+an update without that file, use DevTools → Application → Service
+Workers → Unregister once.
 
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):

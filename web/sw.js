@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v6-21';
+const VERSION = 'hopper-v6-22';
 const SHELL = [
   './',
   'index.html',
@@ -10,6 +10,7 @@ const SHELL = [
   'icons/apple-touch-icon.png',
   'icons/favicon-32.png',
   'js/main.js',
+  'js/shell-reset.js',
   'js/sound.js',
   'music.mid',
   'js/core/art.js',

@@ -192,7 +192,10 @@ export class Sound {
     this.cursor = 0;
     this.step = 0;
     this.armed = false;
-    this.wanted = false;
+    // The score is the app's soundtrack, not a wallet-only effect: FROGGER
+    // starts it on the first gesture and keeps it across lock/onboarding.
+    this.wanted = true;
+    this.lastError = '';
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (!this.ctx) return;
@@ -249,7 +252,9 @@ export class Sound {
   }
 
   stopLoop() {
-    this.wanted = false;
+    // Pause the transport, but do not turn the soundtrack off. Every
+    // gesture arms the player again, so a locked screen, a failed unlock
+    // or a wiped wallet cannot silence the app until a reload.
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -315,20 +320,24 @@ export class Sound {
       return Promise.resolve();
     }
     if (this.loading) return this.loading;
-    this.loading = fetch(MUSIC_URL)
+    // `no-cache` keeps a stale 404, an SPA fallback page or a half-written
+    // file in the HTTP cache from poisoning the score forever.
+    this.loading = fetch(MUSIC_URL, { cache: 'no-cache' })
       .then((r) => {
         if (!r.ok) throw new Error('music ' + r.status);
         return r.arrayBuffer();
       })
       .then((b) => {
         this.song = parseMidi(b);
+        this.lastError = '';
         if (this.wanted) this._transport();
       })
       .catch((e) => {
         // A transient fetch/parse failure must not poison every later
         // gesture: clear the in-flight promise so the next one retries.
         this.loading = null;
-        console.warn('hopper: no music —', e && e.message ? e.message : e);
+        this.lastError = e && e.message ? e.message : String(e);
+        console.warn('hopper: no music —', this.lastError);
       });
     return this.loading;
   }
@@ -445,6 +454,32 @@ export class Sound {
     h.stop(t + dur);
   }
 
+  /**
+   * A short arpeggio sent straight to the output, deliberately ignoring
+   * the fader and the mute. It answers "is this tab allowed to make any
+   * sound at all?" separately from "is the score loaded and unmuted?".
+   */
+  testTone() {
+    this.arm();
+    if (!this.ctx) return 'no audio context';
+    this._resume();
+    const t = this.ctx.currentTime + 0.04;
+    for (const [i, f] of [523.25, 659.25, 783.99].entries()) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      const at = t + i * 0.12;
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.18, at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+      osc.connect(g).connect(this.ctx.destination);
+      osc.start(at);
+      osc.stop(at + 0.24);
+    }
+    return this.ctx.state;
+  }
+
   /** For tests and the console: one glance at the player's state. */
   status() {
     return {
@@ -456,6 +491,7 @@ export class Sound {
       notes: this.song ? this.song.notes.length : 0,
       dur: this.song ? this.song.dur : 0,
       timer: !!this.timer,
+      error: this.lastError,
     };
   }
 
