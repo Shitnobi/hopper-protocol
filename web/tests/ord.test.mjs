@@ -5,8 +5,10 @@
 import assert from 'node:assert/strict';
 
 import {
-  OrdClient, LiveBackend, effectiveOrdUrl, ORDINALS_COM,
+  BLOCKSTREAM_ESPLORA, OrdClient, LiveBackend,
+  effectiveEsploraUrl, effectiveOrdUrl, ORDINALS_COM,
 } from '../js/wallet/backend.js';
+import { DEFAULT_SETTINGS } from '../js/wallet/wallet.js';
 
 let checks = 0;
 function eq(what, got, want) {
@@ -14,11 +16,22 @@ function eq(what, got, want) {
   checks++;
 }
 
-// --- choosing the endpoint ------------------------------------------------
+// --- choosing the endpoints -----------------------------------------------
 eq('mainnet defaults to the public ord', effectiveOrdUrl({}, 'mainnet'), ORDINALS_COM);
-eq('regtest has no public default', effectiveOrdUrl({}, 'regtest'), '');
-eq('an explicit endpoint wins', effectiveOrdUrl({ ordUrl: 'http://127.0.0.1:8080/' }, 'mainnet'), 'http://127.0.0.1:8080/');
+eq('regtest has no public ord default', effectiveOrdUrl({}, 'regtest'), '');
+eq('an explicit ord endpoint wins', effectiveOrdUrl({ ordUrl: 'http://127.0.0.1:8080/' }, 'mainnet'), 'http://127.0.0.1:8080/');
 eq('an explicit regtest ord wins', effectiveOrdUrl({ ordUrl: 'http://127.0.0.1:8082' }, 'regtest'), 'http://127.0.0.1:8082');
+
+eq('mainnet defaults to Blockstream Esplora', effectiveEsploraUrl({}, 'mainnet'), BLOCKSTREAM_ESPLORA);
+eq('regtest has no public Esplora default', effectiveEsploraUrl({}, 'regtest'), '');
+eq('testnet has no public Esplora default', effectiveEsploraUrl({}, 'testnet'), '');
+eq('an explicit Esplora URL wins', effectiveEsploraUrl({ esploraUrl: 'http://127.0.0.1:3002/' }, 'mainnet'), 'http://127.0.0.1:3002/');
+eq('whitespace is still empty', effectiveEsploraUrl({ esploraUrl: '   ' }, 'mainnet'), BLOCKSTREAM_ESPLORA);
+eq('Electrum suppresses the Blockstream default', effectiveEsploraUrl({ electrumUrl: 'ws://127.0.0.1:50032' }, 'mainnet'), '');
+eq('an explicit Esplora still wins over Electrum', effectiveEsploraUrl({ esploraUrl: 'http://127.0.0.1:3002', electrumUrl: 'ws://127.0.0.1:50032' }, 'mainnet'), 'http://127.0.0.1:3002');
+eq('default settings leave the field blank', DEFAULT_SETTINGS.esploraUrl, '');
+const liveDefault = new LiveBackend({ esploraUrl: effectiveEsploraUrl({}, 'mainnet') });
+eq('LiveBackend is built on Blockstream by default', liveDefault.esplora.base, BLOCKSTREAM_ESPLORA);
 
 const TXID = '11'.repeat(32);
 const realFetch = globalThis.fetch;

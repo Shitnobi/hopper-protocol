@@ -285,10 +285,14 @@ const settingsRules = await evaluate(`({
   read: Boolean(document.querySelector('#app [data-action=open-rules]')),
   replay: Boolean(document.querySelector('#app [data-action=replay-intro]')),
   ord: document.querySelector('#app [data-input=ordUrl]')?.getAttribute('placeholder') || '',
+  esplora: document.querySelector('#app [data-input=esploraUrl]')?.getAttribute('placeholder') || '',
+  esploraValue: document.querySelector('#app [data-input=esploraUrl]')?.value ?? null,
 })`);
 if (settingsRules.read) errors.push('settings still has READ THE RULES');
 if (!settingsRules.replay) errors.push('settings lost REPLAY THE INTRO');
 if (!/ordinals\.com/.test(settingsRules.ord)) errors.push(`settings lost the ORD endpoint: ${JSON.stringify(settingsRules)}`);
+if (!/blockstream\.info\/api/.test(settingsRules.esplora)) errors.push(`settings lost the Esplora default: ${JSON.stringify(settingsRules)}`);
+if (settingsRules.esploraValue !== '') errors.push(`Esplora field is not empty by default: ${JSON.stringify(settingsRules)}`);
 await evaluate(`document.querySelector('[data-action=drawer]').click()`);
 await sleep(200);
 const menu = await evaluate(`[...document.querySelectorAll('#drawer .nav button')].map((b) => b.textContent.trim())`);

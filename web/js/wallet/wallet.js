@@ -10,7 +10,9 @@ import {
 import { CARD_VALUE, GENESIS, requiredAt } from '../core/params.js';
 import { decodeAddress, p2trScript, scriptToAddress } from './addresses.js';
 import { deriveWallet } from './keys.js';
-import { DemoBackend, LiveBackend, effectiveOrdUrl } from './backend.js';
+import {
+  DemoBackend, LiveBackend, effectiveEsploraUrl, effectiveOrdUrl,
+} from './backend.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
@@ -152,7 +154,7 @@ function rateOr(value, fallback = 2) {
 
 export const DEFAULT_SETTINGS = {
   mode: 'demo',
-  esploraUrl: 'http://127.0.0.1:3002',
+  esploraUrl: '',
   indexerUrl: 'http://127.0.0.1:9770',
   electrumUrl: '',
   ordUrl: '',
@@ -322,14 +324,19 @@ export class WalletSession {
     if (this.settings.mode === 'demo') {
       this.backend = new DemoBackend(this.network);
     } else {
+      const esploraUrl = effectiveEsploraUrl(this.settings, this.network);
       this.backend = new LiveBackend({
-        esploraUrl: this.settings.esploraUrl,
+        esploraUrl,
         indexerUrl: this.settings.indexerUrl,
         electrumUrl: this.settings.electrumUrl,
         ordUrl: effectiveOrdUrl(this.settings, this.network),
       });
     }
-    const effective = { ...this.settings, ordUrl: effectiveOrdUrl(this.settings, this.network) };
+    const effective = {
+      ...this.settings,
+      esploraUrl: effectiveEsploraUrl(this.settings, this.network),
+      ordUrl: effectiveOrdUrl(this.settings, this.network),
+    };
     this.publicSource = settingsPublicSource(effective);
     this._setupAutoSync();
     return this;

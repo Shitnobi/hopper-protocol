@@ -327,9 +327,27 @@ export class IndexerClient {
   fees() { return this.get('/v1/fees'); }
 }
 
-// --- ord sat ranges ------------------------------------------------------
+// --- public defaults -----------------------------------------------------
 
+export const BLOCKSTREAM_ESPLORA = 'https://blockstream.info/api';
 export const ORDINALS_COM = 'https://ordinals.com';
+
+/**
+ * Mainnet gets a public Esplora when the field is empty, mirroring the
+ * ord default. Two deliberate exceptions: an explicit URL always wins,
+ * and an Electrum URL suppresses the default because the wallet has one
+ * chain backend and Esplora would otherwise hide the Electrum choice.
+ * Regtest/testnet/signet have no public default.
+ */
+export function effectiveEsploraUrl(settings = {}, network = 'mainnet') {
+  const explicit = String(settings.esploraUrl || '').trim();
+  if (explicit) return explicit;
+  if (network !== 'mainnet') return '';
+  if (String(settings.electrumUrl || '').trim()) return '';
+  return BLOCKSTREAM_ESPLORA;
+}
+
+// --- ord sat ranges ------------------------------------------------------
 
 /**
  * The public default is ordinals.com on mainnet. Regtest/testnet have no

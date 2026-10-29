@@ -278,10 +278,12 @@ curl -sN localhost:9770/v1/events/stream
   the simulator has something to show.
 - **Demo vs live**: `DemoBackend` implements the same interface as
   `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
-  Live mode requires a secure context for WebCrypto; Electrum needs a
-  WebSocket endpoint. `electrs` itself speaks TCP, so a browser needs a
-  loopback WS-to-TCP bridge (the page talks `ws://127.0.0.1:…`, never a raw
-  TCP socket).
+  On mainnet an empty **Esplora** field uses `https://blockstream.info/api`
+  unless an Electrum URL is set; regtest/testnet/signet have no public
+  default and need an explicit source. Live mode requires a secure context
+  for WebCrypto; Electrum needs a WebSocket endpoint. `electrs` itself
+  speaks TCP, so a browser needs a loopback WS-to-TCP bridge (the page
+  talks `ws://127.0.0.1:…`, never a raw TCP socket).
 - **Sat ranges**: the indexer deliberately does not model the coinbase
   subsidy (`rust/crates/hopper-indexer/src/NOTES.md`), so a freshly mined
   coin starts with shadow/empty ranges. When a wallet asks `/v1/utxo`
@@ -300,7 +302,7 @@ node tests/core.test.mjs        # 64 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → cross → settle → transfer (and no burn path)
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
-node tests/ord.test.mjs         # ord ranges, endpoint default, indexer→ord fallback
+node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 
@@ -354,6 +356,9 @@ mainnet value on it without review.
   origin — that is what "keep this device unlocked" means.
 - The indexer is a discovery hint and a public view. Value decisions
   (ownership, fees, signatures) are made locally from chain data.
+- **Public defaults.** On mainnet, an empty Esplora field sends address
+  queries to Blockstream; those addresses are not private from Blockstream.
+  Set your own Esplora/Electrum to avoid that.
 - **Sat ranges are an oracle.** The HOPPER indexer does not model the
   coinbase subsidy, so it seeds unknown coins from `HOPPER_ORD_URL`; the
   wallet can also fall back to its **Ord** URL. A malicious or stale ord

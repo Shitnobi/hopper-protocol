@@ -878,7 +878,7 @@ export function settings(app) {
           <option value="live" ${s.mode === 'live' ? 'selected' : ''}>Live (indexer / Esplora)</option>
         </select>
         <label>Esplora</label>
-        <input type="text" data-input="esploraUrl" value="${esc(s.esploraUrl || '')}" placeholder="https://…">
+        <input type="text" data-input="esploraUrl" value="${esc(s.esploraUrl || '')}" placeholder="https://blockstream.info/api (mainnet default)">
         <label>Indexer</label>
         <input type="text" data-input="indexerUrl" value="${esc(s.indexerUrl || '')}" placeholder="http://…">
         <label>Ord</label>
@@ -897,7 +897,8 @@ export function settings(app) {
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">Sat ranges come from the HOPPER indexer when it knows the coin; otherwise this ord server names them. Empty uses ordinals.com on mainnet. Point it at your own ord to keep the query local.</div>
+      <div class="hint">Esplora empty on mainnet uses blockstream.info/api, unless an Electrum URL is set. Ord empty uses ordinals.com on mainnet.</div>
+      <div class="hint">Sat ranges come from the HOPPER indexer when it knows the coin; otherwise this ord server names them. Point it at your own ord to keep the query local.</div>
     </div>
 
     <div class="window" data-lily="home">
