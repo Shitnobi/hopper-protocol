@@ -221,7 +221,7 @@ function pondItem(app, f, { mode } = {}) {
     action = logBtn('🚫 ON ROAD', 'on-road', { edge: 'dim', cls: 'small' });
   } else if (mode === 'road') {
     // HOPPER custody: a minted frog still sits in its mint output and must
-    // be PREPAREd into the 25,000-sat state output before a crossing can
+    // be prepared into the 25,000-sat state output before a crossing can
     // be signed. The egui app's one-tap CROSS is preserved for frogs that
     // are already in custody.
     const utxo = app.w._frogUtxo?.(f);
