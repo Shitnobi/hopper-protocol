@@ -12,6 +12,11 @@ HOPPER does not mint a token. A frog **is** an ordinal satoshi. Its state is
 the chain's answer to "which UTXO currently holds this sat", and a crossing
 is an inscription whose outcome is fixed by a future block hash.
 
+**Live app:** <https://shitnobi.github.io/hopper-protocol/> — deployed from
+`web/` by GitHub Actions. It uses the public mainnet defaults. A public
+HTTPS page cannot reach loopback services, so use the published site for
+mainnet tests and run locally when you need your own node or indexer.
+
 ---
 
 ## Quick start (mainnet, public defaults)
