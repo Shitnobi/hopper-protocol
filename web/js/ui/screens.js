@@ -573,44 +573,60 @@ export function settings(app) {
 
 export const RULES = [
   {
-    title: 'A frog is a satoshi',
+    title: 'A frog is one satoshi',
+    tag: 'IDENTITY',
     art: 'frog',
-    body: 'HOPPER does not mint tokens. It puts a document on an ordinal sat. The sat is the frog: its identity survives every transaction, and its whole life is a sequence of Bitcoin transactions.',
+    body: "HOPPER does not create a token or a separate balance. It writes a small document (an inscription) onto one satoshi, and that satoshi is the frog. The inscription travels with the sat, so the frog keeps its identity wherever the sat goes.",
+    analogy: "Think of the frog as a numbered marble with a story written on it. Wallets are just pockets; moving the marble to another pocket does not make a new marble.",
   },
   {
-    title: 'Mint: commit, then reveal',
+    title: 'Birth takes two transactions',
+    tag: 'BIRTH',
     art: 'mint',
-    body: 'An inscription needs an input to engrave. The commit output is a P2TR coin whose tapleaf holds the fold document and your signature. The reveal spends it: 1,000 sats to your frog address, an OP_RETURN envelope with the seed and name, change home. The anchor sat is the first sat of the commit.',
+    body: "A frog is born in two steps. First, a coin is sealed with the frog's birth document and your signature. Then a second transaction opens it and sends the frog to a fresh 1,000-sat coin. The first satoshi of the sealed coin becomes the frog. Bitcoin needs two steps because the second transaction must point back to the first.",
+    analogy: "Like buying a safe before you can put the key inside: the safe has to exist before you can put something in it.",
   },
   {
     title: 'The road asks for hops',
+    tag: 'THE ROAD',
     art: 'road',
-    body: 'required(h) starts at 5, rises by 64 blocks per hop to 25, then 144 blocks per hop to 50, then 2,016 per hop to a hard cap of 100. It never decreases. A crossing is judged against the target frozen at its confirmation height T.',
+    body: "A hop is one crossing that survives its six-block wait. The road starts by asking for 5 hops. It asks for one more every 64 blocks (about 11 hours) up to 25, then one more every 144 blocks (about a day) up to 50, then one more every 2,016 blocks (about two weeks) up to 100. The number is frozen when your crossing is mined, so later increases do not change that attempt.",
+    analogy: "Like a bus that raises its fare during the day: you pay the price on the board when you get on, not the price when it reaches the next stop.",
   },
   {
-    title: 'The death decree',
+    title: 'The next block decides',
+    tag: 'THE VERDICT',
     art: 'dead',
-    body: 'At T+1 the block hash is fixed. dead iff u32LE(SHA256("FRG3-CROSS" || sat || H(T+1)))*10000 < death_bps(target)*2^32. No floats, no modulo, no author choice. The owner chooses when to cross; the chain chooses what happens.',
+    body: "A crossing is a bet. The very next block is the coin toss: its fingerprint, the frog's sat number, and the number of hops the road asked for decide alive or roadkill. The result is provisional until six blocks have passed (about an hour), then final. The owner chooses when to cross; the chain chooses what happens.",
+    analogy: "Like handing in a sealed exam and letting the next block grade it: you choose the moment, not the grade.",
   },
   {
-    title: 'Custody is a two-leaf tree',
+    title: 'The travel box has two doors',
+    tag: 'THE BOX',
     art: 'custody',
-    body: 'The state output has internal key NUMS (no key path, ever). Leaf 0 signs a crossing and carries the envelope; leaf 1 is an ordinary owner signature for transfer. Each control block names the NUMS key. The output commits to (sat, mint id, owner).',
+    body: "A frog in play lives in a 25,000-sat travel box. The box has exactly two doors. One door can only sign a crossing; the other can only hand the frog to a new owner. There is no master key, so not even the people who built the wallet can open it another way. The box is stamped with the frog's identity and its current owner.",
+    analogy: "Like a glass safe with two numbered slots: one says 'cross the road', the other says 'give it away'. There is no third slot and no locksmith.",
   },
   {
     title: 'Prepare, then cross',
+    tag: 'PREPARE',
     art: 'prepare',
-    body: 'A mint output is not a state output: its own txid does not exist yet. PREPARE moves the frog into a 25,000-sat state output and funds it. CROSS spends that state output through leaf 0, with one inscription in input 0 and the anchor sat at offset 0 of output 0.',
+    body: "PREPARE is the packing step. A newly minted frog is still in its birth coin. Before it can cross, it must be moved into the 25,000-sat travel box. That transaction names the frog and its owner, so it can only happen after the mint exists. CROSS then spends the box, publishes exactly one road ticket, and keeps the frog first in line: first coin in, first coin out. No other frog or ticket may hitch a ride.",
+    analogy: "Like packing a parcel before mailing it: the label needs the frog's birth certificate, and the parcel has to be first on the truck, not hidden behind someone else's boxes.",
   },
   {
-    title: 'Transfer is invisible',
+    title: 'A handoff is not a hop',
+    tag: 'HANDOFF',
     art: 'transfer',
-    body: 'A transfer publishes no inscription and changes no state. It pays the recipient an ordinary address, because the state script commits to a mint id the recipient cannot know yet. The fold cannot see a transfer by construction. The frog is never killed without publishing a crossing.',
+    body: "Sending the frog to another wallet is just moving the sat. It publishes no road ticket, so it does not count as a hop, change the frog's progress, or put it in danger in the game. A handoff spends the coin the frog was sitting in, so the new holder has to pack it into a travel box before the next crossing. A transfer alone never kills the frog in the game.",
+    analogy: "Like passing a baton: the handoff does not count as a lap, but the next runner still has to get ready before running.",
   },
   {
-    title: 'Home is immortal',
+    title: 'Home is forever',
+    tag: 'HOME',
     art: 'home',
-    body: 'Six blocks after the crossing, the frog settles. If it survives, dist increments; at dist ≥ target it comes HOME and stops. The death curve starts at 25% per hop and falls to 2.95% at 100 hops, so a full run still completes about 5% of the time. That is the whole game.',
+    body: "Six blocks after a crossing, the result is final. Survive and the frog gains one hop. When its total reaches the number of hops the road asked for at that crossing, it is home. Home frogs stop crossing, cannot die, and keep their place on the leaderboard. The road is still hard: the death chance starts at 25% per crossing and only eases to about 3% at the far end.",
+    analogy: "Like finishing a mountain climb: the last step is the same as the others, but once you reach the top you never have to come down.",
   },
 ];
 
@@ -621,25 +637,28 @@ export function rules(app) {
   return `
   <section class="panel lily">
     <div class="panel-head"><h2>THE 8 RULES</h2><div class="spacer"></div><span class="badge">${page + 1} / ${RULES.length}</span></div>
+    <div class="sub">The whole game in plain English: one satoshi, one road, and a decision every six blocks.</div>
     <div class="steps">${RULES.map((_, i) => `<i class="${i <= page ? 'on' : ''}"></i>`).join('')}</div>
     <h2 style="margin-top:8px">${esc(r.title)}</h2>
     <div class="rule-art">${frogImg(app.w.frogs[0]?.seed ?? 0x9058d0fa, artState, 'sprite')}</div>
     <p>${esc(r.body)}</p>
+    <p class="analogy"><b>Think of it this way</b> ${esc(r.analogy)}</p>
     <div class="pager">
       <button class="btn small ghost" data-action="rule-prev" ${page === 0 ? 'disabled' : ''}>← PREV</button>
       <div class="spacer"></div>
-      <span class="tiny dim">${esc(r.art.toUpperCase())} / HOPPER v6</span>
+      <span class="tiny dim">${esc(r.tag)} · HOPPER</span>
       <div class="spacer"></div>
       <button class="btn small" data-action="rule-next" ${page === RULES.length - 1 ? 'disabled' : ''}>NEXT →</button>
     </div>
   </section>
   <section class="panel">
+    <div class="panel-head"><h2>THE SHORT VERSION</h2><div class="spacer"></div><span class="badge">RECAP</span></div>
     <div class="kv">
-      <dt>Wire</dt><dd>0x06 · FRG6CROSS · 54-byte body</dd>
-      <dt>Finality</dt><dd>6 blocks</dd>
-      <dt>Card</dt><dd>25,000 sats</dd>
-      <dt>Anchor output</dt><dd>1,000 sats</dd>
-      <dt>NUMS key</dt><dd class="tiny wrap">50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0</dd>
+      <dt>Your frog</dt><dd>One satoshi with a story written on it.</dd>
+      <dt>A hop</dt><dd>One crossing that survives the six-block wait.</dd>
+      <dt>The goal</dt><dd>Reach the number of hops the road asks for and come home forever.</dd>
+      <dt>The risk</dt><dd>About 25% chance of death per crossing at the start, easing to about 3% near home.</dd>
+      <dt>The travel box</dt><dd>25,000 sats packed around the frog while it plays.</dd>
     </div>
   </section>`;
 }

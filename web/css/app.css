@@ -341,6 +341,17 @@ table.leaders img { width: 30px; height: 30px; vertical-align: middle; }
 .rule-art img { width: 80px; height: 80px; }
 .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .pager .spacer { flex: 1; }
+.analogy {
+  margin: 12px 0 0; padding: 9px 11px;
+  border-left: 3px solid var(--accent);
+  background: rgba(111, 208, 140, .06);
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.analogy b {
+  display: block; margin-bottom: 3px;
+  color: var(--accent); font-size: 9px; font-weight: 600;
+  letter-spacing: .14em; text-transform: uppercase;
+}
 
 /* ---------------- misc ---------------- */
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; font-size: 12px; }
