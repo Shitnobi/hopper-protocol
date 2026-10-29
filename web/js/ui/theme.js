@@ -351,6 +351,42 @@ export function paintPondFrog(ctx, w, h, seed, state) {
   paintSprite(ctx, seed, state, cx, cy - radius * 0.2, radius * 1.25);
 }
 
+/** The small, generic pond on the wallet screen. */
+export function paintSendPond(ctx, w, h) {
+  const r = Math.max(10, Math.min(w, h) / 2 - 4);
+  const cx = w / 2;
+  const cy = h / 2;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.clip();
+  paintPond(ctx, w, h);
+
+  // Three fixed, imaginary frogs — never this wallet's actual Hoppers.
+  const pads = [
+    { x: cx - r * 0.38, y: cy - r * 0.34, rr: r * 0.17, seed: 0x9058d0fa, flower: false },
+    { x: cx + r * 0.40, y: cy - r * 0.02, rr: r * 0.145, seed: 0x00c0ffee, flower: true },
+    { x: cx - r * 0.04, y: cy + r * 0.40, rr: r * 0.18, seed: 0x12345678, flower: false },
+  ];
+  for (const pad of pads) {
+    paintLily(ctx, pad.x, pad.y, pad.rr, pad.flower);
+    paintSprite(ctx, pad.seed, 'idle', pad.x, pad.y - pad.rr * 0.3, pad.rr * 1.42);
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = C.bg;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 1, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = dim(C.lilyRim, 0.8);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 1, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 /** Paint one frog on its own stretch of asphalt (app.rs::paint_road_frog). */
 export function paintRoadFrog(ctx, w, h, seed) {
   paintRoad(ctx, w, h);
@@ -560,6 +596,17 @@ function mountWater(cv) {
   paintPond(ctx, rect.width, rect.height);
 }
 
+function mountSendPond(cv) {
+  const rect = cv.getBoundingClientRect();
+  if (rect.width < 8 || rect.height < 8) return;
+  const size = Math.min(rect.width, rect.height);
+  const ctx = fitCanvas(cv, size, size);
+  // The CSS box stays responsive; the backing store is the square we paint.
+  cv.style.width = '';
+  cv.style.height = '';
+  paintSendPond(ctx, size, size);
+}
+
 function mountEmptyLily(cv) {
   const rect = cv.getBoundingClientRect();
   const w = rect.width || 160;
@@ -574,6 +621,7 @@ export function decorate(root = document) {
   root.querySelectorAll('.btn').forEach(mountLogButton);
   root.querySelectorAll('[data-lily]').forEach(mountLily);
   root.querySelectorAll('canvas[data-pondfrog]').forEach(mountPond);
+  root.querySelectorAll('canvas[data-send-pond-art]').forEach(mountSendPond);
   root.querySelectorAll('canvas[data-roadfrog]').forEach(mountRoadFrog);
   root.querySelectorAll('canvas[data-grave]').forEach(mountGrave);
   root.querySelectorAll('canvas[data-tadpole]').forEach(mountTadpole);

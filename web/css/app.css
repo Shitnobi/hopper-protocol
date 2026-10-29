@@ -251,6 +251,47 @@ p { margin: .45em 0; }
 }
 .refusal { color: var(--danger); font-size: 11px; margin-top: 4px; }
 
+/* The wallet's small pond link; the full pond lives on #/pond. */
+.send-pond-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 14px;
+}
+.send-pond {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.send-pond-art {
+  display: block;
+  width: min(208px, 66vw);
+  height: auto;
+  aspect-ratio: 1;
+}
+.send-pond-label {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: .1em;
+  text-align: center;
+}
+.send-pond:hover .send-pond-label,
+.send-pond:focus-visible .send-pond-label { text-decoration: underline; text-underline-offset: 3px; }
+.send-pond:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
 /* --------------------------------- pond --------------------------------- */
 
 .pond-page {

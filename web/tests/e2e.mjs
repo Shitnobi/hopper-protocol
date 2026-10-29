@@ -359,6 +359,30 @@ const pond = await evaluate('document.querySelector("#app")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
 if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
 
+// The wallet shrinks the pond to a small generic preview. It is one link,
+// not the full grid, and it opens The Pond.
+await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+await waitFor('document.querySelector("[data-send-pond]")', 10000, 'wallet pond preview');
+const sendPond = await evaluate(`(() => {
+  const b = document.querySelector('[data-send-pond]');
+  const cv = b?.querySelector('canvas');
+  const r = cv?.getBoundingClientRect();
+  return {
+    text: (b?.innerText || '').trim(),
+    w: r?.width || 0,
+    h: r?.height || 0,
+    items: document.querySelectorAll('#app .pond-item').length,
+  };
+})()`);
+console.log('wallet pond:', sendPond);
+if (sendPond.text !== 'SEND HOPPERS FROM THE POND') errors.push(`wallet pond label: ${JSON.stringify(sendPond.text)}`);
+if (!(sendPond.w >= 140 && sendPond.w <= 220 && Math.abs(sendPond.w - sendPond.h) < 2)) {
+  errors.push(`wallet pond size: ${JSON.stringify(sendPond)}`);
+}
+if (sendPond.items !== 0) errors.push(`wallet still shows the full pond grid (${sendPond.items} items)`);
+await evaluate(`document.querySelector('[data-send-pond]').click()`);
+await waitFor('location.hash === "#/pond"', 10000, 'wallet pond opens The Pond');
+
 // A broadcast mint must replace the seed and clear the next draft.
 await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
 await waitFor('document.querySelector("[data-input=mint-name]")', 10000, 'mint draft after broadcast');

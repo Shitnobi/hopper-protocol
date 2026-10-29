@@ -193,17 +193,12 @@ export function wallet(app) {
     </div>
 
     ${alive.length ? `
-    <div class="water-box send-hoppers">
-      <canvas class="pond-water" data-pond-water></canvas>
-      <div class="box-title">SEND HOPPERS</div>
-      <div class="box-sub">Move a frog to any address by spending its sat — ordinary bitcoin movement, no envelope.</div>
-      <div class="pond-grid">
-        ${alive.map((f) => pondItem(app, f, { mode: 'wallet' })).join('')}
-      </div>
+    <div class="send-pond-wrap">
+      <button class="send-pond" type="button" data-action="nav" data-view="pond" data-send-pond>
+        <canvas class="send-pond-art" data-send-pond-art width="240" height="240" aria-hidden="true"></canvas>
+        <span class="send-pond-label">SEND HOPPERS FROM THE POND</span>
+      </button>
       ${app.frogRefusal ? `<div class="refusal">${esc(app.frogRefusal)}</div>` : ''}
-      <div class="road-edge bleed" data-action="dead-frogs" role="button" aria-label="dead hoppers">
-        <canvas class="grave-art" data-grave width="45" height="56"></canvas>
-      </div>
     </div>` : ''}
     </div>`;
 }
