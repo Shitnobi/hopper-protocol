@@ -10,6 +10,7 @@ import {
   C, carBodyColor, dim, laneDashes, paintCar, paintLily, paintRoad,
   paintSprite,
 } from './theme.js';
+import { paintFrogMark } from './frog-mark.js';
 
 const INTRO_SECONDS = 2.8;
 const INTRO_FADE = 0.35;
@@ -34,35 +35,6 @@ function centered(ctx, text, x, y, size, color) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y);
-}
-
-function frogMarkCanvas(ctx, cx, cy, size, body, cut) {
-  // The install icon's frog: body ellipse, two eyes, pupils and a stripe.
-  ctx.save();
-  ctx.translate(cx - size * 0.5, cy - size * 0.5);
-  ctx.scale(size / 64, size / 64);
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.ellipse(32, 44, 18, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
-  for (const [x, y] of [[24, 26], [40, 26]]) {
-    ctx.beginPath();
-    ctx.arc(x, y, 7, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = cut;
-  for (const [x, y] of [[24, 26], [40, 26]]) {
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.strokeStyle = cut;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(18, 46);
-  ctx.lineTo(46, 46);
-  ctx.stroke();
-  ctx.restore();
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -129,7 +101,7 @@ function drawIntro(canvas, elapsed) {
   const total = markSize + wordSize * 0.3 + wordW;
   const left = w / 2 - total / 2;
   const wordY = h * 0.22;
-  frogMarkCanvas(ctx, left + markSize / 2, wordY, markSize * 1.15, C.accent, C.bg);
+  paintFrogMark(ctx, left + markSize / 2, wordY, markSize * 1.15, C.accent, C.bg);
   ctx.fillStyle = C.accent;
   ctx.font = `700 ${wordSize}px "Pixelify Sans", monospace`;
   ctx.textAlign = 'left';

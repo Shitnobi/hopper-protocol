@@ -61,8 +61,8 @@ web/
   js/ui/theme.js           the FROGGER egui materials: wood log-frames,
                            lily-pad window borders, pond/road/grave/sprite
                            painters, mounted on canvases after each render
-  js/ui/frog-mark.js       the 16x16 HOPPER mark shared by the tab icon
-                           and the title bar
+  js/ui/frog-mark.js       the 16x16 HOPPER mark shared by the tab icon,
+                           title bar, onboarding logo and boot splash
   js/ui/tour.js            the boot splash (a hop into the road) and the
                            eight animated rules pictures
   js/ui/qr.js              the QR widget (quiet zone, paper/ink, placeholder)

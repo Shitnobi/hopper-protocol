@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
-import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg } from '../js/ui/frog-mark.js';
+import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../js/ui/frog-mark.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -43,5 +43,23 @@ ok(FROG_MARK_ROWS.every((row) => row.length === FROG_MARK_SIZE), 'every frog-mar
 ok(FROG_MARK_ROWS.some((row) => row.includes('#')) && FROG_MARK_ROWS.some((row) => row.includes('o')), 'the frog mark has body and cut pixels');
 const mark = frogMarkSvg(24);
 ok(mark.includes('shape-rendering="crispEdges"') && mark.includes('viewBox="0 0 16 16"'), 'the inline mark is a crisp 16x16 SVG');
+
+// The boot intro paints the same mark on a canvas. It must be blocks at
+// whole device pixels, not the old smooth ellipses.
+const rects = [];
+const fakeCtx = {
+  _fill: '',
+  getTransform: () => ({ a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }),
+  save() {},
+  restore() {},
+  setTransform() {},
+  set fillStyle(value) { this._fill = value; },
+  get fillStyle() { return this._fill; },
+  fillRect(x, y, w, h) { rects.push({ fill: this._fill, x, y, w, h }); },
+};
+paintFrogMark(fakeCtx, 50, 50, 32, '#f0c83c', '#18241a');
+ok(rects.length > 10, 'the intro mark is painted as blocks');
+ok(rects.every((r) => [r.x, r.y, r.w, r.h].every(Number.isInteger)), 'the intro mark snaps to device pixels');
+ok(new Set(rects.map((r) => r.fill)).size === 2, 'the intro mark uses body and cut colors');
 
 console.log(`media: ${checks} checks passed`);
