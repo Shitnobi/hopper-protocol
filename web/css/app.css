@@ -1,8 +1,8 @@
 /* ==========================================================================
    HOPPER — FROGGER GUI, reimplemented in JavaScript.
    Palette, proportions and materials are the egui theme's own:
-   dark lily-pad green, road-yellow accents, square corners, monospace
-   text everywhere, wooden log buttons and lily-pad window borders.
+   dark lily-pad green, road-yellow accents, square corners, pixel
+   type everywhere, wooden log buttons and lily-pad window borders.
    ========================================================================== */
 
 @font-face {
@@ -34,8 +34,7 @@
   --good: #5abe6e;
   --tx-in: #5abe6e;
   --line: #3a4f3a;
-  --mono: "Courier New", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --pixel: "Pixelify Sans", "Courier New", "DejaVu Sans Mono", monospace;
+  --font: "Pixelify Sans", "Courier New", "DejaVu Sans Mono", monospace;
   --topbar-h: 72px;
   --column: 640px;
   --page: 16px;
@@ -48,9 +47,10 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: var(--mono);
+  font-family: var(--font);
   font-size: 13px;
   line-height: 1.5;
+  font-synthesis: none;
   min-height: 100%;
   -webkit-font-smoothing: none;
   text-rendering: optimizeSpeed;
@@ -63,7 +63,7 @@ html, body {
 
 body { overflow-x: hidden; }
 img { image-rendering: pixelated; }
-button, input, select, textarea { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+button, input, select, textarea { font-family: var(--font); font-size: 13px; color: var(--ink); }
 button { cursor: pointer; }
 a { color: var(--accent); }
 h1, h2, h3, h4 { font-weight: 700; letter-spacing: .06em; margin: 0; }
@@ -744,8 +744,6 @@ textarea { resize: vertical; min-height: 84px; }
   z-index: 80;
   background: var(--bg);
   overflow-y: auto;
-  font-family: var(--pixel);
-  font-synthesis: none;
 }
 .rules-inner {
   width: min(var(--column), 100%);
@@ -775,7 +773,7 @@ textarea { resize: vertical; min-height: 84px; }
 .rules-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: block; }
 .rules-dots i.on { background: var(--accent); }
 .rules-controls { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.rules-screen .check { font-family: var(--pixel); font-size: 15px; }
+.rules-screen .check { font-size: 15px; }
 
 /* --------------------------------- intro -------------------------------- */
 

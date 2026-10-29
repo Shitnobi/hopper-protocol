@@ -223,11 +223,40 @@ const cache = await evaluate(`caches.keys().then(async (keys) => {
 console.log('pwa:', { serviceWorker: sw, manifest, cache });
 if (!sw || manifest !== 'HOPPER' || !cache.n) errors.push(`pwa shell: ${JSON.stringify({ sw, manifest, cache })}`);
 
-// The rules walkthrough is a settings entry (the egui app has no drawer
-// item for it either): open it, check it fits, and close it.
-await evaluate(`location.hash='#/settings'`);
+// The app typeface is Pixelify Sans everywhere, not just on the rules.
+await evaluate('document.fonts.ready.then(() => true)');
+const appFonts = await evaluate(`(() => {
+  const family = (sel) => getComputedStyle(document.querySelector(sel)).fontFamily;
+  return {
+    body: family('body'),
+    button: family('button'),
+    select: family('select'),
+    loaded: document.fonts.check('13px "Pixelify Sans"'),
+  };
+})()`);
+console.log('app fonts:', appFonts);
+if (!appFonts.loaded || Object.values(appFonts).some((v) => typeof v === 'string' && !/Pixelify Sans/.test(v))) {
+  errors.push(`app fonts: ${JSON.stringify(appFonts)}`);
+}
+
+// READ THE RULES is a drawer entry above SETTINGS now; REPLAY THE INTRO
+// stays in Settings.
+await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await sleep(250);
+const settingsRules = await evaluate(`({
+  read: Boolean(document.querySelector('#app [data-action=open-rules]')),
+  replay: Boolean(document.querySelector('#app [data-action=replay-intro]')),
+})`);
+if (settingsRules.read) errors.push('settings still has READ THE RULES');
+if (!settingsRules.replay) errors.push('settings lost REPLAY THE INTRO');
+await evaluate(`document.querySelector('[data-action=drawer]').click()`);
 await sleep(200);
-await evaluate(`document.querySelector('[data-action=open-rules]').click()`);
+const menu = await evaluate(`[...document.querySelectorAll('#drawer .nav button')].map((b) => b.textContent.trim())`);
+console.log('drawer menu:', menu);
+if (menu.at(-1) !== '⚙ SETTINGS' || menu.at(-2) !== '📖 READ THE RULES') {
+  errors.push(`drawer rules placement: ${JSON.stringify(menu)}`);
+}
+await evaluate(`document.querySelector('#drawer [data-action=open-rules]').click()`);
 await waitFor('document.querySelector(".rules-screen")', 5000, 'rules walkthrough');
 {
   await evaluate('document.fonts.ready.then(() => true)');

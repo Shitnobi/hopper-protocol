@@ -133,6 +133,7 @@ export function drawer(app) {
       ${item('road', '🚦 THE ROAD')}
       ${item('mint', '✨ MINT')}
       ${item('leaders', '🏆 LEADERBOARD')}
+      <button data-action="open-rules">📖 READ THE RULES</button>
       ${item('settings', '⚙ SETTINGS')}
     </div>
     <div class="slider-row"><span>VOLUME</span><span data-volume-pct>${Math.round((w?.settings?.volume ?? app.settings.volume) * 100)}%</span></div>
@@ -927,10 +928,9 @@ export function settings(app) {
     </div>
 
     <div class="window" data-lily="accent">
-      <div style="font-weight:700">THE RULES</div>
-      <div class="sub">Eight pages: the sat, the road, the toll, the odds.</div>
+      <div style="font-weight:700">THE INTRO</div>
+      <div class="sub">The first hop into the road, again.</div>
       <div class="actions mt10">
-        ${logBtn('📖 READ THE GAME RULES', 'open-rules', { edge: 'accent', cls: 'small' })}
         ${logBtn('▶ REPLAY THE INTRO', 'replay-intro', { edge: 'dim', cls: 'small' })}
       </div>
     </div>
