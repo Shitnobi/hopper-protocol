@@ -548,7 +548,9 @@ p { margin: .45em 0; }
 .drawer .drawer-kicker { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .drawer .nav { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; }
 .drawer .nav button {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   min-height: 34px;
   padding: 7px 9px;
@@ -560,6 +562,7 @@ p { margin: .45em 0; }
   letter-spacing: .05em;
   font-size: 12px;
 }
+.drawer .nav button > .frog-mark { flex: 0 0 auto; display: block; }
 .drawer .nav button:hover { color: var(--ink); border-color: var(--text-dim, #96a596); }
 .drawer .nav button.active { background: var(--bg); border-color: var(--accent); color: var(--ink); }
 .drawer .foot { margin-top: auto; padding-top: 12px; color: var(--muted); font-size: 11px; }

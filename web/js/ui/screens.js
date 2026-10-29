@@ -129,7 +129,7 @@ export function drawer(app) {
     <div class="nav">
       ${item('wallet', '💰 WALLET')}
       ${item('history', '📜 HISTORY')}
-      ${item('pond', '🐸 THE POND')}
+      ${item('pond', `${frogMarkSvg(14)}<span>THE POND</span>`)}
       ${item('road', '🚦 THE ROAD')}
       ${item('mint', '✨ MINT')}
       ${item('leaders', '🏆 LEADERBOARD')}
