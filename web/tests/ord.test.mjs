@@ -53,7 +53,7 @@ const direct = await new OrdClient('http://ord.test/').output(TXID, 0);
 eq('ord half-open ranges become inclusive', direct.ranges, [[5000, 5499], [7000, 7499]]);
 eq('ord carries the output value', direct.value, 1000);
 eq('ord output is exact', direct.exact, true);
-eq('ord asks the JSON output endpoint', asked, [`http://ord.test/output/${TXID}:0`]);
+eq('ord asks the recursive UTXO endpoint', asked, [`http://ord.test/r/utxo/${TXID}:0`]);
 
 stubFetch(() => new Response('', { status: 404 }));
 eq('ord does not know an unconfirmed outpoint', await new OrdClient('http://ord.test').output(TXID, 0), null);

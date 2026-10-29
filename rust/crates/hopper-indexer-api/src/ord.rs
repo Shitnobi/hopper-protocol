@@ -28,9 +28,9 @@ use serde_json::Value;
 /// or misconfigured ord server.
 const MAX_RANGES: usize = 100_000;
 
-/// A small blocking ord client. `/output/:outpoint` is the JSON view
-/// (`Accept: application/json`); ord 0.22+ also serves `/r/utxo`, but
-/// that shape omits the value and is not the public API.
+/// A small blocking ord client. The recursive `/r/utxo/:outpoint` view
+/// (`Accept: application/json`) is the public, CORS-enabled endpoint;
+/// it carries both `sat_ranges` and `value`.
 #[derive(Clone)]
 pub struct OrdClient {
     base: String,
@@ -54,7 +54,7 @@ impl OrdClient {
         vout: u32,
     ) -> Result<Option<(u64, Vec<SatRange>)>, String> {
         let outpoint = format!("{}:{vout}", crate::dto::hex_display(&txid));
-        let url = format!("{}/output/{outpoint}", self.base);
+        let url = format!("{}/r/utxo/{outpoint}", self.base);
         let answer = self
             .agent
             .get(&url)
@@ -73,7 +73,7 @@ impl OrdClient {
     }
 }
 
-/// Parse ord's `/output` JSON. Half-open `[start, end)` ranges become
+/// Parse ord's `/r/utxo` JSON. Half-open `[start, end)` ranges become
 /// [`SatRange`]s; the wallet-facing API subtracts one from `end` later.
 fn parse_output(value: &Value) -> Result<Option<(u64, Vec<SatRange>)>, String> {
     let Some(ranges) = value.get("sat_ranges") else {

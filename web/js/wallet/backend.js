@@ -362,9 +362,10 @@ export function effectiveOrdUrl(settings = {}, network = 'mainnet') {
 }
 
 /**
- * Minimal ord client for the one endpoint the wallet needs. Ord's
- * `/output/:outpoint` JSON is authoritative for a coin's sat assignment;
- * the HOPPER indexer remains the source for frogs, road and events.
+ * Minimal ord client for the one endpoint the wallet needs. The
+ * recursive `/r/utxo/:outpoint` view is the public, CORS-enabled one
+ * (FROGGER uses it too); the HOPPER indexer remains the source for
+ * frogs, road and events.
  *
  * `sat_ranges` is half-open [start, end); the wallet's `ranges` are
  * inclusive, so `end - 1` is deliberate.
@@ -379,7 +380,7 @@ export class OrdClient {
     if (!/^[0-9a-f]{64}$/.test(id) || !Number.isSafeInteger(Number(vout)) || Number(vout) < 0) {
       return null;
     }
-    const url = `${this.base}/output/${id}:${Number(vout)}`;
+    const url = `${this.base}/r/utxo/${id}:${Number(vout)}`;
     const res = await timedFetch(url, { headers: { accept: 'application/json' } });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`ord ${id}:${vout}: ${res.status}`);

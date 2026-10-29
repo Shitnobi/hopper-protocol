@@ -287,12 +287,15 @@ curl -sN localhost:9770/v1/events/stream
 - **Sat ranges**: the indexer deliberately does not model the coinbase
   subsidy (`rust/crates/hopper-indexer/src/NOTES.md`), so a freshly mined
   coin starts with shadow/empty ranges. When a wallet asks `/v1/utxo`
-  about such a coin, the indexer asks `HOPPER_ORD_URL` for the real
-  `sat_ranges` and seeds the outpoint before answering. No manual
-  `/v1/admin/seed` is needed. Point that variable at a local ord or a
-  third-party instance; unset disables the oracle. The PWA also has an
-  **Ord** field (empty = `https://ordinals.com` on mainnet) and uses it
-  directly when the indexer still cannot name a coin.
+  about such a coin, the indexer asks `HOPPER_ORD_URL`'s
+  `/r/utxo/:outpoint` for the real `sat_ranges` and seeds the outpoint
+  before answering. No manual `/v1/admin/seed` is needed. Point that
+  variable at a local ord or a third-party instance; unset disables the
+  oracle. The PWA also has an **Ord** field (empty =
+  `https://ordinals.com` on mainnet) and uses the same recursive
+  `/r/utxo` view directly when the indexer still cannot name a coin.
+  That is the public, CORS-enabled ord endpoint, so it works from a
+  static page without a same-origin proxy.
 
 ### Tests
 
