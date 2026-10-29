@@ -7,7 +7,6 @@ import {
 import {
   deathBps, paramsHashHex, requiredAt, completionBps, nextIncrement, foldParams,
 } from '../core/params.js';
-import { foldFrog } from '../core/fold.js';
 
 export function topbar(app) {
   const w = app.w;
@@ -442,9 +441,9 @@ export function frogDetail(app, sat) {
   <section class="panel">
     <div class="panel-head"><h2>VERIFICATION</h2><div class="spacer"></div><span class="badge good">SELF-CHECK</span></div>
     <div class="kv">
-      <dt>Target at T</dt><dd>${inFlight ? inFlight.target_hops : '—'}</dd>
+      <dt>Target at T</dt><dd>${inFlight ? inFlight.target_hops : (f.last_target_hops != null ? `${f.last_target_hops} (last)` : '— no crossing')}</dd>
       <dt>Required at next</dt><dd>${requiredAt((w.tipHeight || 0) + 1)} hops</dd>
-      <dt>Death now</dt><dd>${(deathBps(requiredAt((w.tipHeight || 0) + 1)) / 100).toFixed(2)}%</dd>
+      <dt>Death table now</dt><dd>${(deathBps(requiredAt((w.tipHeight || 0) + 1)) / 100).toFixed(2)}%</dd>
       <dt>Outcome hash</dt><dd class="tiny wrap">${esc(f.outcome_block_hash || 'not sealed')}</dd>
       <dt>Provisional</dt><dd>${f.provisional_dead == null ? '—' : f.provisional_dead ? '<span style="color:var(--danger)">DEAD PENDING FINALITY</span>' : '<span style="color:var(--good)">ALIVE PENDING FINALITY</span>'}</dd>
       <dt>Fold params</dt><dd class="tiny">${JSON.stringify(foldParams()).slice(0, 36)}…</dd>
@@ -454,15 +453,22 @@ export function frogDetail(app, sat) {
 }
 
 function verifyLine(f, w) {
-  try {
-    const r = foldFrog({ sat: f.sat, tip: w.tipHeight || 0, me: { satpoint: '' }, children: [], p: foldParams() });
-    if (f.state === 'idle' && !(f.crossings_entered > 0)) {
-      return `Local fold agrees: ${r.state.toUpperCase()}, ${r.dist} hops, with no children.`;
-    }
-    return `The frozen fold source is loaded locally (${r.state.toUpperCase()} with no history). Settlement history is not replayed here; the indexer record says ${String(f.state).toUpperCase()}.`;
-  } catch {
-    return 'The indexer record is authoritative for display; the fold source can be replayed independently.';
+  if (!f.crossings_entered) {
+    return 'No crossing yet. This is a plain 25,000-sat card; there is no fold history to replay until it enters the road.';
   }
+  if (f.state === 'crossing') {
+    return 'The outcome is frozen at T+1 and settles six blocks later. Nothing can change it while the anchor is in flight.';
+  }
+  if (f.state === 'dead') {
+    return `Dead at H ${sats(f.death_height)}. The death table is deterministic, so the indexer record above is final.`;
+  }
+  if (f.state === 'home') {
+    return `Home since H ${sats(f.immortal_height)}. A home frog is immortal; its hops stop counting.`;
+  }
+  if (f.state === 'burned') {
+    return 'Burned. The state output was spent to fees; the card is gone and the sat is unspendable.';
+  }
+  return 'The frozen fold source is loaded locally, but full settlement history is not replayed in the browser. The indexer record above is authoritative.';
 }
 
 // ---------------------------------------------------------------------------
