@@ -597,17 +597,19 @@ const handlers = {
     saveSettings(app.w.settings);
     render();
   },
-  'test-sound'() {
+  async 'test-sound'() {
     sound.startLoop();
-    const state = sound.testTone();
+    const state = await sound.testTone();
     if (state === 'no audio context') {
       toast('This browser has no AudioContext.', 'err');
     } else if (app.w?.settings.mute) {
       toast('Test tone sent. Music is muted — tap SOUND: ON.', 'ok');
     } else if ((app.w?.settings.volume ?? app.settings.volume) <= 0) {
       toast('Test tone sent. Music volume is 0% — raise the fader.', 'ok');
+    } else if (state !== 'running') {
+      toast(`Audio is ${state}. Tap the page, then test again.`, 'err');
     } else {
-      toast(`Test tone sent (${state}). If you cannot hear it, this tab or the system output is muted.`, 'ok');
+      toast('Test tone sent. If you cannot hear it, this tab or the system output is muted.', 'ok');
     }
     refreshSoundLines();
   },

@@ -459,23 +459,27 @@ export class Sound {
    * the fader and the mute. It answers "is this tab allowed to make any
    * sound at all?" separately from "is the score loaded and unmuted?".
    */
-  testTone() {
+  async testTone() {
     this.arm();
     if (!this.ctx) return 'no audio context';
-    this._resume();
-    const t = this.ctx.currentTime + 0.04;
+    // Wait for the actual resume. A loaded machine can take longer than a
+    // short arpeggio to start the audio service; scheduling into the past
+    // would then play nothing at all.
+    try { await this.ctx.resume(); } catch (_) { /* state says it below */ }
+    if (this.ctx.state !== 'running') return this.ctx.state;
+    const t = this.ctx.currentTime + 0.08;
     for (const [i, f] of [523.25, 659.25, 783.99].entries()) {
       const osc = this.ctx.createOscillator();
       const g = this.ctx.createGain();
       osc.type = 'triangle';
       osc.frequency.value = f;
-      const at = t + i * 0.12;
+      const at = t + i * 0.16;
       g.gain.setValueAtTime(0.0001, at);
-      g.gain.linearRampToValueAtTime(0.18, at + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+      g.gain.linearRampToValueAtTime(0.18, at + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.34);
       osc.connect(g).connect(this.ctx.destination);
       osc.start(at);
-      osc.stop(at + 0.24);
+      osc.stop(at + 0.36);
     }
     return this.ctx.state;
   }
