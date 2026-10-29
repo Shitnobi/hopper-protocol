@@ -576,56 +576,56 @@ export const RULES = [
     title: 'A frog is one satoshi',
     tag: 'IDENTITY',
     art: 'frog',
-    body: "HOPPER does not create a token or a separate balance. It writes a small document (an inscription) onto one satoshi, and that satoshi is the frog. The inscription travels with the sat, so the frog keeps its identity wherever the sat goes.",
-    analogy: "Think of the frog as a numbered marble with a story written on it. Wallets are just pockets; moving the marble to another pocket does not make a new marble.",
+    body: "One satoshi — the smallest unit of Bitcoin — can carry a tiny program that tracks your frog: a little record that says which frog it is and follows the satoshi from wallet to wallet. HOPPER does not create a separate token or a separate balance. The satoshi is the frog; the program is how everyone recognizes it and follows its story.",
+    analogy: "Think of the frog as a numbered marble with a passport taped to it. Wallets are just pockets; moving the marble to another pocket does not make a new marble.",
   },
   {
     title: 'Birth takes two transactions',
     tag: 'BIRTH',
     art: 'mint',
-    body: "A frog is born in two steps. First, a coin is sealed with the frog's birth document and your signature. Then a second transaction opens it and sends the frog to a fresh 1,000-sat coin. The first satoshi of the sealed coin becomes the frog. Bitcoin needs two steps because the second transaction must point back to the first.",
-    analogy: "Like buying a safe before you can put the key inside: the safe has to exist before you can put something in it.",
+    body: "A frog is born in two steps. First, you create a locked coin that holds the frog's starting record and your permission to open it. Then a second transaction opens that coin and moves the frog to a fresh 1,000-satoshi coin. The first satoshi of the locked coin becomes the frog. Two steps are needed because the starting coin has to exist before the second transaction can point back to it.",
+    analogy: "Like sealing a birth certificate in a locked box and then opening it: the box has to exist before it can hold the certificate.",
   },
   {
     title: 'The road asks for hops',
     tag: 'THE ROAD',
     art: 'road',
-    body: "A hop is one crossing that survives its six-block wait. The road starts by asking for 5 hops. It asks for one more every 64 blocks (about 11 hours) up to 25, then one more every 144 blocks (about a day) up to 50, then one more every 2,016 blocks (about two weeks) up to 100. The number is frozen when your crossing is mined, so later increases do not change that attempt.",
+    body: "A hop is one crossing that survives its six-block wait. At the start, the road asks for 5 hops. Over time it asks for more: one extra hop every 64 blocks (about 11 hours) up to 25, then one extra every 144 blocks (about a day) up to 50, then one extra every 2,016 blocks (about two weeks) up to 100. The number is fixed when your crossing is confirmed, so later increases do not change that attempt.",
     analogy: "Like a bus that raises its fare during the day: you pay the price on the board when you get on, not the price when it reaches the next stop.",
   },
   {
     title: 'The next block decides',
     tag: 'THE VERDICT',
     art: 'dead',
-    body: "A crossing is a bet. The very next block is the coin toss: its fingerprint, the frog's sat number, and the number of hops the road asked for decide alive or roadkill. The result is provisional until six blocks have passed (about an hour), then final. The owner chooses when to cross; the chain chooses what happens.",
+    body: "A crossing is a bet. The very next block casts the deciding vote: its unique fingerprint, your frog's number, and the number of hops the road asked for are mixed together to decide whether the frog lives or becomes roadkill. The answer stays provisional for six blocks (about an hour), then becomes final. You choose when to cross; Bitcoin chooses what happens.",
     analogy: "Like handing in a sealed exam and letting the next block grade it: you choose the moment, not the grade.",
   },
   {
     title: 'The travel box has two doors',
     tag: 'THE BOX',
     art: 'custody',
-    body: "A frog in play lives in a 25,000-sat travel box. The box has exactly two doors. One door can only sign a crossing; the other can only hand the frog to a new owner. There is no master key, so not even the people who built the wallet can open it another way. The box is stamped with the frog's identity and its current owner.",
+    body: "While a frog is in play, it lives inside a small protected coin: a 25,000-satoshi travel box. The box has exactly two doors. One door can only approve a crossing; the other can only hand the frog to a new owner. There is no master key, so not even the people who built the wallet can open it another way. The box is stamped with the frog's identity and its current owner.",
     analogy: "Like a glass safe with two numbered slots: one says 'cross the road', the other says 'give it away'. There is no third slot and no locksmith.",
   },
   {
     title: 'Prepare, then cross',
     tag: 'PREPARE',
     art: 'prepare',
-    body: "PREPARE is the packing step. A newly minted frog is still in its birth coin. Before it can cross, it must be moved into the 25,000-sat travel box. That transaction names the frog and its owner, so it can only happen after the mint exists. CROSS then spends the box, publishes exactly one road ticket, and keeps the frog first in line: first coin in, first coin out. No other frog or ticket may hitch a ride.",
-    analogy: "Like packing a parcel before mailing it: the label needs the frog's birth certificate, and the parcel has to be first on the truck, not hidden behind someone else's boxes.",
+    body: "PREPARE is the packing step. A newly born frog is still in its starting coin. Before it can cross, it must move into the travel box. That move records which frog it is and who owns it, so it can only happen after the frog exists. CROSS then uses the box, writes exactly one crossing record to the road, and keeps the frog first in line: it must go in first and come out first. No other frog or record may hitch a ride.",
+    analogy: "Like packing a parcel before mailing it: the label needs the frog's details, and the parcel has to be first on the truck, not hidden behind someone else's boxes.",
   },
   {
     title: 'A handoff is not a hop',
     tag: 'HANDOFF',
     art: 'transfer',
-    body: "Sending the frog to another wallet is just moving the sat. It publishes no road ticket, so it does not count as a hop, change the frog's progress, or put it in danger in the game. A handoff spends the coin the frog was sitting in, so the new holder has to pack it into a travel box before the next crossing. A transfer alone never kills the frog in the game.",
+    body: "Sending the frog to another wallet is just moving the satoshi. It writes no crossing record, so it does not count as a hop, change the frog's progress, or put it in danger in the game. A handoff uses up the coin the frog was sitting in, so a new holder who wants to keep playing has to set it up in a new travel box before the next crossing. A handoff alone never kills the frog in the game.",
     analogy: "Like passing a baton: the handoff does not count as a lap, but the next runner still has to get ready before running.",
   },
   {
     title: 'Home is forever',
     tag: 'HOME',
     art: 'home',
-    body: "Six blocks after a crossing, the result is final. Survive and the frog gains one hop. When its total reaches the number of hops the road asked for at that crossing, it is home. Home frogs stop crossing, cannot die, and keep their place on the leaderboard. The road is still hard: the death chance starts at 25% per crossing and only eases to about 3% at the far end.",
+    body: "Six blocks after a crossing, the result is final. Survive and the frog gains one hop. When its total reaches the number the road asked for at that crossing, it is home. Home frogs stop crossing, cannot die, and keep their place on the leaderboard. The road is still hard: the chance of death starts at 25% per crossing and only eases to about 3% at the far end.",
     analogy: "Like finishing a mountain climb: the last step is the same as the others, but once you reach the top you never have to come down.",
   },
 ];
@@ -654,11 +654,11 @@ export function rules(app) {
   <section class="panel">
     <div class="panel-head"><h2>THE SHORT VERSION</h2><div class="spacer"></div><span class="badge">RECAP</span></div>
     <div class="kv">
-      <dt>Your frog</dt><dd>One satoshi with a story written on it.</dd>
+      <dt>Your frog</dt><dd>One satoshi carrying a tiny program that tells its story.</dd>
       <dt>A hop</dt><dd>One crossing that survives the six-block wait.</dd>
       <dt>The goal</dt><dd>Reach the number of hops the road asks for and come home forever.</dd>
       <dt>The risk</dt><dd>About 25% chance of death per crossing at the start, easing to about 3% near home.</dd>
-      <dt>The travel box</dt><dd>25,000 sats packed around the frog while it plays.</dd>
+      <dt>The travel box</dt><dd>A 25,000-satoshi coin that protects the frog while it plays.</dd>
     </div>
   </section>`;
 }
