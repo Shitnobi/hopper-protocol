@@ -69,6 +69,28 @@ async function waitFor(expr, timeout = 12000, what = expr) {
 
 const click = (action) => evaluate(`document.querySelector('[data-action="${action}"]').click()`);
 
+// A real touch swipe over the rules card, through Chromium's input pipe.
+async function swipeRules(dx, dy = 0) {
+  const point = await evaluate(`(() => {
+    const r = document.querySelector('.rules-card').getBoundingClientRect();
+    return {
+      x: r.left + r.width / 2,
+      y: Math.max(20, Math.min(innerHeight - 20, r.top + r.height / 2)),
+    };
+  })()`);
+  const start = { ...point, id: 1, radiusX: 1, radiusY: 1, force: 1 };
+  const mid = { ...start, x: point.x + dx * 0.55, y: point.y + dy * 0.55 };
+  const end = { ...start, x: point.x + dx, y: point.y + dy };
+  await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+  await sleep(40);
+  await call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [mid] });
+  await sleep(40);
+  await call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [end] });
+  await sleep(40);
+  await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(220);
+}
+
 // The ported FROGGER GUI opens with the boot splash and (on a first visit)
 // the eight-page rules walkthrough. Programmatic taps still reach the page
 // behind the splash, but the shell is not in the DOM during the rules, so
@@ -311,6 +333,22 @@ await waitFor('document.querySelector(".rules-screen")', 5000, 'rules walkthroug
   const m = await evaluate(`({ iw: innerWidth, sw: document.documentElement.scrollWidth })`);
   if (m.sw > m.iw + 1) errors.push(`layout rules: width ${m.sw}/${m.iw}`);
 }
+// The rules pages are a deck: swipe left for the next page, right for the
+// previous one. A vertical swipe must stay a scroll, not turn the page.
+await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+const rulePage = () => evaluate(`document.querySelector('.rules-page-kicker')?.textContent.trim() || ''`);
+const rule0 = await rulePage();
+await swipeRules(-90);
+const rule1 = await rulePage();
+await swipeRules(90);
+const rule2 = await rulePage();
+await swipeRules(0, 120);
+const rule3 = await rulePage();
+console.log('rules swipe:', { rule0, rule1, rule2, vertical: rule3 });
+if (rule0 !== '1 / 8' || rule1 !== '2 / 8' || rule2 !== '1 / 8' || rule3 !== '1 / 8') {
+  errors.push(`rules swipe: ${JSON.stringify({ rule0, rule1, rule2, rule3 })}`);
+}
+await call('Emulation.setTouchEmulationEnabled', { enabled: false });
 await evaluate(`document.querySelector('[data-action=rule-skip]').click()`);
 await sleep(200);
 

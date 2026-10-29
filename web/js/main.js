@@ -116,6 +116,20 @@ function applyLanding() {
 }
 
 let rulesRaf = 0;
+let ruleSwipe = null;
+let ruleSwipeUntil = 0;
+const RULE_SWIPE_MIN = 44;
+
+function moveRules(delta) {
+  if (!app.rulesWalk) return;
+  const page = app.rulesWalk.page | 0;
+  const next = Math.max(0, Math.min(screens.RULES.length - 1, page + delta));
+  if (next === page) return false;
+  app.rulesWalk.page = next;
+  render();
+  return true;
+}
+
 function startRulesLoop() {
   cancelAnimationFrame(rulesRaf);
   const tick = () => {
@@ -679,14 +693,10 @@ const handlers = {
     navigate('frog');
   },
   'rule-next'() {
-    if (!app.rulesWalk) return;
-    app.rulesWalk.page = Math.min(screens.RULES.length - 1, (app.rulesWalk.page || 0) + 1);
-    render();
+    moveRules(1);
   },
   'rule-prev'() {
-    if (!app.rulesWalk) return;
-    app.rulesWalk.page = Math.max(0, (app.rulesWalk.page || 0) - 1);
-    render();
+    moveRules(-1);
   },
   'rule-start'() {
     if (!app.rulesWalk) return;
@@ -1057,6 +1067,46 @@ const handlers = {
 // ---------------------------------------------------------------------------
 // events
 // ---------------------------------------------------------------------------
+
+// Swipe the rules like a deck of cards. The gesture is deliberately
+// touch/pen-only: dragging a mouse across the rules should still select
+// text. `touch-action: pan-y` on .rules-screen leaves vertical scrolling
+// to the browser while letting a horizontal gesture reach these events.
+document.addEventListener('pointerdown', (ev) => {
+  if (ev.isPrimary === false) { ruleSwipe = null; return; }
+  if (!app.rulesWalk || ev.pointerType === 'mouse' || !ev.target.closest?.('.rules-screen')) {
+    ruleSwipe = null;
+    return;
+  }
+  if (ev.target.closest('button, input, label, a, select, textarea, [contenteditable="true"]')) {
+    ruleSwipe = null;
+    return;
+  }
+  ruleSwipe = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
+});
+
+document.addEventListener('pointerup', (ev) => {
+  if (!ruleSwipe || ruleSwipe.id !== ev.pointerId) return;
+  const dx = ev.clientX - ruleSwipe.x;
+  const dy = ev.clientY - ruleSwipe.y;
+  ruleSwipe = null;
+  if (!app.rulesWalk) return;
+  if (Math.abs(dx) < RULE_SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+  if (moveRules(dx < 0 ? 1 : -1)) ruleSwipeUntil = performance.now() + 350;
+});
+
+document.addEventListener('pointercancel', (ev) => {
+  if (ruleSwipe && ruleSwipe.id === ev.pointerId) ruleSwipe = null;
+});
+
+// A finger that leaves the screen over a button must not also activate it.
+document.addEventListener('click', (ev) => {
+  if (performance.now() > ruleSwipeUntil) return;
+  if (!ev.target.closest?.('.rules-screen')) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  ruleSwipeUntil = 0;
+}, true);
 
 document.addEventListener('click', (ev) => {
   const target = ev.target.closest('[data-action]');

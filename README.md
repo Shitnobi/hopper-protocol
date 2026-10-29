@@ -113,7 +113,8 @@ screenshot of egui — it is DOM text and events over canvas-painted
 materials, so the wallet stays selectable, accessible and installable.
 The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
-boot intro and the eight-page rules walkthrough.
+boot intro and the eight-page rules walkthrough (swipe left or right, or
+use BACK and NEXT).
 
 RECEIVE is the egui bottom window, not an address list: a tab for
 **BITCOIN** (the rotating BIP84 receive branch, with NEW ADDRESS and USED
