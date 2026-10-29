@@ -277,7 +277,17 @@ curl -sN localhost:9770/v1/events/stream
 - **Demo vs live**: `DemoBackend` implements the same interface as
   `EsploraClient`/`ElectrumClient` + `IndexerClient`. Apply URLs in Settings.
   Live mode requires a secure context for WebCrypto; Electrum needs a
-  WebSocket endpoint.
+  WebSocket endpoint. `electrs` itself speaks TCP, so a browser needs a
+  loopback WS-to-TCP bridge (the page talks `ws://127.0.0.1:…`, never a raw
+  TCP socket).
+- **Live regtest bootstrap**: bitcoind-mined coins descend from coinbase
+  outputs, and the HOPPER indexer deliberately does not model the coinbase
+  subsidy (`rust/crates/hopper-indexer/src/NOTES.md`). `/v1/utxo` therefore
+  returns empty ranges for those coins and MINT stays disabled. Read the
+  real ranges from ord (`GET /output/<txid>:<vout>`, `sat_ranges`) and
+  `POST` them to `/v1/admin/seed` before the first mint. ord's HTTP API is
+  CORS-readable, but the current wallet consumes ranges through the HOPPER
+  indexer, not directly from ord.
 
 ### Tests
 

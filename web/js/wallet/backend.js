@@ -318,7 +318,12 @@ export class IndexerClient {
   utxo(txid, vout) { return this.get(`/v1/utxo/${txid}/${vout}`); }
   road() { return this.get('/v1/road'); }
   leaderboard(limit = 25) { return this.get(`/v1/leaderboard?limit=${limit}`); }
-  events(limit = 100) { return this.get(`/v1/events?limit=${limit}`); }
+  async events(limit = 100) {
+    // The Rust API returns a bare array; DemoBackend returns {events}.
+    // Normalize here so live History and the ROAD LOG are not silently empty.
+    const answer = await this.get(`/v1/events?limit=${limit}`);
+    return { events: Array.isArray(answer) ? answer : (answer?.events || []) };
+  }
   fees() { return this.get('/v1/fees'); }
 }
 

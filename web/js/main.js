@@ -1007,6 +1007,11 @@ const handlers = {
       try {
         app.w.settings = next;
         app.settings = next;
+        const changed = next.mode !== previous.mode
+          || next.esploraUrl !== previous.esploraUrl
+          || next.indexerUrl !== previous.indexerUrl
+          || next.electrumUrl !== previous.electrumUrl;
+        if (changed && app.w.resetScan) app.w.resetScan();
         await app.w.connect();
         // refresh() tolerates a missing chain (views degrade gracefully);
         // APPLY should not. Probe the tip before adopting the new backend.

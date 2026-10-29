@@ -331,6 +331,23 @@ export class WalletSession {
     return this;
   }
 
+  /** A different chain/indexer must not inherit scan pointers from the
+   *  previous backend. A demo tip (H 973,263) is not a live tip and could
+   *  make the first live pass skip its cold gap walk. The next refresh is
+   *  forced, so the caller immediately pays for the cold scan it asked for. */
+  resetScan(note = 'backend changed — a cold scan will start') {
+    this.fullScanTip = null;
+    this.watchTip = null;
+    this.cold = true;
+    this.forceWatch = true;
+    this.scan.note = note;
+    this.scan.partial = false;
+    this.scan.lastPass = null;
+    this.scan.lastTip = null;
+    this.scan.nextAt = null;
+    this._saveLedger();
+  }
+
   /** Stop background work (lock/wipe/backend change). Network requests
    *  already in flight are left to finish; nothing is rescheduled. */
   stop() {

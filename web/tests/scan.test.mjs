@@ -198,5 +198,30 @@ eq('a cancelled rescan does not claim the gap was walked', wallet.fullScanTip, n
 eq('a cancelled rescan clears the progress line', wallet.scan.rescan, null);
 eq('a cancelled rescan says it stopped', /rescan stopped/.test(wallet.scan.note), true);
 
+// --- backend switch resets the tip gate ---------------------------------
+wallet.fullScanTip = 973263;
+wallet.watchTip = 973263;
+wallet.scan.lastPass = Date.now();
+wallet.scan.lastTip = 973263;
+wallet.resetScan();
+eq('backend switch clears the demo full-scan tip', wallet.fullScanTip, null);
+eq('backend switch clears the watched tip', wallet.watchTip, null);
+eq('backend switch forces a cold pass', wallet.cold, true);
+eq('backend switch forces the next refresh', wallet.forceWatch, true);
+eq('backend switch names the reason', /cold scan/.test(wallet.scan.note), true);
+eq('backend switch clears the old pass time', wallet.scan.lastTip, null);
+
+// The Rust API answers /v1/events with a bare array; the wallet expects the
+// same {events} shape DemoBackend returns. Do not let live History go blank.
+const { IndexerClient } = await import('../js/wallet/backend.js');
+const realFetch = globalThis.fetch;
+globalThis.fetch = async () => new Response(JSON.stringify([
+  { height: 112, block_hash: '00', action: { kind: 'settle', frogger_sat: 5, outcome: 'dead' } },
+]), { status: 200, headers: { 'content-type': 'application/json' } });
+const liveEvents = await new IndexerClient('http://indexer.test').events(5);
+globalThis.fetch = realFetch;
+eq('live events are wrapped for History', liveEvents.events.length, 1);
+eq('live settle keeps its kind', liveEvents.events[0].action.kind, 'settle');
+
 wallet.stop();
 console.log(`scan: ${checks} checks passed`);
