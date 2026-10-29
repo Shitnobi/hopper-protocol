@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
 import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../js/ui/frog-mark.js';
+import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg } from '../js/ui/theme.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -61,5 +62,13 @@ paintFrogMark(fakeCtx, 50, 50, 32, '#f0c83c', '#18241a');
 ok(rects.length > 10, 'the intro mark is painted as blocks');
 ok(rects.every((r) => [r.x, r.y, r.w, r.h].every(Number.isInteger)), 'the intro mark snaps to device pixels');
 ok(new Set(rects.map((r) => r.fill)).size === 2, 'the intro mark uses body and cut colors');
+
+// ---- pixel pond mark (the drawer's THE POND icon) -------------------
+ok(POND_MARK_SIZE === 14, 'the pond mark is a 14px glyph');
+ok(POND_MARK_ROWS.length === POND_MARK_SIZE && POND_MARK_ROWS.every((row) => row.length === POND_MARK_SIZE), 'the pond mark is a square 14x14 grid');
+ok(['b', 'w', 'p', 'f'].every((ch) => POND_MARK_ROWS.some((row) => row.includes(ch))), 'the pond mark has a bank, water, a pad and a flower');
+const pond = pondMarkSvg(14);
+ok(pond.includes('class="pond-mark"') && pond.includes('viewBox="0 0 14 14"') && pond.includes('shape-rendering="crispEdges"'), 'the pond glyph is a crisp 14x14 SVG');
+ok(pond.includes('#3a7d89') && pond.includes('#68b270') && pond.includes('#eab0ca'), 'the pond glyph carries water, pad and flower colours');
 
 console.log(`media: ${checks} checks passed`);

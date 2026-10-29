@@ -628,7 +628,8 @@ p { margin: .45em 0; }
   letter-spacing: .05em;
   font-size: 12px;
 }
-.drawer .nav button > .frog-mark { flex: 0 0 auto; display: block; }
+.drawer .nav button > .frog-mark,
+.drawer .nav button > .pond-mark { flex: 0 0 auto; display: block; }
 .drawer .nav button:hover { color: var(--ink); border-color: var(--text-dim, #96a596); }
 .drawer .nav button.active { background: var(--bg); border-color: var(--accent); color: var(--ink); }
 .drawer .foot { margin-top: auto; padding-top: 12px; color: var(--muted); font-size: 11px; }

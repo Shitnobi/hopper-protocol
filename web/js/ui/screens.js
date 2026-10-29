@@ -12,7 +12,7 @@ import {
 import { requiredAt, deathBps, nextIncrement, paramsHashHex } from '../core/params.js';
 import { deriveTraits } from '../core/art.js';
 import {
-  C, RARITY_NAMES, frogMarkSvg, rarityColor,
+  C, RARITY_NAMES, frogMarkSvg, pondMarkSvg, rarityColor,
 } from './theme.js';
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ export function drawer(app) {
     <div class="nav">
       ${item('wallet', '💰 WALLET')}
       ${item('history', '📜 HISTORY')}
-      ${item('pond', `${frogMarkSvg(14)}<span>THE POND</span>`)}
+      ${item('pond', `${pondMarkSvg(14)}<span>THE POND</span>`)}
       ${item('road', '🚦 THE ROAD')}
       ${item('mint', '✨ MINT')}
       ${item('leaders', '🏆 LEADERBOARD')}

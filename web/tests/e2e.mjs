@@ -272,6 +272,25 @@ console.log('drawer menu:', menu);
 if (menu.at(-1) !== '⚙ SETTINGS' || menu.at(-2) !== '📖 READ THE RULES') {
   errors.push(`drawer rules placement: ${JSON.stringify(menu)}`);
 }
+const pondIcon = await evaluate(`(() => {
+  const b = document.querySelector('#drawer .nav button[data-view=pond]');
+  const s = b?.querySelector('svg');
+  return {
+    cls: s?.getAttribute('class') || '',
+    viewBox: s?.getAttribute('viewBox') || '',
+    w: s?.getAttribute('width') || '',
+    crisp: s?.getAttribute('shape-rendering') || '',
+    html: s?.outerHTML || '',
+    frog: Boolean(b?.querySelector('.frog-mark')),
+  };
+})()`);
+console.log('pond icon:', { cls: pondIcon.cls, viewBox: pondIcon.viewBox, w: pondIcon.w, crisp: pondIcon.crisp, frog: pondIcon.frog });
+if (pondIcon.cls !== 'pond-mark' || pondIcon.viewBox !== '0 0 14 14' || pondIcon.w !== '14' || pondIcon.crisp !== 'crispEdges') {
+  errors.push(`pond icon: ${JSON.stringify(pondIcon)}`);
+}
+if (pondIcon.frog || !pondIcon.html.includes('#3a7d89') || !pondIcon.html.includes('#68b270')) {
+  errors.push('pond icon: still the frog mark, or missing water/pad colours');
+}
 await evaluate(`document.querySelector('#drawer [data-action=open-rules]').click()`);
 await waitFor('document.querySelector(".rules-screen")', 5000, 'rules walkthrough');
 {

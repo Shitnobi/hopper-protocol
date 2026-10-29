@@ -10,7 +10,8 @@
 //   * pond water with ripple dashes, water lilies with the classic notch,
 //   * asphalt with lane dashes, a pixel grave marker,
 //   * the 8-bit tadpole / squished frog / top-down arcade car,
-//   * the install icon's frog mark, drawn in road yellow.
+//   * the install icon's frog mark, drawn in road yellow,
+//   * a tiny top-down pond glyph for THE POND in the drawer.
 //
 // The egui app paints these with `Painter`; here they are painted into
 // <canvas> elements that are mounted behind the DOM after each render. The
@@ -486,6 +487,53 @@ export function carBodyColor(seed) {
 /** The install icon's frog, squared off to sit with the pixel type. */
 export function frogMarkSvg(size = 24, body = C.accent, cut = C.bg) {
   return pixelFrogMark(size, body, cut);
+}
+
+// A tiny top-down pond for the drawer's THE POND item. This is a UI glyph,
+// not the site favicon: bank, water, one lily pad, and its flower.
+export const POND_MARK_SIZE = 14;
+export const POND_MARK_ROWS = [
+  '..............',
+  '....bbbbbb....',
+  '..bbwwwwwwbb..',
+  '.bwwwhhhwwwwb.',
+  'bwwwwwwwwwwwwb',
+  'bwwwwwffwwwwwb',
+  'bwwwwwfyppppwb',
+  'bwwwpppppppwwb',
+  'bwwpppppppwwwb',
+  'bwwwppppppwwwb',
+  'bwwwwwwwwwwwwb',
+  '.bwwwwwwwwwwb.',
+  '..bbwwwwwwbb..',
+  '....bbbbbb....',
+];
+const POND_MARK_COLORS = {
+  b: '#356c3a',
+  w: '#3a7d89',
+  h: '#8fd0d8',
+  p: C.padLight,
+  f: C.lilyFlower,
+  y: C.lilyCore,
+};
+
+/** Inline SVG for the pond glyph used beside THE POND. */
+export function pondMarkSvg(size = POND_MARK_SIZE) {
+  const rects = [];
+  for (let y = 0; y < POND_MARK_ROWS.length; y += 1) {
+    const row = POND_MARK_ROWS[y];
+    let x = 0;
+    while (x < row.length) {
+      const ch = row[x];
+      const fill = POND_MARK_COLORS[ch];
+      if (!fill) { x += 1; continue; }
+      let end = x + 1;
+      while (end < row.length && row[end] === ch) end += 1;
+      rects.push(`<rect x="${x}" y="${y}" width="${end - x}" height="1" fill="${fill}"/>`);
+      x = end;
+    }
+  }
+  return `<svg class="pond-mark" width="${size}" height="${size}" viewBox="0 0 ${POND_MARK_SIZE} ${POND_MARK_SIZE}" shape-rendering="crispEdges" aria-hidden="true">${rects.join('')}</svg>`;
 }
 
 // ---------------------------------------------------------------------------
