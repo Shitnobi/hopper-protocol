@@ -1196,7 +1196,7 @@ export function crossSheet(app, f) {
       <dt>Death at target</dt><dd>${(deathBps(target) / 100).toFixed(2)}%</dd>
       <dt>Settlement</dt><dd>T+6 blocks</dd>
     </div>
-    <label class="field"><span>New owner P2TR address (optional)</span><input type="text" data-input="cross-owner" placeholder="leave empty to keep this wallet"></label>
+    <label class="field"><span>New owner P2TR address (optional)</span><input type="text" data-input="cross-owner" placeholder="leave empty to keep in this wallet"></label>
     <label class="field"><span>Fee rate (sat/vB)</span><input type="number" min="1" data-input="cross-fee" value="${app.settings.feeRate}"></label>
     <div class="mt14">${logBtn('CROSS', 'do-cross', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
 }

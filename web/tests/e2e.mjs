@@ -520,6 +520,11 @@ await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cro
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);
 await waitFor('document.querySelector("[data-action=do-cross]")');
+const crossOwnerHint = await evaluate(`document.querySelector('[data-input=cross-owner]')?.placeholder || ''`);
+console.log('cross owner hint:', crossOwnerHint);
+if (crossOwnerHint !== 'leave empty to keep in this wallet') {
+  errors.push(`cross owner placeholder: ${JSON.stringify(crossOwnerHint)}`);
+}
 await evaluate(`document.querySelector('[data-action=do-cross]').click()`);
 await waitFor('location.hash === "#/road"', 30000, 'road after cross');
 await sleep(500);
