@@ -881,6 +881,8 @@ export function settings(app) {
         <input type="text" data-input="esploraUrl" value="${esc(s.esploraUrl || '')}" placeholder="https://…">
         <label>Indexer</label>
         <input type="text" data-input="indexerUrl" value="${esc(s.indexerUrl || '')}" placeholder="http://…">
+        <label>Ord</label>
+        <input type="text" data-input="ordUrl" value="${esc(s.ordUrl || '')}" placeholder="https://ordinals.com (mainnet default)">
         <label>Electrum</label>
         <input type="text" data-input="electrumUrl" value="${esc(s.electrumUrl || '')}" placeholder="wss://…">
         <label>Fee rate</label>
@@ -895,7 +897,7 @@ export function settings(app) {
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">A live backend needs an indexer or ord server for sat ranges; Esplora alone can answer coins, not frog staging.</div>
+      <div class="hint">Sat ranges come from the HOPPER indexer when it knows the coin; otherwise this ord server names them. Empty uses ordinals.com on mainnet. Point it at your own ord to keep the query local.</div>
     </div>
 
     <div class="window" data-lily="home">

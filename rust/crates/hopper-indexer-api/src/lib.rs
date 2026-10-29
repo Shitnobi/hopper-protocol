@@ -20,8 +20,11 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 
+use hopper_core::satmath::SatRange;
 use hopper_indexer::state_machine::{Indexer, IndexerError};
 use hopper_indexer::types::ChainEvent;
+#[cfg(feature = "redb")]
+use hopper_indexer::types::UtxoEntry;
 
 /// Events kept in the core's in-memory tail (durable segments hold the
 /// rest). 4096 events is a few hundred KiB — enough for SSE/live reads
@@ -33,6 +36,7 @@ pub mod engine;
 pub mod eventlog;
 pub mod mempool;
 pub mod metrics;
+pub mod ord;
 pub mod persist;
 pub mod routes;
 pub mod rpc;
@@ -91,6 +95,9 @@ pub struct ApiState {
     /// (`/v1/fees`). Set by the binary from env; absent in tests and
     /// operator-only setups.
     rpc: RwLock<Option<std::sync::Arc<rpc::BitcoinRpc>>>,
+    /// Optional ord server used to seed coins the indexer has not seen
+    /// (notably coinbase-descended funding coins). See `ord.rs`.
+    ord: Option<ord::OrdClient>,
     /// Leaderboard order materialised per tip: `(height, hash) → sats`.
     /// The ranking is a pure function of the state, so a new tip (or a
     /// same-height reorg) is the only invalidation key. Bounded to one
@@ -123,6 +130,57 @@ impl ApiState {
         self.admin_token.as_deref()
     }
 
+    /// Configure the lazy sat-range oracle. An empty URL disables it.
+    #[must_use]
+    pub fn with_ord_url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        let url = url.trim();
+        self.ord = (!url.is_empty()).then(|| ord::OrdClient::new(url));
+        self
+    }
+
+    /// The configured ord oracle, if any.
+    pub fn ord(&self) -> Option<&ord::OrdClient> {
+        self.ord.as_ref()
+    }
+
+    /// Seed a coin discovered from ord. Unlike the admin seed path this
+    /// is called with a live `/v1/utxo` request, so it must update the
+    /// durable mirror too. `Engine::Store` persists its own seeds; a
+    /// memory engine with a mirror needs the coin written separately.
+    pub fn seed_utxo(&self, outpoint: hopper_indexer::types::OutPoint, ranges: Vec<SatRange>) {
+        #[cfg(feature = "redb")]
+        let value: u64 = ranges.iter().map(|r| r.len()).sum();
+        #[cfg(feature = "redb")]
+        let entry = UtxoEntry {
+            value,
+            ranges: ranges.clone(),
+            frogs: Default::default(),
+        };
+        #[cfg(feature = "redb")]
+        let store_engine;
+        {
+            let mut idx = self.indexer.write().expect("indexer lock poisoned");
+            #[cfg(feature = "redb")]
+            {
+                store_engine = idx.is_store();
+            }
+            idx.seed_utxo(outpoint, ranges);
+        }
+        #[cfg(feature = "redb")]
+        if !store_engine {
+            if let Some(store) = &self.durable {
+                if let Err(e) = store.seed_coin(outpoint, entry) {
+                    eprintln!(
+                        "[ord] durable seed {}:{}: {e}",
+                        crate::dto::hex_display(&outpoint.txid),
+                        outpoint.vout
+                    );
+                }
+            }
+        }
+    }
+
     pub fn new(indexer: Indexer) -> Self {
         Self::with_snapshots(indexer, persist::SnapshotStore::disabled())
     }
@@ -144,6 +202,7 @@ impl ApiState {
             #[cfg(feature = "redb")]
             durable: None,
             rpc: RwLock::new(None),
+            ord: None,
             chain: RwLock::new(ChainIdentity::default()),
             leaderboard: Mutex::new(None),
             admin_token: None,

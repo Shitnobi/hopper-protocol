@@ -30,6 +30,10 @@
 //!   it enables the ingest wire (e.g. `tcp://127.0.0.1:28332`)
 //! - `HOPPER_RPC_URL` / `HOPPER_RPC_COOKIE` / `HOPPER_RPC_USER` +
 //!   `HOPPER_RPC_PASS` — bitcoind RPC for block fetches
+//! - `HOPPER_ORD_URL` — optional ord server used to lazily seed coins
+//!   the indexer has not seen (e.g. `http://127.0.0.1:8080`, or
+//!   `https://ordinals.com`). Empty/unset disables the oracle; a fresh
+//!   coinbase-descended wallet then needs an operator seed.
 //! - `HOPPER_INGEST_START_HEIGHT` — **must be 0 or unset**. The
 //!   indexer always ingests from the chain's genesis block: a later
 //!   start can never name the coins created before it, which would make
@@ -335,6 +339,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(token) = env_var("HOPPER_ADMIN_TOKEN") {
         api = api.with_admin_token(token);
         println!("admin routes require HOPPER_ADMIN_TOKEN");
+    }
+    if let Ok(ord_url) = env_var("HOPPER_ORD_URL") {
+        if !ord_url.trim().is_empty() {
+            api = api.with_ord_url(&ord_url);
+            println!("ord: lazy sat-range seeding from {ord_url}");
+        }
     }
     // The protocol commitment (V3-FINAL-SPEC §2.3): print it so deployment
     // notes and the browser wallet can compare. Changing `genesis` or any

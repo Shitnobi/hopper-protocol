@@ -284,9 +284,11 @@ await sleep(250);
 const settingsRules = await evaluate(`({
   read: Boolean(document.querySelector('#app [data-action=open-rules]')),
   replay: Boolean(document.querySelector('#app [data-action=replay-intro]')),
+  ord: document.querySelector('#app [data-input=ordUrl]')?.getAttribute('placeholder') || '',
 })`);
 if (settingsRules.read) errors.push('settings still has READ THE RULES');
 if (!settingsRules.replay) errors.push('settings lost REPLAY THE INTRO');
+if (!/ordinals\.com/.test(settingsRules.ord)) errors.push(`settings lost the ORD endpoint: ${JSON.stringify(settingsRules)}`);
 await evaluate(`document.querySelector('[data-action=drawer]').click()`);
 await sleep(200);
 const menu = await evaluate(`[...document.querySelectorAll('#drawer .nav button')].map((b) => b.textContent.trim())`);

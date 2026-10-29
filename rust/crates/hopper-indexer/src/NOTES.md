@@ -42,8 +42,11 @@ invariant trivially true and makes reorg handling exact.
    sats land in the right outputs while never being confusable with real
    ordinals. Consequence: a MINT whose output 0 is funded entirely by
    untracked inputs is rejected (`MintAnchorUntracked`) because the
-   frogger ID would be unknowable. A full-history indexer (tracking from
-   genesis) never sees this.
+   frogger ID would be unknowable. Tracking from genesis is not enough
+   on its own because the coinbase subsidy is deliberately unmodelled
+   (decision 3); the API can seed a coin from ord on the wallet's first
+   `/v1/utxo` question (`HOPPER_ORD_URL`), or an operator can supply a
+   `HOPPER_SEEDS_FILE` / `/v1/admin/seed` entry.
 
 3. **Fee-paid anchor sats are "Burned", not coinbase-tracked.** `ord`
    assigns fee sats into the block's coinbase outputs; modeling that

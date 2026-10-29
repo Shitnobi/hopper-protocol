@@ -1235,6 +1235,25 @@ pub mod redb_store {
             write.commit().map_err(backend)
         }
 
+        /// Insert or replace one seed coin without an undo journal.
+        ///
+        /// Used by the API's lazy ord seeder when the engine is a memory
+        /// image with this store as a mirror; the engine's seed path
+        /// already flushes a store-backed engine. Seeds are bootstrap
+        /// truth, not block effects, so they are not undoable.
+        pub fn seed_coin(&self, outpoint: OutPoint, entry: UtxoEntry) -> Result<()> {
+            let key = coin_key(&outpoint);
+            let value = bincode::serialize(&entry).map_err(backend)?;
+            let write = self.db.begin_write().map_err(backend)?;
+            {
+                let mut table = write.open_table(COINS).map_err(backend)?;
+                table
+                    .insert(key.as_slice(), value.as_slice())
+                    .map_err(backend)?;
+            }
+            write.commit().map_err(backend)
+        }
+
         /// Write a full state image as one batch (bootstrap a store from a
         /// snapshot-restored indexer, or a compaction pass).
         pub fn save_state(&self, state: &crate::state_machine::IndexState) -> Result<()> {

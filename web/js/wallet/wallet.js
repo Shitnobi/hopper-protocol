@@ -10,7 +10,7 @@ import {
 import { CARD_VALUE, GENESIS, requiredAt } from '../core/params.js';
 import { decodeAddress, p2trScript, scriptToAddress } from './addresses.js';
 import { deriveWallet } from './keys.js';
-import { DemoBackend, LiveBackend } from './backend.js';
+import { DemoBackend, LiveBackend, effectiveOrdUrl } from './backend.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
@@ -63,7 +63,7 @@ export function isPublicEndpoint(url) {
 
 export function settingsPublicSource(settings = {}) {
   if (settings.mode === 'demo') return false;
-  return [settings.esploraUrl, settings.indexerUrl, settings.electrumUrl]
+  return [settings.esploraUrl, settings.indexerUrl, settings.electrumUrl, settings.ordUrl]
     .some((url) => isPublicEndpoint(url));
 }
 
@@ -155,6 +155,7 @@ export const DEFAULT_SETTINGS = {
   esploraUrl: 'http://127.0.0.1:3002',
   indexerUrl: 'http://127.0.0.1:9770',
   electrumUrl: '',
+  ordUrl: '',
   feeRate: 2,
   sound: true,
   mute: false,
@@ -172,6 +173,7 @@ export function loadSettings() {
   // that flow into fee math or the scan loop so a corrupt/empty field can
   // never become NaN or an unbounded gap.
   s.mode = s.mode === 'live' ? 'live' : 'demo';
+  s.ordUrl = String(s.ordUrl || '').trim();
   s.feeRate = rateOr(s.feeRate);
   // Compatibility: older files had a user-editable 5–50 gap and no
   // extension. Keep a wider old setting by turning the part above the
@@ -324,9 +326,11 @@ export class WalletSession {
         esploraUrl: this.settings.esploraUrl,
         indexerUrl: this.settings.indexerUrl,
         electrumUrl: this.settings.electrumUrl,
+        ordUrl: effectiveOrdUrl(this.settings, this.network),
       });
     }
-    this.publicSource = settingsPublicSource(this.settings);
+    const effective = { ...this.settings, ordUrl: effectiveOrdUrl(this.settings, this.network) };
+    this.publicSource = settingsPublicSource(effective);
     this._setupAutoSync();
     return this;
   }

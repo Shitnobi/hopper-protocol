@@ -327,6 +327,71 @@ export class IndexerClient {
   fees() { return this.get('/v1/fees'); }
 }
 
+// --- ord sat ranges ------------------------------------------------------
+
+export const ORDINALS_COM = 'https://ordinals.com';
+
+/**
+ * The public default is ordinals.com on mainnet. Regtest/testnet have no
+ * public ord, so an empty field stays empty there and the HOPPER indexer
+ * answers ranges (or its own configured ord does). An explicit URL always
+ * wins, including a self-hosted `http://127.0.0.1:8080`.
+ */
+export function effectiveOrdUrl(settings = {}, network = 'mainnet') {
+  const explicit = String(settings.ordUrl || '').trim();
+  if (explicit) return explicit;
+  return network === 'mainnet' ? ORDINALS_COM : '';
+}
+
+/**
+ * Minimal ord client for the one endpoint the wallet needs. Ord's
+ * `/output/:outpoint` JSON is authoritative for a coin's sat assignment;
+ * the HOPPER indexer remains the source for frogs, road and events.
+ *
+ * `sat_ranges` is half-open [start, end); the wallet's `ranges` are
+ * inclusive, so `end - 1` is deliberate.
+ */
+export class OrdClient {
+  constructor(baseUrl) {
+    this.base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  }
+
+  async output(txid, vout) {
+    const id = String(txid || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(id) || !Number.isSafeInteger(Number(vout)) || Number(vout) < 0) {
+      return null;
+    }
+    const url = `${this.base}/output/${id}:${Number(vout)}`;
+    const res = await timedFetch(url, { headers: { accept: 'application/json' } });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`ord ${id}:${vout}: ${res.status}`);
+    const json = await res.json();
+    const raw = json?.sat_ranges;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    const value = Number(json.value);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`ord ${id}:${vout}: missing output value`);
+    }
+    let sum = 0;
+    const ranges = raw.map((pair) => {
+      if (!Array.isArray(pair) || pair.length !== 2) {
+        throw new Error(`ord ${id}:${vout}: malformed sat range`);
+      }
+      const start = Number(pair[0]);
+      const end = Number(pair[1]);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end) {
+        throw new Error(`ord ${id}:${vout}: empty sat range`);
+      }
+      sum += end - start;
+      return [start, end - 1];
+    });
+    if (!Number.isSafeInteger(sum) || sum !== value) {
+      throw new Error(`ord ${id}:${vout}: ranges do not sum to the output value`);
+    }
+    return { value, ranges, exact: true, frogs: [], ord: true };
+  }
+}
+
 // --- unified backends -----------------------------------------------------
 
 // The demo chain implements both interfaces itself.
@@ -382,11 +447,12 @@ export class DemoBackend {
 }
 
 export class LiveBackend {
-  constructor({ esploraUrl = '', indexerUrl = '', electrumUrl = '' } = {}) {
+  constructor({ esploraUrl = '', indexerUrl = '', electrumUrl = '', ordUrl = '' } = {}) {
     this.kind = 'live';
     this.esplora = esploraUrl ? new EsploraClient(esploraUrl) : null;
     this.electrum = electrumUrl ? new ElectrumClient(electrumUrl) : null;
     this.indexer = indexerUrl ? new IndexerClient(indexerUrl) : null;
+    this.ord = ordUrl ? new OrdClient(ordUrl) : null;
     this.chain = this.esplora || this.electrum;
     if (!this.chain) throw new Error('configure an Esplora or Electrum URL');
   }
@@ -419,7 +485,28 @@ export class LiveBackend {
   async status() { return this.indexer ? this.indexer.status() : null; }
   async frogger(sat) { return this.indexer ? this.indexer.frogger(sat) : null; }
   async froggers(params) { return this.indexer ? this.indexer.froggers(params) : { items: [], total: 0 }; }
-  async utxo(txid, vout) { return this.indexer ? this.indexer.utxo(txid, vout) : null; }
+  async utxo(txid, vout) {
+    let fromIndexer = null;
+    if (this.indexer) {
+      try {
+        fromIndexer = await this.indexer.utxo(txid, vout);
+      } catch {
+        // A coin the indexer has never seen is expected on a fresh chain.
+        fromIndexer = null;
+      }
+      // Shadow/empty ranges mean the indexer cannot name the sats.
+      if (fromIndexer?.exact && fromIndexer.ranges?.length) return fromIndexer;
+    }
+    if (this.ord) {
+      try {
+        const direct = await this.ord.output(txid, vout);
+        if (direct) return { ...direct, frogs: fromIndexer?.frogs || [] };
+      } catch {
+        // Fall back to the indexer's shadow answer, if it had one.
+      }
+    }
+    return fromIndexer;
+  }
   async road() { return this.indexer ? this.indexer.road() : { active: [] }; }
   async leaderboard(limit) { return this.indexer ? this.indexer.leaderboard(limit) : { entries: [] }; }
   async events(limit) { return this.indexer ? this.indexer.events(limit) : { events: [] }; }

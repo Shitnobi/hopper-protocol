@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     event_dto, fees_dto, frogger_dto, in_flight_dto_with, rejection_dto, FeesDto, FroggerDto,
-    FroggersPageDto, IngestReportDto, LeaderboardEntryDto, RoadDto, StatusDto,
+    FroggersPageDto, IngestReportDto, LeaderboardEntryDto, RoadDto, StatusDto, UtxoDto,
 };
 use crate::{ApiError, SharedState};
 
@@ -406,34 +406,47 @@ pub struct RollbackParams {
 /// ranges. Wallet discovery data (SPEC §9.3): the wallet verifies the
 /// UTXO's existence and spend-status itself via Electrum.
 ///
-/// Three sources, in order:
+/// Sources, in order:
 ///
 /// 1. the durable mirror, **only when it knows the coin** (a mirror that
 ///    lags the memory indexer must not answer "not tracked");
 /// 2. the confirmed state machine;
 /// 3. a read-only mempool overlay, so a frog received (or a change coin
-///    created) between broadcast and confirmation is still attributable.
+///    created) between broadcast and confirmation is still attributable;
+/// 4. the configured ord server, for a coin the indexer has never seen
+///    (notably one descended from the unmodelled coinbase).
 ///
 /// `exact` is false whenever any range is a shadow: a synthetic range
 /// proves nothing about ownership, and the wallet must treat it as
-/// unknown rather than "not ours".
+/// unknown rather than "not ours". A shadow answer is kept as a fallback
+/// while ord is consulted.
 pub async fn get_utxo(
     State(state): State<SharedState>,
     Path((txid_hex, vout)): Path<(String, u32)>,
-) -> Result<Json<crate::dto::UtxoDto>, ApiError> {
+) -> Result<Json<UtxoDto>, ApiError> {
     let txid = crate::wire::parse_hash(&txid_hex)?;
+    // A shadow coin is worth answering while ord is consulted: the wallet
+    // gets the same value, but `exact: false` keeps it unspendable until
+    // the real ranges arrive. Keep it as the fallback if ord is absent or
+    // fails, rather than pretending the coin does not exist.
+    let mut fallback: Option<UtxoDto> = None;
+
     #[cfg(feature = "redb")]
     if let Some(store) = state.durable_store_read() {
-        let outpoint = hopper_indexer::types::OutPoint { txid, vout };
         use hopper_indexer::store::StateView;
+        let outpoint = hopper_indexer::types::OutPoint { txid, vout };
         if let Some(entry) = store.coin(&outpoint).map_err(store_error)? {
             let exact = ranges_are_exact(&entry.ranges);
-            return Ok(Json(crate::dto::UtxoDto {
+            let dto = UtxoDto {
                 value: entry.value,
                 ranges: entry.ranges.into_iter().map(|r| (r.start, r.end)).collect(),
                 exact,
                 frogs: entry.frogs.to_vec(),
-            }));
+            };
+            if exact {
+                return Ok(Json(dto));
+            }
+            fallback = Some(dto);
         }
         // Fall through: the mirror may simply be behind the memory
         // indexer (it is committed at checkpoints, not per route call).
@@ -442,12 +455,18 @@ pub async fn get_utxo(
         let idx = state.read();
         if let Some((value, ranges)) = idx.utxo_ranges(txid, vout) {
             let exact = ranges_are_exact(&ranges);
-            return Ok(Json(crate::dto::UtxoDto {
+            let dto = UtxoDto {
                 value,
                 ranges: ranges.into_iter().map(|r| (r.start, r.end)).collect(),
                 exact,
                 frogs: idx.utxo_frogs(txid, vout),
-            }));
+            };
+            if exact {
+                return Ok(Json(dto));
+            }
+            if fallback.is_none() {
+                fallback = Some(dto);
+            }
         }
     }
     // Mempool overlay: the indexer is confirm-first, but a wallet must
@@ -456,22 +475,98 @@ pub async fn get_utxo(
     if let Some(rpc) = state.rpc() {
         let idx = state.read();
         if let Some((value, ranges, exact)) = mempool_utxo_ranges(&idx, &rpc, txid, vout) {
-            return Ok(Json(crate::dto::UtxoDto {
+            let dto = UtxoDto {
                 value,
                 ranges: ranges.into_iter().map(|r| (r.start, r.end)).collect(),
                 exact,
                 frogs: Vec::new(),
-            }));
+            };
+            if exact {
+                return Ok(Json(dto));
+            }
+            if fallback.is_none() {
+                fallback = Some(dto);
+            }
         }
+    }
+    // Lazy ord bootstrap. The wallet already asks about every UTXO it
+    // owns; the first such question names the coin's sats, so the next
+    // MINT's input ranges are in the tracker when the block arrives.
+    if let Some(dto) = seed_from_ord(&state, txid, vout).await {
+        return Ok(Json(dto));
+    }
+    if let Some(dto) = fallback {
+        return Ok(Json(dto));
     }
     Err(ApiError::NotFound(
         "utxo not tracked by this indexer (not confirmed, not in the mempool, or unknown)".into(),
     ))
 }
 
+/// Ask the configured ord server about an outpoint and seed the indexer.
+/// Returns the exact DTO on success; `None` leaves the caller's shadow
+/// fallback (or its 404) intact.
+async fn seed_from_ord(state: &SharedState, txid: [u8; 32], vout: u32) -> Option<UtxoDto> {
+    let ord = state.ord()?.clone();
+    let shown = format!("{}:{vout}", crate::dto::hex_display(&txid));
+    // A newly mined output reaches bitcoind before ord's indexer sees it.
+    // Retry briefly so the wallet's first question can return exact ranges
+    // instead of caching a shadow answer until the next block.
+    let mut found = None;
+    for attempt in 0..3 {
+        let client = ord.clone();
+        let answer = tokio::task::spawn_blocking(move || client.output(txid, vout))
+            .await
+            .map_err(|e| format!("ord task: {e}"));
+        match answer {
+            Ok(Ok(Some(value))) => {
+                found = Some(value);
+                break;
+            }
+            Ok(Ok(None)) if attempt < 2 => {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
+            Ok(Ok(None)) => {
+                eprintln!("[ord] {shown}: not indexed (no sat ranges)");
+                return None;
+            }
+            Ok(Err(e)) => {
+                eprintln!("[ord] {shown}: {e}");
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[ord] {shown}: {e}");
+                return None;
+            }
+        }
+    }
+    let (value, ranges) = found?;
+    if ranges.is_empty() {
+        return None;
+    }
+    // Never replace a coin that already carries frog locations: the seed
+    // path has no reverse index, and overwriting would drop them.
+    if !state.read().utxo_frogs(txid, vout).is_empty() {
+        eprintln!("[ord] {shown}: coin carries frogs; not overwriting its ranges");
+        return None;
+    }
+    let dto = UtxoDto {
+        value,
+        ranges: ranges.iter().map(|r| (r.start, r.end)).collect(),
+        exact: true,
+        frogs: Vec::new(),
+    };
+    state.seed_utxo(hopper_indexer::types::OutPoint { txid, vout }, ranges);
+    eprintln!("[ord] {shown}: seeded {} sat range(s)", dto.ranges.len());
+    Some(dto)
+}
+
 /// True if every span is a real ordinal range (no shadow placeholder).
 fn ranges_are_exact(ranges: &[hopper_core::satmath::SatRange]) -> bool {
-    !ranges.iter().any(|r| hopper_indexer::is_shadow(r.start))
+    // Empty ranges are not "exactly no sats": a coin the tracker
+    // created from an untracked input has no assignment yet. Treat it
+    // like a shadow so ord gets a chance to name it.
+    !ranges.is_empty() && !ranges.iter().any(|r| hopper_indexer::is_shadow(r.start))
 }
 
 /// Resolve an unconfirmed output from bitcoind's mempool.
@@ -853,6 +948,7 @@ mod tests {
 
     #[test]
     fn exact_rejects_shadow_ranges() {
+        assert!(!ranges_are_exact(&[]));
         assert!(ranges_are_exact(&[SatRange::new(0, 100)]));
         assert!(ranges_are_exact(&[SatRange::new(MAX_SAT, MAX_SAT + 1)]));
         assert!(!ranges_are_exact(&[SatRange::new(

@@ -182,6 +182,7 @@ HOPPER_SNAPSHOT_PATH=/var/lib/hopper/indexer.bin \
 HOPPER_ZMQ_ADDR=tcp://127.0.0.1:28332 \
 HOPPER_RPC_URL=http://127.0.0.1:8332 \
 HOPPER_RPC_COOKIE=/home/bitcoin/.bitcoin/.cookie \
+HOPPER_ORD_URL=https://ordinals.com \
 ./target/release/hopper-indexer-api
 ```
 
@@ -197,6 +198,7 @@ Important environment facts:
 | `HOPPER_RETAIN_BLOCKS` | reorg replay window |
 | `HOPPER_ZMQ_ADDR` | enables the ingest wire; without it use admin ingest |
 | `HOPPER_RPC_URL` / `_COOKIE` / `_USER`+`_PASS` | block fetch credentials |
+| `HOPPER_ORD_URL` | ord server for lazy sat-range seeding; unset = disabled (point it at a local ord or `https://ordinals.com`) |
 | `HOPPER_INGEST_START_HEIGHT` | must be 0/unset; genesis-only ingest is enforced |
 
 The indexer always ingests from the chain's genesis: starting later would
@@ -280,14 +282,15 @@ curl -sN localhost:9770/v1/events/stream
   WebSocket endpoint. `electrs` itself speaks TCP, so a browser needs a
   loopback WS-to-TCP bridge (the page talks `ws://127.0.0.1:…`, never a raw
   TCP socket).
-- **Live regtest bootstrap**: bitcoind-mined coins descend from coinbase
-  outputs, and the HOPPER indexer deliberately does not model the coinbase
-  subsidy (`rust/crates/hopper-indexer/src/NOTES.md`). `/v1/utxo` therefore
-  returns empty ranges for those coins and MINT stays disabled. Read the
-  real ranges from ord (`GET /output/<txid>:<vout>`, `sat_ranges`) and
-  `POST` them to `/v1/admin/seed` before the first mint. ord's HTTP API is
-  CORS-readable, but the current wallet consumes ranges through the HOPPER
-  indexer, not directly from ord.
+- **Sat ranges**: the indexer deliberately does not model the coinbase
+  subsidy (`rust/crates/hopper-indexer/src/NOTES.md`), so a freshly mined
+  coin starts with shadow/empty ranges. When a wallet asks `/v1/utxo`
+  about such a coin, the indexer asks `HOPPER_ORD_URL` for the real
+  `sat_ranges` and seeds the outpoint before answering. No manual
+  `/v1/admin/seed` is needed. Point that variable at a local ord or a
+  third-party instance; unset disables the oracle. The PWA also has an
+  **Ord** field (empty = `https://ordinals.com` on mainnet) and uses it
+  directly when the indexer still cannot name a coin.
 
 ### Tests
 
@@ -297,6 +300,7 @@ node tests/core.test.mjs        # 64 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → cross → settle → transfer (and no burn path)
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
+node tests/ord.test.mjs         # ord ranges, endpoint default, indexer→ord fallback
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 
@@ -350,6 +354,11 @@ mainnet value on it without review.
   origin — that is what "keep this device unlocked" means.
 - The indexer is a discovery hint and a public view. Value decisions
   (ownership, fees, signatures) are made locally from chain data.
+- **Sat ranges are an oracle.** The HOPPER indexer does not model the
+  coinbase subsidy, so it seeds unknown coins from `HOPPER_ORD_URL`; the
+  wallet can also fall back to its **Ord** URL. A malicious or stale ord
+  can misname sats. Run your own ord (or pin a trusted instance) when
+  that trust matters.
 - Demo mode is a simulator: no PoW, no mempool policy, no script execution.
   It validates the v6 state machine and byte encodings, not Bitcoin.
 - Live mode refreshes on a block-driven schedule: an Electrum source pushes

@@ -1003,6 +1003,7 @@ const handlers = {
         esploraUrl: q('esploraUrl') || '',
         indexerUrl: q('indexerUrl') || '',
         electrumUrl: q('electrumUrl') || '',
+        ordUrl: q('ordUrl') || '',
       };
       try {
         app.w.settings = next;
@@ -1010,7 +1011,8 @@ const handlers = {
         const changed = next.mode !== previous.mode
           || next.esploraUrl !== previous.esploraUrl
           || next.indexerUrl !== previous.indexerUrl
-          || next.electrumUrl !== previous.electrumUrl;
+          || next.electrumUrl !== previous.electrumUrl
+          || next.ordUrl !== previous.ordUrl;
         if (changed && app.w.resetScan) app.w.resetScan();
         await app.w.connect();
         // refresh() tolerates a missing chain (views degrade gracefully);
@@ -1187,7 +1189,7 @@ document.addEventListener('change', (ev) => {
     sound.setVolume(volume);
     saveSettings(app.w.settings);
     render();
-  } else if (['esploraUrl', 'indexerUrl', 'electrumUrl', 'mode'].includes(key)) {
+  } else if (['esploraUrl', 'indexerUrl', 'electrumUrl', 'ordUrl', 'mode'].includes(key)) {
     // Applied explicitly by APPLY so a half-typed URL never disconnects.
   } else if (key === 'mint-name') {
     app.mintName = value;
