@@ -299,7 +299,7 @@ function roadEntry(app, c) {
   const label = c.provisionalDead == null ? 'ON THE ROAD' : c.provisionalDead ? 'DEAD SEALED' : 'ALIVE SEALED';
   return `
     <div class="pond-item road-entry">
-      <div class="pond-tap" data-action="open-frog" data-sat="${c.sat}">
+      <div class="pond-tap road-no-tap">
         <canvas class="pond-art" data-roadfrog="${seed >>> 0}" width="320" height="275"></canvas>
         <span class="pf-name">${esc(name)}</span>
         <span class="pf-sub">${pips(c.dist)}</span>

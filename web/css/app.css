@@ -278,6 +278,7 @@ p { margin: .45em 0; }
 }
 .pond-item { position: relative; display: flex; flex-direction: column; min-width: 0; }
 .pond-tap { display: block; cursor: pointer; }
+.pond-tap.road-no-tap { cursor: default; }
 .pond-tap canvas.pond-art {
   display: block;
   width: 100%;
