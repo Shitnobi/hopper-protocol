@@ -655,7 +655,7 @@ export function frogDetail(app, sat) {
       ${frogImg(f.seed, SPRITE_STATE(f), 'sprite', f.name || '')}
       <div class="detail-info">
         <div class="detail-name">${esc(f.name || 'UNNAMED')}</div>
-        ${logBtn('📜 BIO', 'bio', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` })}
+        ${logBtn('📜 HISTORY', 'bio', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` })}
         <div class="mt10">${pips(f.dist, target)}</div>
         <div class="row mt6">
           ${chip(rarityOf(f), rarityClass(f))}

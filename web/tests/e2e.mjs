@@ -500,6 +500,9 @@ await evaluate(`document.querySelector('.pond-item [data-action=open-frog]').cli
 await waitFor('document.querySelector("[data-action=travel-to-road]")', 15000, 'travel button');
 const detailTravel = await evaluate(`document.querySelector('[data-action=travel-to-road]').textContent.trim()`);
 if (detailTravel !== 'TRAVEL TO ROAD') errors.push(`detail travel label: ${JSON.stringify(detailTravel)}`);
+const detailHistory = await evaluate(`document.querySelector('.detail-info [data-action=bio]')?.textContent.trim()`);
+console.log('frog history label:', detailHistory);
+if (detailHistory !== '📜 HISTORY') errors.push(`detail history label: ${JSON.stringify(detailHistory)}`);
 console.log('frog detail:', (await evaluate('document.querySelector(".detail-head")?.innerText')).replace(/\n/g, ' | '));
 
 // The pips are one dot per required hop, not a five-dot cap. A newly
