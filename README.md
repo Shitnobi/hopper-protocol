@@ -216,7 +216,7 @@ boot intro and the eight-page rules walkthrough (swipe left or right, or
 use BACK and NEXT).
 
 The crossing pips are a real progress display: one dot for every hop in
-the current target (5 at genesis, rising to 100), filled to the Hopper's
+the current target (5 at genesis, rising to 25), filled to the Hopper's
 completed crossings, with `×completed / target` beside them. An idle
 Hopper follows the next block's requirement, so empty dots appear as the
 road raises its toll; an in-flight Hopper keeps its frozen target.
@@ -253,7 +253,7 @@ Workers → Unregister once.
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):
 params hash, schedule, settlement digests, state/send leaves, parent tags,
-mint envelopes, and the exact 14,356-byte mint document with its SHA-256.
+mint envelopes, and the exact mint document bytes with their SHA-256.
 
 ## Building and running the Rust indexer
 
@@ -267,8 +267,8 @@ Run it against a bitcoind with ZMQ (`zmqpubhashblock`) and RPC:
 
 ```sh
 HOPPER_API_ADDR=127.0.0.1:9770 \
-HOPPER_ACTIVATION_HEIGHT=973263 \
-HOPPER_INSCRIPTION_ACTIVATION_HEIGHT=973263 \
+HOPPER_ACTIVATION_HEIGHT=974034 \
+HOPPER_INSCRIPTION_ACTIVATION_HEIGHT=974034 \
 HOPPER_SNAPSHOT_PATH=/var/lib/hopper/indexer.bin \
 HOPPER_ZMQ_ADDR=tcp://127.0.0.1:28332 \
 HOPPER_RPC_URL=http://127.0.0.1:8332 \
