@@ -80,8 +80,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(/\+200,000 sats/.test(after), 'history still shows the initial deposit');
   ok(/CHANGE/.test(after), 'history renders the internal change');
   const order = after.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('the mint is shown before the arrival it produced',
-    order.slice(0, 3), ['MINT', 'HOPPER ARRIVED', 'CHANGE']);
+  eq('the mint is shown before its change and arrival',
+    order.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
   const mintRows = (after.match(/\bMINT\b/g) || []).length;
   eq('the global NPC mint feed is filtered out', mintRows, 1);
   ok(!/\bPip\b/.test(after), 'an NPC name from the global event feed is absent');
@@ -229,8 +229,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     b.chainMints.map((m) => m.height).sort((x, y) => x - y), [973265, 973267]);
   const ordered = plain(history({ w: b }));
   const order = ordered.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('each restored mint is listed before its arrival and change',
-    order.slice(0, 6), ['MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE']);
+  eq('each restored mint is listed before its change and arrival',
+    order.slice(0, 6), ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
   ok(ordered.indexOf('MINT') < ordered.indexOf('HOPPER ARRIVED'),
     'a restored arrival never appears above its mint');
 
@@ -240,7 +240,22 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const commitOlder = plain(history({ w: b }));
   const commitOrder = commitOlder.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('an older commit change stays inside its mint group',
-    commitOrder.slice(0, 6), ['MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE']);
+    commitOrder.slice(0, 6), ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  ok(b.changes.every((c) => Number.isSafeInteger(c.mintSat)),
+    'restored change stays linked to its minted sat');
+
+  // A restored device can also have no block heights at all. Falling back
+  // to row insertion time used to put the newest-observed change first and
+  // the older mint last (CHANGE, HOPPER ARRIVED, MINT). Grouping by the
+  // minted sat must decide the order even when every height is unknown.
+  for (const c of b.changes) { c.height = null; delete c.mintSat; }
+  for (const m of b.chainMints) m.height = null;
+  for (const r of b.receives) r.height = null;
+  const heightless = plain(history({ w: b }));
+  const heightlessOrder = heightless.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('a height-less restore still reads mint, change, arrival',
+    heightlessOrder.slice(0, 6),
+    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
 }
 
 console.log(`history: ${checks} checks passed`);

@@ -697,8 +697,10 @@ if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC min
 const historyKinds = await evaluate(`[...document.querySelectorAll('#app .card-row .kind')]
   .map((el) => el.textContent.trim())`);
 console.log('history order:', historyKinds.slice(0, 6).join(' > '));
-if (historyKinds[0] !== 'MINT' || historyKinds[1] !== 'HOPPER ARRIVED') {
-  errors.push(`history order: ${historyKinds.slice(0, 3).join(' > ')}`);
+if (historyKinds[0] !== 'MINT'
+  || historyKinds[1] !== 'CHANGE'
+  || historyKinds[2] !== 'HOPPER ARRIVED') {
+  errors.push(`history order: ${historyKinds.slice(0, 4).join(' > ')}`);
 }
 
 // Shortened identifiers copy their full values. The clipboard permission is

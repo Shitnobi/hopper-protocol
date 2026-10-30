@@ -461,6 +461,7 @@ function historyRows(w) {
       amount: c.amount,
       address: c.address,
       at: c.at,
+      mintSat: c.mintSat ?? null,
       chain: true,
       pending: false,
       confirmed: c.confirmed !== false,
@@ -481,6 +482,7 @@ function historyRows(w) {
       name: a.name,
       amount: a.amount,
       to: a.to,
+      commit: a.commit || null,
       at: a.at,
       chain: false,
       outcome: null,
@@ -504,6 +506,7 @@ function historyRows(w) {
       seed: m.seed,
       name: m.name,
       amount: undefined,
+      commit: m.commit || null,
       at: m.at,
       chain: true,
       synthetic: true,
@@ -529,11 +532,65 @@ function historyRows(w) {
       fee: null, bumps: 0, bumpable: false, outcome: null,
     });
   }
-  // A transaction can leave more than one row: MINT beside HOPPER ARRIVED,
-  // SEND beside CHANGE, or a restore without a local action height. Sort by
-  // the transaction's best-known height so those rows stay adjacent, then
-  // put the authoring row before its consequences. Without this, a receipt
-  // observed in a later block can appear above the mint that produced it.
+  // A transaction can leave more than one row: MINT beside CHANGE and
+  // HOPPER ARRIVED, SEND beside CHANGE, or a restore without a local action
+  // height. First collect the commit and reveal txids for each minted sat.
+  // Both transactions belong to one mint even though the change usually
+  // comes from the commit and the arrival from the reveal.
+  const mintMeta = new Map();
+  const addMint = (sat, txid, commit = null) => {
+    const n = Number(sat);
+    if (!Number.isSafeInteger(n)) return;
+    let m = mintMeta.get(n);
+    if (!m) {
+      m = { txids: new Set(), commit: null };
+      mintMeta.set(n, m);
+    }
+    for (const v of [txid, commit]) {
+      const tx = String(v || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(tx)) m.txids.add(tx);
+    }
+    const c = String(commit || '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(c)) m.commit = c;
+  };
+  for (const a of w.actions || []) {
+    if (String(a?.kind || '').toLowerCase() === 'mint') addMint(a.sat, a.txid, a.commit);
+  }
+  for (const m of w.chainMints || []) addMint(m.sat, m.txid, m.commit);
+  for (const r of rows) {
+    if (r.kind !== 'mint') continue;
+    addMint(r.sat, r.txid, r.commit);
+    const meta = mintMeta.get(Number(r.sat));
+    if (meta?.commit) r.commit = meta.commit;
+  }
+  const mintSatByTx = new Map();
+  for (const [sat, meta] of mintMeta) {
+    for (const tx of meta.txids) mintSatByTx.set(tx, sat);
+  }
+  const mintGroupOf = (r) => {
+    const tx = r.txid ? String(r.txid).toLowerCase() : '';
+    const n = Number(r.sat);
+    if (r.kind === 'mint' && Number.isSafeInteger(n) && mintMeta.has(n)) return `mint:${n}`;
+    if (r.kind === 'receive' && r.frog && Number.isSafeInteger(n) && mintMeta.has(n)) {
+      // Only the transaction that actually created this Hopper belongs to
+      // its mint. A later transfer-in of the same sat must stay separate.
+      const f = (w.frogs || []).find((x) => Number(x?.sat) === n);
+      const atMint = f && String(f.mint_txid || '').toLowerCase() === tx;
+      if (atMint || mintMeta.get(n).txids.has(tx)) return `mint:${n}`;
+    }
+    if (r.kind === 'change') {
+      const tagged = Number(r.mintSat);
+      if (Number.isSafeInteger(tagged) && mintMeta.has(tagged)) return `mint:${tagged}`;
+      const sat = mintSatByTx.get(tx);
+      if (sat != null) return `mint:${sat}`;
+    }
+    return null;
+  };
+
+  // Sort by the transaction/mint's best-known height so rows stay adjacent,
+  // then put the authoring row before its consequences. Without this, a
+  // receipt observed in a later block can appear above the mint that
+  // produced it.
   const groupHeight = new Map();
   for (const r of rows) {
     if (!r.txid || r.mempool) continue;
@@ -543,9 +600,10 @@ function historyRows(w) {
     if (!groupHeight.has(k) || h > groupHeight.get(k)) groupHeight.set(k, h);
   }
   for (const r of rows) {
-    r.groupHeight = r.txid
-      ? groupHeight.get(String(r.txid).toLowerCase()) ?? null
-      : null;
+    if (!r.txid) { r.groupHeight = null; continue; }
+    const tx = String(r.txid).toLowerCase();
+    const commit = r.kind === 'mint' && r.commit ? String(r.commit).toLowerCase() : '';
+    r.groupHeight = groupHeight.get(commit || tx) ?? groupHeight.get(tx) ?? null;
   }
 
   const seen = new Set();
@@ -560,52 +618,6 @@ function historyRows(w) {
     seen.add(k);
     return true;
   });
-
-  // A mint has two chain transactions: the commit (which usually carries
-  // the change output) and the reveal (the MINT action and Hopper output).
-  // Group both by the minted sat, not only by txid, so the change cannot
-  // drift above or between the mint and its arrival.
-  const mintTxids = new Map();
-  const addMintTxid = (sat, txid) => {
-    const n = Number(sat);
-    const tx = String(txid || '').toLowerCase();
-    if (!Number.isSafeInteger(n) || !/^[0-9a-f]{64}$/.test(tx)) return;
-    if (!mintTxids.has(n)) mintTxids.set(n, new Set());
-    mintTxids.get(n).add(tx);
-  };
-  for (const a of w.actions || []) {
-    if (String(a?.kind || '').toLowerCase() !== 'mint') continue;
-    addMintTxid(a.sat, a.txid);
-    addMintTxid(a.sat, a.commit);
-  }
-  for (const m of w.chainMints || []) {
-    addMintTxid(m.sat, m.txid);
-    addMintTxid(m.sat, m.commit);
-  }
-  for (const r of unique) {
-    if (r.kind === 'mint') addMintTxid(r.sat, r.txid);
-  }
-  const mintSatByTx = new Map();
-  for (const [sat, txids] of mintTxids) {
-    for (const tx of txids) mintSatByTx.set(tx, sat);
-  }
-  const mintGroupOf = (r) => {
-    const tx = r.txid ? String(r.txid).toLowerCase() : '';
-    if (r.kind === 'mint' && Number.isSafeInteger(Number(r.sat))) {
-      const n = Number(r.sat);
-      if (mintTxids.has(n)) return `mint:${n}`;
-    }
-    if (!tx) return null;
-    if (r.kind === 'receive' && r.frog) {
-      const sat = mintSatByTx.get(tx);
-      return sat == null ? null : `mint:${sat}`;
-    }
-    if (r.kind === 'change') {
-      const sat = mintSatByTx.get(tx);
-      return sat == null ? null : `mint:${sat}`;
-    }
-    return null;
-  };
 
   // Group rows by transaction/mint, order the groups, then order inside
   // each group. A transaction's rows must never be split by a different
@@ -648,11 +660,12 @@ function historyRows(w) {
   });
 }
 
-/** Within one transaction: the action/mint first, then its Hopper output,
- *  then internal change. This is display order, not chain order. */
+/** A mint reads as: the mint/commit, the change it returned, then the Hopper
+ *  arriving in the reveal. SEND still precedes its CHANGE. This is display
+ *  order, not confirmation order. */
 function sameTxRank(r) {
-  if (r.kind === 'change') return 2;
-  if (r.kind === 'receive') return 1;
+  if (r.kind === 'change') return 1;
+  if (r.kind === 'receive') return 2;
   return 0;
 }
 
@@ -692,6 +705,7 @@ function txRow(app, r) {
 
   const inMempool = !!(r.mempool || r.pending);
   const shownHeight = r.groupHeight ?? r.height;
+  const shownTxid = r.kind === 'mint' && r.commit ? r.commit : r.txid;
   const label = r.frog ? 'HOPPER ARRIVED' : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
   if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) {
@@ -750,7 +764,7 @@ function txRow(app, r) {
         <div class="tx-main">
           <div class="tx-top">
             <span class="kind">${esc(label)}</span>
-            <span class="txid">${copyButton(r.txid, truncTxid(r.txid), 'Copy transaction ID', 'txid copied')}</span>
+            <span class="txid">${copyButton(shownTxid, truncTxid(shownTxid), 'Copy transaction ID', 'txid copied')}</span>
           </div>
           ${detail.length ? `<div class="tx-detail">${detailHtml}</div>` : ''}
           <div class="tx-bottom">

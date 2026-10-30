@@ -165,12 +165,14 @@ owned mint output when the local action ledger is absent, so restoring the
 same seed on another browser shows the same mint. Internal change is a
 separate `CHANGE` row, never a fake incoming `RECEIVE`. Rows for one
 transaction stay together and use its best-known block height, with the
-action first: `MINT` before `HOPPER ARRIVED`, `SEND` before `CHANGE`. A
-restored device therefore cannot show an arrival above the mint that made it.
-A mint's change usually comes from its commit transaction while the MINT and
-HOPPER ARRIVED rows come from the reveal, so History groups them by the
-minted sat as well as txid. One mint therefore reads `MINT` → `HOPPER
-ARRIVED` → `CHANGE`, even when the commit confirmed in an earlier block.
+authoring row first (`MINT` before `CHANGE` before `HOPPER ARRIVED`, `SEND`
+before `CHANGE`). A restored device therefore cannot show an arrival above
+the mint that made it.
+A mint's change usually comes from its commit transaction, while HOPPER
+ARRIVED comes from the reveal. History labels the commit `MINT`, puts its
+change next, and then the reveal's arrival: `MINT` → `CHANGE` → `HOPPER
+ARRIVED`. All three are grouped by the minted sat as well as txid, so the
+order holds even when heights are missing or the commit confirmed earlier.
 Shortened txids and addresses in History are copy controls: tapping one
 copies the full value, with a `txid copied` or `address copied` confirmation.
 
@@ -393,7 +395,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 78 checks: deposits, copy targets, mint/commit grouping
+node tests/history.test.mjs     # 80 checks: deposits, copy targets, mint/change/arrival grouping
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

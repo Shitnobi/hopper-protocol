@@ -941,11 +941,13 @@ export class WalletSession {
     this._recordObservedReceives(this.utxos);
     this._recordObservedChanges(this.utxos);
     this._recordChainMints();
+    this._tagChanges();
     const recovered = await this._backfillReceives(coldHistory);
     if (recovered) {
       notes.push(`${recovered} earlier receive${recovered === 1 ? '' : 's'} recovered from address history`);
     }
     const changeRecovered = await this._backfillChanges(coldHistory);
+    this._tagChanges();
     if (changeRecovered) {
       notes.push(`${changeRecovered} earlier change output${changeRecovered === 1 ? '' : 's'} recovered from address history`);
     }
@@ -1247,16 +1249,64 @@ export class WalletSession {
     return entries;
   }
 
+  /** The mint context for a transaction. A mint has a commit (which usually
+   *  carries the change) and a reveal (the MINT action and Hopper output);
+   *  both identify the same minted sat. */
+  _mintContext(txid) {
+    const tx = String(txid || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(tx)) return null;
+    for (const a of this.actions || []) {
+      if (String(a?.kind || '').toLowerCase() !== 'mint') continue;
+      const reveal = String(a.txid || '').toLowerCase();
+      const commit = String(a.commit || '').toLowerCase();
+      if (tx !== reveal && tx !== commit) continue;
+      return {
+        sat: Number(a.sat),
+        mintTxid: /^[0-9a-f]{64}$/.test(reveal) ? reveal : null,
+        commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
+      };
+    }
+    for (const m of this.chainMints || []) {
+      const reveal = String(m?.txid || '').toLowerCase();
+      const commit = String(m?.commit || '').toLowerCase();
+      if (tx !== reveal && tx !== commit) continue;
+      return {
+        sat: Number(m.sat),
+        mintTxid: /^[0-9a-f]{64}$/.test(reveal) ? reveal : null,
+        commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
+      };
+    }
+    return null;
+  }
+
+  /** Keep persisted change rows linked to their mint after a restore. Their
+   *  txid is normally the commit, so this is what lets the UI place MINT,
+   *  CHANGE and HOPPER ARRIVED in one group even when the commit height is
+   *  older than the reveal height. */
+  _tagChanges() {
+    for (const c of this.changes || []) {
+      const ctx = this._mintContext(c?.txid);
+      if (!ctx) continue;
+      if (Number.isSafeInteger(ctx.sat)) c.mintSat = ctx.sat;
+      if (ctx.mintTxid) c.mintTxid = ctx.mintTxid;
+    }
+  }
+
   _mergeChange(row) {
     if (!Array.isArray(this.changes)) this.changes = [];
     const txid = String(row?.txid || '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(txid)) return null;
+    const ctx = this._mintContext(txid);
     const prior = this.changes.find((r) => String(r?.txid || '').toLowerCase() === txid);
     if (prior) {
       prior.amount = Math.max(Number(prior.amount) || 0, Number(row.amount) || 0);
       if (prior.height == null && row.height != null) prior.height = row.height;
       if (prior.address == null && row.address != null) prior.address = row.address;
       prior.confirmed = prior.confirmed === true || row.confirmed === true;
+      if (ctx) {
+        if (Number.isSafeInteger(ctx.sat)) prior.mintSat = ctx.sat;
+        if (ctx.mintTxid) prior.mintTxid = ctx.mintTxid;
+      }
       return prior;
     }
     const next = {
@@ -1264,6 +1314,10 @@ export class WalletSession {
       height: row.height ?? null, confirmed: row.confirmed === true,
       at: row.at || new Date().toISOString(),
     };
+    if (ctx) {
+      if (Number.isSafeInteger(ctx.sat)) next.mintSat = ctx.sat;
+      if (ctx.mintTxid) next.mintTxid = ctx.mintTxid;
+    }
     this.changes.push(next);
     return next;
   }
