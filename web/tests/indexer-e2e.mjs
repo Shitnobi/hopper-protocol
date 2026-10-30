@@ -18,6 +18,7 @@ import { p2trScript } from '../js/wallet/addresses.js';
 import { bytesToHex, sha256 } from '../js/core/hex.js';
 import { opReturnPush, parseTx, witnessControl, witnessTapscript } from '../js/wallet/txparse.js';
 import { parseInscriptions } from '../js/core/inscription.js';
+import { wrapOfDisplayHex } from '../js/core/wrap.js';
 
 const API = (process.argv[2] || 'http://127.0.0.1:9771').replace(/\/+$/, '');
 const MNEMONIC = 'deliver cat inch coyote consider beyond extend fence fish grain million stock';
@@ -148,17 +149,31 @@ const stUtxo = {
   txid: prep.txid, vout: 0, value: Number(CARD_VALUE), script: state.script,
   kind: 'state', exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat],
 };
-const cross = buildCross({ keys: wallet, stateUtxo: stUtxo, frog: rec, funding: await scan(), feeRate: 2 });
+const cross = buildCross({ keys: wallet, stateUtxo: stUtxo, frog: rec, funding: await scan(), feeRate: 2, dir: 0 });
 const crossBlock = await submitTx(cross.hex, 'cross');
 rec = await (await fetch(`${API}/v1/frogger/${mint.sat}`)).json();
 assert.equal(rec.state, 'crossing');
+assert.equal(rec.gen, 1, 'the indexer stamps the mint generation');
 assert.equal(rec.in_flight.height, crossBlock.height);
 assert.equal(rec.in_flight.target_hops, requiredAt(crossBlock.height));
+assert.equal(rec.in_flight.dir, 0, 'the indexer reads the chosen direction');
 
 // Timers: empty blocks through settlement.
 await emptyBlock(); // T+1 captures the outcome
 const h1 = await (await fetch(`${API}/v1/frogger/${mint.sat}`)).json();
 assert.equal(typeof h1.provisional_dead, 'boolean', 'outcome frozen at T+1');
+const outcomeHeight = crossBlock.height + 1;
+const wantWrap = wrapOfDisplayHex(chain.blockHashAt(outcomeHeight));
+assert.equal(h1.outcome_wrap, wantWrap, 'the indexer and the demo chain agree on the wrap');
+assert.equal(h1.provisional_dead, wantWrap === 0, 'the direction alone decides');
+const wrap = await (await fetch(`${API}/v1/wrap/${outcomeHeight}`)).json();
+assert.equal(wrap.wrap, wantWrap, '/v1/wrap publishes the same integer');
+const gen = await (await fetch(`${API}/v1/generation/${crossBlock.height}`)).json();
+assert.equal(gen.required, requiredAt(crossBlock.height), '/v1/generation publishes required');
+assert.equal(gen.generation, 1);
+const params = await (await fetch(`${API}/v1/params`)).json();
+assert.equal(params.wire_version, 7);
+assert.equal(params.generations.generation_len, 28080);
 const road = await (await fetch(`${API}/v1/road`)).json();
 const mine = road.active.find((c) => c.frogger_sat === mint.sat);
 assert.equal(typeof mine.provisional_dead, 'boolean', 'road exposes the sealed verdict');

@@ -1,4 +1,4 @@
-//! # hopper-indexer — pure indexer core (FROGGER v6)
+//! # hopper-indexer — pure indexer core (HOPPER v7)
 //!
 //! This crate implements phases **B1+B2** of the indexer workstream: the
 //! UTXO/sat-tracking layer and the crossing-lifecycle state machine, as a
@@ -10,7 +10,7 @@
 //!   frozen [`hopper_core::satmath`] primitives: inputs' sat ranges flow
 //!   to outputs FIFO; the tracker knows which UTXO holds each frogger's
 //!   anchor sat and detects anchor-sat movement (SPEC §6).
-//! * [`rules`] — the v6 crossing rule set, its timers, and settlement.
+//! * [`rules`] — the v7 hop rule set, its timers, and settlement.
 //!   Reorgs roll the retained chain back and re-derive state by replay.
 //! * [`types`] — the chain-data model and the re-derivable event log
 //!   keyed by `(block_hash, txid, action)` (SPEC §8.1.4).
@@ -37,7 +37,7 @@
 pub mod consensus;
 #[cfg(feature = "redb")]
 pub mod durable;
-/// The v6 rules: crossings, timers, settlement.
+/// The v7 rules: hops, timers, settlement.
 pub mod rules;
 pub mod sat_track;
 pub mod snapshot;

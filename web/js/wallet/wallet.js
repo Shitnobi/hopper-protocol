@@ -7,7 +7,10 @@
 import {
   bytesToHex, equalBytes, hexToBytes, reverseBytes,
 } from '../core/hex.js';
-import { CARD_VALUE, GENESIS, requiredAt } from '../core/params.js';
+import {
+  CARD_VALUE, GENESIS, NUMS_XONLY, generationAt, paramsHashHex, requiredAt,
+} from '../core/params.js';
+import { taprootDescriptor } from '../core/descriptor.js';
 import { decodeAddress, p2trScript, scriptToAddress } from './addresses.js';
 import { deriveWallet } from './keys.js';
 import {
@@ -371,8 +374,31 @@ export class WalletSession {
       ordUrl: effectiveOrdUrl(this.settings, this.network),
     };
     this.publicSource = settingsPublicSource(effective);
+    await this._assertParams();
     this._setupAutoSync();
     return this;
+  }
+
+  /** SPEC §1.3: refuse to mint or hop when the indexer publishes a
+   *  different params_hash. A missing/unreachable indexer makes no claim
+   *  and is not a mismatch; an answer with the wrong hash is fatal. */
+  async _assertParams() {
+    if (this.settings.mode === 'demo' || !this.settings.indexerUrl) return;
+    if (!this.backend || typeof this.backend.params !== 'function') return;
+    let published;
+    try {
+      published = await this.backend.params();
+    } catch {
+      return; // no answer, no claim
+    }
+    if (!published || !published.params_hash) return;
+    if (String(published.params_hash).toLowerCase() !== paramsHashHex()) {
+      const err = new Error(
+        `the indexer publishes different protocol parameters (wire v${published.wire_version}); this wallet refuses to sign`,
+      );
+      err.paramsMismatch = true;
+      throw err;
+    }
   }
 
   /** A different chain/indexer must not inherit scan pointers from the
@@ -1727,6 +1753,82 @@ export class WalletSession {
     this.balance = { total, spendable, cards, unspendable, pending };
   }
 
+  /** SPEC §5.5 — the emergency descriptor export.
+   *
+   * Public layout data only: the raw leaves, their control blocks, the
+   * output key and the owner path for every staged Hopper. It never
+   * contains a seed, an xprv or a private key; whoever holds it still
+   * needs the seeds. A receiving tool MUST rebuild the tree and compare
+   * it with the on-chain scriptPubKey before trusting it.
+   */
+  emergencyDescriptors({ now = null } = {}) {
+    const ownerXonly = this.keys.ord.ownerXonly;
+    const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    const frogs = [];
+    for (const f of this.frogs || []) {
+      const utxo = this._frogUtxo?.(f);
+      const staged = utxo && utxo.kind === 'state';
+      if (!staged) continue;
+      if (f.state === 'burned' || f.state === 'retired') continue;
+      const scripts = stateScripts(f, ownerXonly);
+      const leaves = [0, 1, 2].map((dir) => ({
+        dir,
+        script_hex: hex(scripts.crossLeaves[dir]),
+        leaf_hash: hex(scripts.leafHashes[dir]),
+        control_block: hex(scripts.crossControls[dir]),
+      }));
+      const sendLeaf = {
+        script_hex: hex(scripts.sendLeaf),
+        leaf_hash: hex(scripts.leafHashes[3]),
+        control_block: hex(scripts.sendControl),
+      };
+      const descriptor = taprootDescriptor(
+        hex(NUMS_XONLY),
+        [...leaves.map((l) => l.script_hex), sendLeaf.script_hex],
+      );
+      frogs.push({
+        sat: Number(f.sat),
+        gen: Number(f.gen) || generationAt(f.mint_height || this.tipHeight || 0),
+        dist: Number(f.dist) || 0,
+        state: String(f.state || 'idle'),
+        name: String(f.name || ''),
+        mint_id: `${String(f.mint_txid || '').toLowerCase()}i${Number(f.mint_index) || 0}`,
+        state_outpoint: f.location ? `${String(f.location.txid).toLowerCase()}:${Number(f.location.vout)}` : null,
+        state_value: Number(utxo.value || CARD_VALUE),
+        owner_xonly: hex(ownerXonly),
+        internal_key: hex(NUMS_XONLY),
+        output_key: hex(scripts.outputXonly),
+        leaves,
+        send_leaf: sendLeaf,
+        descriptor,
+      });
+    }
+    const staged = frogs.filter((f) => f.state_outpoint);
+    const fp = this.keys.fingerprint;
+    const fingerprint = typeof fp === 'number'
+      ? fp.toString(16).padStart(8, '0')
+      : String(fp || '').toLowerCase().padStart(8, '0');
+    return {
+      type: 'hopper-v7-emergency',
+      version: 1,
+      network: this.network,
+      fingerprint,
+      owner_path: this.keys.ordPath,
+      // One descriptor can only describe one state tree (the leaf bodies
+      // embed sat + mint id). The per-frog `descriptor` is authoritative;
+      // this convenience line is present only when exactly one is staged.
+      descriptor: staged.length === 1 ? staged[0].descriptor : null,
+      generated_at: now || new Date().toISOString(),
+      tip_height: Number(this.tipHeight) || 0,
+      frogs,
+    };
+  }
+
+  /** A tool that sees a different tip must treat the layout as a snapshot. */
+  emergencyIsStale(doc, tipHeight = this.tipHeight) {
+    return Number(doc?.tip_height) !== Number(tipHeight);
+  }
+
   summary() {
     return {
       network: this.network,
@@ -1919,11 +2021,16 @@ export class WalletSession {
    *  building signs both transactions, but nothing is broadcast or recorded
    *  until broadcastPreview() is called. */
   async previewMint({ seed, name = '', feeRate = null, revealFeeRate = null } = {}) {
+    await this._assertParams();
     await this.refresh();
     const rate = rateOr(feeRate ?? this.settings.feeRate);
     const revealRate = rateOr(revealFeeRate ?? rate);
+    // The hint is the generation of the height the mint is expected to
+    // confirm at. It is display-only; the indexer derives the real label
+    // from the confirmed height.
+    const genHint = generationAt((this.tipHeight || 0) + 2);
     const args = {
-      utxos: this._funding(), seed, name, feeRate: rate, revealFeeRate: revealRate,
+      utxos: this._funding(), seed, name, feeRate: rate, revealFeeRate: revealRate, genHint,
     };
     let built;
     try {
@@ -2000,7 +2107,16 @@ export class WalletSession {
     return built;
   }
 
-  async cross(frog, { feeRate = null, newOwnerXonly = null } = {}) {
+  async cross(frog, { feeRate = null, newOwnerXonly = null, dir = 0 } = {}) {
+    const preview = await this.previewCross(frog, { feeRate, newOwnerXonly, dir });
+    return this.broadcastPreview(preview, { revalidate: false });
+  }
+
+  /** Build a HOP without broadcasting it (SPEC §3.6). The direction picks
+   *  the leaf and is already baked into the signed body; approval can only
+   *  broadcast these exact bytes. */
+  async previewCross(frog, { feeRate = null, newOwnerXonly = null, dir = 0 } = {}) {
+    await this._assertParams();
     await this.refresh();
     frog = this.frogBySat(frog.sat) || frog;
     if (frog.state !== 'idle') throw new Error(`the frog is ${frog.state}; only an idle frog can cross`);
@@ -2010,19 +2126,37 @@ export class WalletSession {
     if (offset != null && offset !== 0) {
       throw new Error('the frog sat is not first in this card; it cannot cross safely');
     }
+    if (!Number.isInteger(dir) || dir < 0 || dir > 2) {
+      throw new Error('choose LEFT, STRAIGHT or RIGHT before hopping');
+    }
+    const rate = rateOr(feeRate ?? this.settings.feeRate);
+    const state = stateScripts(frog, this.keys.ord.ownerXonly);
     const built = buildCross({
       keys: this.keys, stateUtxo: utxo, frog, funding: this._funding(),
-      feeRate: rateOr(feeRate ?? this.settings.feeRate), newOwnerXonly,
+      feeRate: rate, newOwnerXonly, dir,
     });
-    await this.backend.broadcast(built.hex);
-    this._recordAction({ kind: 'cross', sat: frog.sat, txid: built.txid, at: new Date().toISOString() });
-    // Custody now belongs to the optional new P2TR owner. Stop carrying the
-    // sat as an owned candidate if that owner is not this wallet.
-    if (newOwnerXonly && !equalBytes(newOwnerXonly, this.keys.ord.ownerXonly)) {
-      this.imported.delete(Number(frog.sat));
-    }
-    await this.refresh();
-    return built;
+    const changeOut = built.changeIndex == null ? null : built.tx.outputs[built.changeIndex];
+    return {
+      kind: 'hop',
+      built,
+      dir,
+      frogSat: Number(frog.sat),
+      frogName: frog.name || '',
+      gen: Number(frog.gen) || null,
+      dist: Number(frog.dist) || 0,
+      leafHex: bytesToHex(state.crossLeaves[dir]),
+      to: scriptToAddress(built.stateScript, this.network),
+      amount: built.tx.outputs[0].value,
+      amountNumber: Number(built.tx.outputs[0].value),
+      feeRate: rate,
+      fee: built.fee,
+      vsize: built.vsize,
+      effectiveFeeRate: Number(built.fee) / Math.max(1, built.vsize),
+      destinationAmount: built.tx.outputs[0].value,
+      changeAddress: changeOut ? scriptToAddress(changeOut.script, this.network) : null,
+      changeAmount: changeOut ? changeOut.value : 0n,
+      newOwner: !!newOwnerXonly && !equalBytes(newOwnerXonly, this.keys.ord.ownerXonly),
+    };
   }
 
   /** Build a normal send without broadcasting it. The returned object is
@@ -2138,6 +2272,16 @@ export class WalletSession {
         throw new Error('preview expired: the Hopper output changed; cancel and preview again');
       }
     }
+    if (preview.kind === 'hop') {
+      const frog = this.frogBySat(preview.frogSat);
+      if (!frog) throw new Error('preview expired: the Hopper is no longer in this wallet');
+      if (frog.state !== 'idle') throw new Error('preview expired: the Hopper is no longer idle; cancel and preview again');
+      const utxo = this._frogUtxo(frog);
+      if (!utxo || utxo.kind !== 'state'
+          || !inputs.some((i) => i.txid === utxo.txid && Number(i.vout) === Number(utxo.vout))) {
+        throw new Error('preview expired: the Hopper output changed; cancel and preview again');
+      }
+    }
   }
 
   /** Approve a preview: revalidate state, then broadcast exactly once.
@@ -2209,6 +2353,15 @@ export class WalletSession {
         kind: 'transfer', sat: preview.frogSat, txid: preview.built.txid, to: preview.to,
       });
       this.imported.delete(Number(preview.frogSat));
+    } else if (preview.kind === 'hop') {
+      await this.backend.broadcast(preview.built.hex);
+      this._recordAction({
+        kind: 'cross', sat: preview.frogSat, txid: preview.built.txid, dir: preview.dir,
+        at: new Date().toISOString(),
+      });
+      // Custody now belongs to the optional new P2TR owner. Stop carrying
+      // the sat as an owned candidate when that owner is not this wallet.
+      if (preview.newOwner) this.imported.delete(Number(preview.frogSat));
     } else {
       throw new Error(`unknown transaction preview kind: ${preview.kind}`);
     }
@@ -2379,9 +2532,10 @@ export class WalletSession {
     return (data.active || []).map((c) => ({
       sat: c.frogger_sat ?? c.sat,
       seed: c.seed, name: c.name, dist: c.dist,
+      gen: c.gen,
       inFlight: c.in_flight ?? {
         txid: c.txid, height: c.cross_height, target_hops: c.target_hops,
-        settle_height: (c.cross_height ?? 0) + 6,
+        dir: c.dir, settle_height: (c.cross_height ?? 0) + 6,
       },
       provisionalDead: c.provisional_dead ?? null,
       outcomeBlockHash: c.outcome_block_hash ?? null,
@@ -2404,4 +2558,4 @@ export class WalletSession {
   }
 }
 
-export { CARD_VALUE, GENESIS, requiredAt, scriptToAddress, bytesToHex, reverseBytes, hexToBytes };
+export { CARD_VALUE, GENESIS, generationAt, requiredAt, scriptToAddress, bytesToHex, reverseBytes, hexToBytes };

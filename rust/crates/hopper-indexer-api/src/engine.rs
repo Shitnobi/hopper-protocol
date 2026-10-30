@@ -28,6 +28,7 @@ pub struct InFlightEntry {
     pub txid: [u8; 32],
     pub height: u32,
     pub target_hops: u32,
+    pub dir: u8,
     pub seed: u32,
     pub name: String,
     pub dist: u32,
@@ -177,6 +178,19 @@ impl Engine {
     }
 
     /// Height of a retained block by hash.
+    /// The hash retained for `height`, if the chain window still holds it.
+    pub fn block_hash_at(&self, height: u32) -> Option<[u8; 32]> {
+        let chain = match self {
+            Engine::Memory(indexer) => indexer.chain(),
+            #[cfg(feature = "redb")]
+            Engine::Store(indexer) => indexer.chain(),
+        };
+        chain
+            .iter()
+            .find(|header| header.height == height)
+            .map(|header| header.hash)
+    }
+
     pub fn block_height(&self, hash: &[u8; 32]) -> Option<u32> {
         match self {
             Engine::Memory(indexer) => indexer.block_height(hash),
@@ -355,6 +369,7 @@ impl Engine {
                     txid: in_flight.txid,
                     height: in_flight.height,
                     target_hops: in_flight.target_hops,
+                    dir: in_flight.dir,
                     seed: record.seed,
                     name: record.name.clone(),
                     dist: record.dist,

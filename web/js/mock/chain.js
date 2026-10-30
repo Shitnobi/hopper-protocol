@@ -1,24 +1,28 @@
 // A local, deterministic HOPPER chain for the demo / offline mode.
 //
-// It implements the same consensus rules as hopper-indexer (v6):
+// It implements the same consensus rules as hopper-indexer (v7):
 // sat tracking FIFO, MINT via an ord inscription + FRG OP_RETURN,
-// CROSS via the state inscription, the T+1 outcome and T+6 settlement,
-// transfers and burns. It is not a Bitcoin node: no PoW, no mempool, no
-// script execution. It exists so the wallet and UI can be exercised
-// end-to-end without a regtest rig.
+// HOP via the state inscription in the chosen direction, the block-wide
+// wrap at T+1, T+6 settlement, transfers and burns. It is not a Bitcoin
+// node: no PoW, no mempool, no script execution. It exists so the wallet
+// and UI can be exercised end-to-end without a regtest rig.
 
 import {
   bytesToHex, concatBytes, equalBytes, hexToBytes, reverseBytes, sha256,
 } from '../core/hex.js';
 import { decodeMint } from '../core/envelope.js';
-import { decodeStateBody, encodeParentTag, decodeParentTag, mintIdString } from '../core/v6.js';
+import {
+  crossLeafScript, decodeStateBody, decodeParentTag, encodeParentTag, mintIdString,
+  sendLeafScript,
+} from '../core/v7.js';
 import { parseInscriptions } from '../core/inscription.js';
 import {
-  CARD_VALUE, DEATH_BPS, GENESIS, MAGIC, NUMS_XONLY, V6_CONTENT_TYPE, WIRE_VERSION,
-  requiredAt,
+  CARD_VALUE, GENESIS, MAGIC, NUMS_XONLY, V7_CONTENT_TYPE, WIRE_VERSION,
+  generationAt, requiredAt,
 } from '../core/params.js';
-import { diesDisplayHash } from '../core/settle.js';
-import { mintBodyDigest, liveV6Html } from '../core/mintdoc.js';
+import { diesDisplay, wrapOfDisplayHex } from '../core/wrap.js';
+import { leafHash, branchHash } from '../wallet/keys.js';
+import { liveV7Html, parseV7GenHint } from '../core/mintdoc.js';
 import { assignRanges } from '../core/satmath.js';
 import { scriptToAddress } from '../wallet/addresses.js';
 import { opReturnPush, parseTx, witnessControl, witnessTapscript } from '../wallet/txparse.js';
@@ -187,7 +191,7 @@ export class MockChain {
     for (const input of tx.inputs) this.utxos.delete(`${input.txid}:${input.vout}`);
 
     const reveal = this.revealOf(tx);
-    const isCross = reveal && reveal.body && bytesToHex(reveal.body.slice(0, 9)) === bytesToHex(new TextEncoder().encode('FRG6CROSS'));
+    const isCross = reveal && reveal.body && bytesToHex(reveal.body.slice(0, 9)) === bytesToHex(new TextEncoder().encode('FRG7CROSS'));
 
     // Record outputs.
     tx.outputs.forEach((output, vout) => {
@@ -219,16 +223,21 @@ export class MockChain {
       }
     }
 
-    // MINT: a valid reveal carrying the v6 document + the FRG envelope.
+    // MINT: a valid reveal carrying the v7 document + the FRG envelope.
     const mintMsg = tx.outputs.map((o) => opReturnPush(o.script)).find((p) => p && p.length >= 3 && new TextDecoder().decode(p.slice(0, 3)) === MAGIC && p[3] === WIRE_VERSION);
-    if (mintMsg && reveal && reveal.contentType === V6_CONTENT_TYPE) {
+    if (mintMsg && reveal && reveal.contentType === V7_CONTENT_TYPE) {
       try {
         const { seed, name } = decodeMint(mintMsg);
         const anchor = assignment.outputs[0] && assignment.outputs[0][0] ? assignment.outputs[0][0][0] : null;
         if (anchor != null && !this.frogs.has(anchor) && reveal.body) {
-          const digest = bytesToHex(sha256(reveal.body));
-          const want = bytesToHex(mintBodyDigest(seed, anchor));
-          if (digest === want) this.createFrog({ sat: anchor, seed, name, height, txid: tx.txid, index: 0 });
+          // The body is canonical if it is exactly the render for the
+          // seed, sat, name and the hint it carries.
+          const text = new TextDecoder().decode(reveal.body);
+          const hint = parseV7GenHint(text);
+          const want = hint == null ? null : liveV7Html(seed, anchor, name, hint);
+          if (want != null && text === want) {
+            this.createFrog({ sat: anchor, seed, name, height, txid: tx.txid, index: 0 });
+          }
         }
       } catch { /* malformed mints move sats only */ }
     }
@@ -242,7 +251,7 @@ export class MockChain {
         if (frog && frog.state === 'idle' && reveal.inputIndex === 0 && reveal.parents.length) {
           const [parent] = reveal.parents;
           const decoded = decodeParentTag(parent);
-          const ownerOk = stateLeafShapeOk(reveal.tapscript, reveal.control);
+          const ownerOk = stateLeafShapeOk(reveal.tapscript, reveal.control, body);
           const out0 = assignment.outputs[0] || [];
           const anchorFirst = out0.length && out0[0][0] === body.sat;
           const parentOk = bytesToHex(decoded.mintTxid) === bytesToHex(reverseBytes(hexToBytes(frog.mint_txid)))
@@ -258,14 +267,15 @@ export class MockChain {
             frog.state = 'crossing';
             frog.crossings_entered += 1;
             frog.in_flight = {
-              txid: tx.txid, height, target_hops: requiredAt(height),
+              txid: tx.txid, height, target_hops: requiredAt(height), dir: body.dir,
             };
             frog.last_target_hops = requiredAt(height);
             frog.outcome_block_hash = null;
+            frog.outcome_wrap = null;
             frog.provisional_dead = null;
             frog.location = { txid: tx.txid, vout: 0 };
             crossedSat = body.sat;
-            this.event(height, tx.txid, 'cross', { frogger_sat: body.sat });
+            this.event(height, tx.txid, 'cross', { frogger_sat: body.sat, dir: body.dir });
           }
         }
       } catch { /* not a crossing */ }
@@ -311,6 +321,7 @@ export class MockChain {
   createFrog({ sat, seed, name, height, txid, index, npc = false, dist = 0, state = 'idle' }) {
     this.frogs.set(sat, {
       sat, seed, name,
+      gen: generationAt(height),
       state,
       dist,
       crossings_entered: dist,
@@ -333,7 +344,7 @@ export class MockChain {
     });
     const coin = this.utxo(txid, 0);
     if (coin && !coin.frogs.includes(sat)) coin.frogs.push(sat);
-    this.event(height, txid, 'mint', { frogger_sat: sat, seed, name });
+    this.event(height, txid, 'mint', { frogger_sat: sat, seed, name, gen: generationAt(height) });
   }
 
   // --- timers (SPEC §4.4) -------------------------------------------------
@@ -345,14 +356,17 @@ export class MockChain {
       if (!f) continue;
       if (f.height + 1 === height) {
         frog.outcome_block_hash = hashDisplay;
-        frog.provisional_dead = diesDisplayHash(frog.sat, hashDisplay, f.target_hops);
+        frog.outcome_wrap = wrapOfDisplayHex(hashDisplay);
+        frog.provisional_dead = diesDisplay(f.dir, hashDisplay);
       }
       if (f.height + 6 === height) {
         frog.crossings_settled += 1;
         if (frog.location == null || frog.provisional_dead) {
           frog.state = frog.location == null ? 'burned' : 'dead';
           if (frog.state === 'dead') { frog.deaths = 1; frog.death_height = f.height; }
-          this.event(height, null, 'settle', { frogger_sat: frog.sat, outcome: 'dead' });
+          this.event(height, null, 'settle', {
+            frogger_sat: frog.sat, outcome: 'dead', dir: f.dir, wrap: frog.outcome_wrap,
+          });
         } else {
           frog.dist += 1;
           if (frog.dist >= f.target_hops) {
@@ -361,10 +375,13 @@ export class MockChain {
           } else {
             frog.state = 'idle';
           }
-          this.event(height, null, 'settle', { frogger_sat: frog.sat, outcome: 'crossed' });
+          this.event(height, null, 'settle', {
+            frogger_sat: frog.sat, outcome: 'crossed', dir: f.dir, wrap: frog.outcome_wrap,
+          });
         }
         frog.in_flight = null;
         frog.provisional_dead = null;
+        frog.outcome_wrap = null;
       }
     }
   }
@@ -391,9 +408,13 @@ export class MockChain {
     const idle = [...this.frogs.values()].filter((f) => f.npc && f.state === 'idle');
     if (!idle.length) return;
     const frog = idle[this.height % idle.length];
+    const dir = this.height % 3;
     frog.state = 'crossing';
     frog.crossings_entered += 1;
-    frog.in_flight = { txid: `npc${this.height}`, height: this.height, target_hops: requiredAt(this.height) };
+    frog.in_flight = {
+      txid: `npc${this.height}`, height: this.height,
+      target_hops: requiredAt(this.height), dir,
+    };
     frog.last_target_hops = requiredAt(this.height);
   }
 
@@ -419,19 +440,25 @@ export class MockChain {
       .filter((f) => f.state === 'crossing' && f.in_flight)
       .map((f) => ({
         sat: f.sat, seed: f.seed, name: f.name, dist: f.dist,
+        gen: f.gen,
         in_flight: {
           txid: f.in_flight.txid, height: f.in_flight.height,
-          target_hops: f.in_flight.target_hops, settle_height: f.in_flight.height + 6,
+          target_hops: f.in_flight.target_hops, dir: f.in_flight.dir,
+          settle_height: f.in_flight.height + 6,
         },
         provisional_dead: f.provisional_dead,
+        outcome_wrap: f.outcome_wrap,
       }));
   }
 
   leaderboard(limit = 25) {
     return [...this.frogs.values()]
-      .sort((a, b) => b.dist - a.dist || a.sat - b.sat)
+      .sort((a, b) => (b.gen || 1) - (a.gen || 1) || b.dist - a.dist || a.sat - b.sat)
       .slice(0, limit)
-      .map((f, i) => ({ rank: i + 1, sat: f.sat, name: f.name, seed: f.seed, dist: f.dist, state: f.state }));
+      .map((f, i) => ({
+        rank: i + 1, sat: f.sat, name: f.name, seed: f.seed,
+        gen: f.gen, dist: f.dist, state: f.state,
+      }));
   }
 
   status() {
@@ -441,7 +468,7 @@ export class MockChain {
       finality_depth: 6,
       froggers: this.frogs.size,
       active_crossings: this.road().length,
-      wire_version: 6,
+      wire_version: WIRE_VERSION,
     };
   }
 
@@ -498,15 +525,25 @@ export class MockChain {
   }
 }
 
-function stateLeafShapeOk(tapscript, control) {
+// The v7 state leaf: canonical bytes for this owner/body/direction plus a
+// 97-byte control block that commits the leaf's own sibling path.
+function stateLeafShapeOk(tapscript, control, body) {
   if (!tapscript || !control) return false;
-  if (control.length !== 65 || (control[0] & 0xfe) !== 0xc0) return false;
+  if (control.length !== 97 || (control[0] & 0xfe) !== 0xc0) return false;
   if (!equalBytes(control.slice(1, 33), NUMS_XONLY)) return false;
-  if (tapscript.length < 36) return false;
-  if (tapscript[0] !== 0x20 || tapscript[33] !== 0xad) return false;
-  if (tapscript[34] !== 0x00 || tapscript[35] !== 0x63) return false;
-  if (tapscript[tapscript.length - 2] !== 0x68 || tapscript[tapscript.length - 1] !== 0x51) return false;
-  return parseInscriptions(tapscript).length === 1;
+  if (tapscript.length < 35 || tapscript[0] !== 0x20 || tapscript[33] !== 0xad) return false;
+  const owner = tapscript.slice(1, 33);
+  const expected = crossLeafScript(owner, body, body.dir);
+  if (!equalBytes(tapscript, expected)) return false;
+  if (parseInscriptions(tapscript).length !== 1) return false;
+  const hL = leafHash(crossLeafScript(owner, body, 0));
+  const hS = leafHash(crossLeafScript(owner, body, 1));
+  const hR = leafHash(crossLeafScript(owner, body, 2));
+  const hX = leafHash(sendLeafScript(owner));
+  const hLS = branchHash(hL, hS);
+  const hRX = branchHash(hR, hX);
+  const [a, b] = [[hS, hRX], [hL, hRX], [hX, hLS]][body.dir];
+  return equalBytes(control.slice(33, 65), a) && equalBytes(control.slice(65, 97), b);
 }
 
-export { CARD_VALUE, DEATH_BPS, V6_CONTENT_TYPE, mintIdString };
+export { CARD_VALUE, V7_CONTENT_TYPE, mintIdString };

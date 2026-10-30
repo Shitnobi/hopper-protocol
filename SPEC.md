@@ -61,6 +61,7 @@ mint magic               "FRG"
 mint action              0x01
 state magic              "FRG7CROSS"
 state body length        55 bytes
+state leaf               161 bytes (index 0; 162-165 with a nonzero mint index)
 direction encoding       left = 0, straight = 1, right = 2
 wrap function            u32LE(H(B)[0..4]) mod 3
 crossing leaves          3 (one per direction) + 1 send
@@ -405,9 +406,9 @@ pushed body (the direction) differs:
 ad                     ; OP_CHECKSIGVERIFY
 00                     ; OP_FALSE
 63                     ; OP_IF
-4c 03 "ord"            ; PUSHDATA1 3 "ord"   (or 03 "ord")
+03 "ord"               ; PUSH 3 "ord"
 01 01                  ; push tag 1
-4c 1f <content-type>   ; PUSHDATA1 31 "application/octet-stream"
+18 <content-type:24>   ; PUSH 24 "application/octet-stream"
 01 03                  ; push tag 3
 20 <parent:32>         ; PUSH32 mint txid (index 0)
 00                     ; empty body tag
@@ -416,9 +417,14 @@ ad                     ; OP_CHECKSIGVERIFY
 51                     ; OP_TRUE
 ```
 
-(The encoder uses minimal pushes; a 55-byte body is a direct `0x37` push, a
-32-byte parent is `0x20`, a 31-byte content type is `0x4c 0x1f`.) The script
-is 170 bytes for every direction.
+Every push is minimal. The content type is the 24-byte string
+`application/octet-stream`, pushed with `0x18`. The parent tag is the
+32-byte mint txid for index 0 — the only reachable case, since a valid mint
+carries exactly one envelope and it sits on input 0 — or the txid plus the
+minimal little-endian index (1-4 extra bytes, `0x20`-`0x24`). The script is
+therefore **161 bytes** at index 0, and up to 165 for a manually built
+nonzero index. The three direction leaves are the same length; only the
+body's last byte differs.
 
 ### 3.3 Exact send leaf bytes
 
@@ -676,7 +682,7 @@ Accepted iff:
    `(sat, mint_txid, mint_index)` equals the frog;
 3. the tag-3 parent equals `(mint_txid, mint_index)`;
 4. the spent leaf is the `dir` leaf of the state output's tree: the script
-   is the 170-byte template of §3.2 whose body's last byte is `dir`, its
+   is the 161-byte template of §3.2 whose body's last byte is `dir`, its
    hash is the matching leaf hash, and the 97-byte control block commits
    the output key of §3.1 (NUMS internal key, `0xc0/0xc1` parity, both
    siblings in the order of the §3.1 table);
@@ -1024,7 +1030,7 @@ mixed envelope, params mismatch.
    generation boundary (5, 6, 100 for the whole hold, then 5 again), the
    wrap `u32LE(H)[0..4] mod 3`, the 55-byte body, the envelope, the parent
    tag, and the mint-body digests for pinned fixtures.
-2. **Wire bytes** — the three 170-byte crossing leaves, the send leaf, the
+2. **Wire bytes** — the three 161-byte crossing leaves, the send leaf, the
    97-byte control block for each of the four leaves, the commit leaf and
    the witnesses byte-exact; parse back with the ord decoder; verify every
    control block against the output key.

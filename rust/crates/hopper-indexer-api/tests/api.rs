@@ -9,7 +9,7 @@ use axum::Router;
 use hopper_core::envelope::{encode_mint, envelope, Action};
 use hopper_core::params::{ProtocolParams, NUMS_XONLY};
 use hopper_core::satmath::SatRange;
-use hopper_core::settle::dies_v3;
+use hopper_core::wrap::dies;
 use hopper_core::{encode_parent_tag, StateBody};
 use hopper_indexer::state_machine::{Indexer, IndexerConfig};
 use hopper_indexer::types::{Block, InscriptionReveal, OutPoint, Tx, TxInput, TxOut};
@@ -86,12 +86,16 @@ fn mint_tx(txid: u8) -> Tx {
     )
 }
 
-/// The v6 state leaf (two-leaf control block), as ingest delivers it.
+/// The v7 state leaf (four-leaf tree, 97-byte control block), as ingest
+/// delivers it.
 fn state_reveal(body: &StateBody) -> InscriptionReveal {
     let script = hopper_core::state_leaf_script(&[0x11; 32], body);
-    let mut control = vec![0xc1];
-    control.extend_from_slice(&NUMS_XONLY);
-    control.extend_from_slice(&[0x22; 32]); // sibling leaf hash
+    let hashes = hopper_core::state_leaf_hashes(&[0x11; 32], body);
+    let control = hopper_core::control_block(
+        &NUMS_XONLY,
+        &hopper_core::control_path(&hashes, body.dir),
+        1,
+    );
     InscriptionReveal {
         content_type: "application/octet-stream".into(),
         body_hash: [0u8; 32],
@@ -103,9 +107,9 @@ fn state_reveal(body: &StateBody) -> InscriptionReveal {
     }
 }
 
-/// A v6 CROSS: the frog spends itself (input 0) and the sat stays in
-/// output 0.
-fn cross_tx(idx: &Indexer, txid: u8) -> Tx {
+/// A v7 HOP: the frog spends itself (input 0) in direction `dir` and the
+/// sat stays in output 0.
+fn cross_tx(idx: &Indexer, txid: u8, dir: u8) -> Tx {
     let frog = idx.frogger(SAT).expect("frog");
     let frog_outpoint = match frog.location {
         hopper_indexer::types::SatLocation::Tracked(outpoint) => outpoint,
@@ -115,6 +119,7 @@ fn cross_tx(idx: &Indexer, txid: u8) -> Tx {
         sat: SAT,
         mint_txid: b32(MINT_TXID),
         mint_index: MINT_INDEX,
+        dir,
     };
     let mut frog_input = input(1, 0, CARD);
     frog_input.prevout = frog_outpoint;
@@ -212,16 +217,16 @@ fn minted_router() -> Router {
 fn crossing_router() -> Router {
     let mut idx = seeded_indexer();
     idx.apply_block(block_of(100, 1, vec![mint_tx(2)])).unwrap();
-    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3)]))
+    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3, 0)]))
         .unwrap();
     router(idx)
 }
 
-/// A byte constant whose block hash survives `dies_v3` at the fixture
-/// target (the anchor block `B = T+1` decides the outcome).
-fn alive_hash_byte(target: u32) -> u8 {
+/// A byte constant whose block hash does not wrap the direction the
+/// fixture hopped (the anchor block `B = T+1` decides the outcome).
+fn alive_hash_byte(dir: u8) -> u8 {
     (0u8..=255)
-        .find(|b| !dies_v3(SAT, &b32(*b), target))
+        .find(|b| !dies(dir, &b32(*b)))
         .expect("some hash survives")
 }
 
@@ -234,9 +239,9 @@ fn settled_router() -> Router {
 fn settled_router_idx() -> Indexer {
     let mut idx = seeded_indexer();
     idx.apply_block(block_of(100, 1, vec![mint_tx(2)])).unwrap();
-    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3)]))
+    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3, 0)]))
         .unwrap();
-    let anchor = alive_hash_byte(3);
+    let anchor = alive_hash_byte(0);
     idx.apply_block(block_of(102, anchor, vec![])).unwrap();
     for height in 103..=107 {
         idx.apply_block(block_of(height, 20 + height as u8, vec![]))
@@ -393,7 +398,7 @@ async fn road_shows_the_crossing_in_flight() {
     assert_eq!(entry["phase"]["deadline_height"], 102);
     // ...and settlement lands at T + cross_finality (6).
     assert_eq!(entry["phase"]["settle_height"], 107);
-    assert_eq!(entry["target_hops"], 3);
+    assert_eq!(entry["target_hops"], 2);
 }
 
 #[tokio::test]
@@ -541,9 +546,9 @@ async fn rollback_endpoint_truncates_and_replays() {
 async fn full_lifecycle_settles_and_is_reflected_everywhere() {
     let mut idx = seeded_indexer();
     idx.apply_block(block_of(100, 1, vec![mint_tx(2)])).unwrap();
-    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3)]))
+    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3, 0)]))
         .unwrap();
-    let anchor = alive_hash_byte(3);
+    let anchor = alive_hash_byte(0);
     idx.apply_block(block_of(102, anchor, vec![])).unwrap();
     for height in 103..=107 {
         idx.apply_block(block_of(height, 20 + height as u8, vec![]))
@@ -1095,7 +1100,7 @@ async fn store_engine_serves_identical_reads_and_survives_a_restart() {
         let cross = {
             let mut probe = seeded_indexer();
             probe.apply_block(mint.clone()).unwrap();
-            cross_tx(&probe, 3)
+            cross_tx(&probe, 3, 0)
         };
         let cross_block = block_of(101, 10, vec![cross]);
         // The capture block (T+1) and the rest of the finality window.
@@ -1201,7 +1206,7 @@ async fn durable_mirror_serves_identical_reads() {
     }
     let cross = {
         let idx = mem.read();
-        cross_tx(idx.as_memory().expect("memory engine"), 3)
+        cross_tx(idx.as_memory().expect("memory engine"), 3, 0)
     };
     let cross_block = block_of(101, 10, vec![cross]);
     mem.write().apply_block(cross_block.clone()).unwrap();
@@ -1244,21 +1249,85 @@ async fn params_endpoint_publishes_the_schedule_and_hash() {
     let (status, body): (_, serde_json::Value) = get_json(&app, "/v1/params").await;
     assert_eq!(status, StatusCode::OK);
     let p = &hopper_core::params::PROTOCOL;
-    assert_eq!(body["wire_version"], 6);
+    assert_eq!(body["wire_version"], 7);
     assert_eq!(body["cross_finality"], p.cross_finality);
-    assert_eq!(body["death_model"], "hybrid_floor");
-    assert_eq!(body["success_floor_bps"], 500);
-    assert_eq!(body["hop_schedule"]["base"], 5);
-    assert_eq!(body["hop_schedule"]["ceiling"], 100);
-    assert_eq!(
-        body["anchors"],
-        serde_json::json!([p.hops.anchor1(), p.hops.anchor2(), p.hops.anchor3()])
-    );
+    assert_eq!(body["generations"]["base"], 5);
+    assert_eq!(body["generations"]["ceiling"], 100);
+    assert_eq!(body["generations"]["growth_interval"], 144);
+    assert_eq!(body["generations"]["hold"], 14_400);
+    assert_eq!(body["generations"]["generation_len"], 28_080);
     let want: String = hopper_core::params::params_hash(p)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(body["params_hash"], want);
+}
+
+#[tokio::test]
+async fn generation_endpoint_publishes_the_sawtooth() {
+    let app = router(seeded_indexer());
+    let p = &hopper_core::params::PROTOCOL;
+    let g = &p.generations;
+    let h = g.genesis + 95 * 144 + 7;
+    let (status, body): (_, serde_json::Value) =
+        get_json(&app, &format!("/v1/generation/{h}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["generation"], 1);
+    assert_eq!(body["start"], g.genesis);
+    assert_eq!(body["required"], 100, "held at the ceiling");
+    assert_eq!(body["next_change"]["height"], g.genesis + g.generation_len);
+    assert_eq!(body["next_change"]["required"], 5, "the reset is a change");
+
+    // The generation that starts after the reset is numbered 2.
+    let h2 = g.genesis + g.generation_len;
+    let (_, body2): (_, serde_json::Value) =
+        get_json(&app, &format!("/v1/generation/{h2}")).await;
+    assert_eq!(body2["generation"], 2);
+    assert_eq!(body2["required"], 5);
+}
+
+#[tokio::test]
+async fn wrap_endpoint_is_404_until_the_height_is_ingested() {
+    let mut idx = seeded_indexer();
+    idx.apply_block(block_of(100, 1, vec![mint_tx(2)])).unwrap();
+    let app = router(idx);
+    let (missing, _): (_, serde_json::Value) = get_json(&app, "/v1/wrap/999").await;
+    assert_eq!(missing, StatusCode::NOT_FOUND);
+
+    let (status, body): (_, serde_json::Value) = get_json(&app, "/v1/wrap/100").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["height"], 100);
+    assert_eq!(body["wrap"], hopper_core::wrap::wrap(&b32(1)));
+    let mut display = b32(1);
+    display.reverse();
+    assert_eq!(body["hash"], serde_json::json!(hex_display(&b32(1))));
+}
+
+#[tokio::test]
+async fn frogger_and_road_expose_generation_direction_and_wrap() {
+    let app = crossing_router();
+    let (_, frog): (_, serde_json::Value) = get_json(&app, "/v1/frogger/1000").await;
+    assert_eq!(frog["gen"], 26, "fixture generation at height 100");
+    assert_eq!(frog["in_flight"]["dir"], 0);
+    assert_eq!(frog["in_flight"]["target_hops"], 2);
+
+    let (_, road): (_, serde_json::Value) = get_json(&app, "/v1/road").await;
+    assert_eq!(road["active"][0]["dir"], 0);
+    assert_eq!(road["active"][0]["target_hops"], 2);
+
+    // Once T+1 lands, both the frog and the road publish the block's wrap.
+    let mut idx = seeded_indexer();
+    idx.apply_block(block_of(100, 1, vec![mint_tx(2)])).unwrap();
+    idx.apply_block(block_of(101, 10, vec![cross_tx(&idx, 3, 0)]))
+        .unwrap();
+    idx.apply_block(block_of(102, 3, vec![])).unwrap();
+    let app = router(idx);
+    let (_, frog): (_, serde_json::Value) = get_json(&app, "/v1/frogger/1000").await;
+    let (_, road): (_, serde_json::Value) = get_json(&app, "/v1/road").await;
+    let want = hopper_core::wrap::wrap(&b32(3));
+    assert_eq!(frog["outcome_wrap"], want);
+    assert_eq!(frog["provisional_dead"], want == 0);
+    assert_eq!(road["active"][0]["outcome_wrap"], want);
 }
 
 #[tokio::test]

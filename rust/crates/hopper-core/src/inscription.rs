@@ -209,39 +209,37 @@ pub fn build_inscription_script_with_parents(
     out
 }
 
-/// The v6 mint body: the self-contained fold document. `sat` is the
-/// frog's anchor sat — the body embeds it, which is why it cannot be
-/// built before the commit inputs are chosen.
+/// The v7 mint body: the self-contained fold document. `sat` is the
+/// Hopper's anchor sat and `gen_hint` the generation of the intended mint
+/// height — the body embeds both, which is why it cannot be built before
+/// the commit inputs are chosen.
 #[must_use]
-pub fn mint_body(seed: u32, sat: u64) -> (&'static str, Vec<u8>) {
+pub fn mint_body(seed: u32, sat: u64, name: &str, gen_hint: u32) -> (&'static str, Vec<u8>) {
     (
-        crate::live_v6::V6_CONTENT_TYPE,
-        crate::live_v6::live_v6_html(seed, sat).into_bytes(),
+        crate::live_v7::V7_CONTENT_TYPE,
+        crate::live_v7::live_v7_html(seed, sat, name, gen_hint).into_bytes(),
     )
 }
 
-/// SHA-256 of [`mint_body`] — the digest a NEW mint must carry.
+/// SHA-256 of [`mint_body`] — the one digest a NEW v7 mint must carry.
 #[must_use]
-pub fn mint_body_digest(seed: u32, sat: u64) -> [u8; 32] {
-    let (_, body) = mint_body(seed, sat);
+pub fn mint_body_digest(seed: u32, sat: u64, name: &str, gen_hint: u32) -> [u8; 32] {
+    let (_, body) = mint_body(seed, sat, name, gen_hint);
     use sha2::Digest as _;
     sha2::Sha256::digest(&body).into()
 }
 
-/// Every digest the wire accepts for `(seed, sat)`: the current body and
-/// the pre-fix v6 body that every frog minted before the fold's boot fix
-/// already carries. Old inscriptions stay valid by construction; only
-/// [`mint_body_digest`] can be produced by a wallet.
+/// Build the Hopper mint inscription script (v7 body).
 #[must_use]
-pub fn mint_body_digests(seed: u32, sat: u64) -> [[u8; 32]; 2] {
-    crate::live_v6::live_v6_html_digests(seed, sat)
+pub fn build_frog_mint_script(seed: u32, sat: u64, name: &str, gen_hint: u32) -> Vec<u8> {
+    let (content_type, body) = mint_body(seed, sat, name, gen_hint);
+    build_inscription_script(content_type.as_bytes(), &body)
 }
 
-/// Build the frog mint inscription script (v6 body).
+/// Build a mint inscription script from an already-rendered body.
 #[must_use]
-pub fn build_frog_mint_script(seed: u32, sat: u64) -> Vec<u8> {
-    let (content_type, body) = mint_body(seed, sat);
-    build_inscription_script(content_type.as_bytes(), &body)
+pub fn build_frog_mint_script_from_body(body: &[u8]) -> Vec<u8> {
+    build_inscription_script(crate::live_v7::V7_CONTENT_TYPE.as_bytes(), body)
 }
 
 /// Parse every inscription envelope in a tapleaf script, mirroring ord
@@ -462,20 +460,20 @@ mod tests {
     fn frog_mint_script_carries_the_fold_document() {
         let seed = 0x0bad_f00d;
         let sat = 1_234_567_890;
-        let script = build_frog_mint_script(seed, sat);
+        let script = build_frog_mint_script(seed, sat, "Ribbit", 2);
         let ins = &parse_inscriptions(&script)[0];
         assert_eq!(
             ins.content_type.as_deref(),
-            Some(crate::live_v6::V6_CONTENT_TYPE.as_bytes())
+            Some(crate::live_v7::V7_CONTENT_TYPE.as_bytes())
         );
         assert_eq!(
             ins.body.as_deref(),
-            Some(crate::live_v6::live_v6_html(seed, sat).as_bytes()),
+            Some(crate::live_v7::live_v7_html(seed, sat, "Ribbit", 2).as_bytes()),
             "the engraved body must be the fold document"
         );
         assert_eq!(
             <sha2::Sha256 as sha2::Digest>::digest(ins.body.as_deref().unwrap()).as_slice(),
-            mint_body_digest(seed, sat),
+            mint_body_digest(seed, sat, "Ribbit", 2),
             "the digest the indexer enforces is SHA-256 of the same bytes"
         );
     }

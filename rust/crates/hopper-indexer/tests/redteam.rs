@@ -202,7 +202,7 @@ fn attack_rollback_replay_determinism() {
 // paying for it in canonical art, smuggle foreign content types, park
 // the reveal on a non-commit input, or reuse another mint's art.
 
-use hopper_core::live_v6_html_digest;
+use hopper_core::live_v7_html;
 use hopper_indexer::types::InscriptionReveal;
 
 /// Enforcing indexer (activation height 100) with the usual funding UTXO.
@@ -216,14 +216,14 @@ fn enforcing_idx() -> Indexer {
     idx
 }
 
-fn reveal_with_hash(reveal_index: u32, body_hash: [u8; 32]) -> InscriptionReveal {
+fn reveal_for(reveal_index: u32, seed: u32, sat: u64, name: &str) -> InscriptionReveal {
     InscriptionReveal {
-        content_type: hopper_core::V6_CONTENT_TYPE.to_string(),
-        body: None,
+        content_type: hopper_core::V7_CONTENT_TYPE.to_string(),
+        body: Some(live_v7_html(seed, sat, name, 1).into_bytes()),
         parents: Vec::new(),
         tapscript: None,
         control_block: None,
-        body_hash,
+        body_hash: [0u8; 32],
         inscription_id: format!(
             "{}i{reveal_index}",
             b32(2)
@@ -265,7 +265,7 @@ fn attack_mint_without_inscription_after_activation() {
 fn attack_mint_art_mismatch() {
     // Envelope seed says A, inscribed PNG is B.
     let mut idx = enforcing_idx();
-    let wrong_art = reveal_with_hash(0, live_v6_html_digest(0x1234, SAT));
+    let wrong_art = reveal_for(0, 0x1234, SAT, "Victim");
     let tx = inscribed_mint_tx(2, 0xABCD, vec![Some(wrong_art)]);
     let report = idx.apply_block(block_of(100, 1, vec![tx])).unwrap();
     assert!(
@@ -283,7 +283,7 @@ fn attack_mint_art_mismatch() {
 fn attack_mint_wrong_content_type() {
     // Canonical art bytes wearing a foreign content type.
     let mut idx = enforcing_idx();
-    let mut foreign = reveal_with_hash(0, live_v6_html_digest(0xABCD, SAT));
+    let mut foreign = reveal_for(0, 0xABCD, SAT, "Victim");
     foreign.content_type = "text/html".to_string();
     let tx = inscribed_mint_tx(2, 0xABCD, vec![Some(foreign)]);
     let report = idx.apply_block(block_of(100, 1, vec![tx])).unwrap();
@@ -308,7 +308,7 @@ fn attack_inscription_on_non_commit_input() {
         0xABCD,
         vec![
             None,
-            Some(reveal_with_hash(0, live_v6_html_digest(0xABCD, SAT))),
+            Some(reveal_for(0, 0xABCD, SAT, "Victim")),
         ],
     );
     let report = idx.apply_block(block_of(100, 1, vec![tx])).unwrap();
@@ -332,8 +332,8 @@ fn attack_two_inscriptions_in_mint() {
         2,
         0xABCD,
         vec![
-            Some(reveal_with_hash(0, live_v6_html_digest(0xABCD, SAT))),
-            Some(reveal_with_hash(1, [0x00; 32])),
+            Some(reveal_for(0, 0xABCD, SAT, "Victim")),
+            Some(reveal_for(1, 0, SAT, "Junk")),
         ],
     );
     let report = idx.apply_block(block_of(100, 1, vec![tx])).unwrap();
@@ -357,7 +357,7 @@ fn attack_inscribed_reveal_spends_untracked_utxo() {
     let mut idx = enforcing_idx();
     let payload = envelope(Action::Mint, &encode_mint(0xABCD, "Victim"));
     let mut inscribed_input = input(9, 0, 100);
-    inscribed_input.inscription = Some(reveal_with_hash(0, live_v6_html_digest(0xABCD, SAT)));
+    inscribed_input.inscription = Some(reveal_for(0, 0xABCD, SAT, "Victim"));
     let tx = tx_of(
         2,
         vec![inscribed_input, input(1, 0, 100)],
@@ -378,15 +378,15 @@ fn attack_art_reuse_across_seeds() {
     // (different seed) reusing frog A's PNG bytes: the second mint's
     // art no longer matches its own seed.
     let mut idx = enforcing_idx();
-    let art = live_v6_html_digest(0xABCD, SAT);
-    let mint_a = inscribed_mint_tx(2, 0xABCD, vec![Some(reveal_with_hash(0, art))]);
+    let art = reveal_for(0, 0xABCD, SAT, "Victim");
+    let mint_a = inscribed_mint_tx(2, 0xABCD, vec![Some(art.clone())]);
     idx.apply_block(block_of(100, 1, vec![mint_a])).unwrap();
     assert!(idx.froggers().contains_key(&SAT));
 
     // Frog B's own funding UTXO (fresh sat range), but frog A's art.
     let payload = envelope(Action::Mint, &encode_mint(0xBEEF, "Thief"));
     let mut inscribed_input = input(9, 2, 100);
-    inscribed_input.inscription = Some(reveal_with_hash(0, art));
+    inscribed_input.inscription = Some(art);
     let mint_b = tx_of(3, vec![inscribed_input], vec![out(100), out_env(payload)]);
     let report = idx.apply_block(block_of(101, 2, vec![mint_b])).unwrap();
     assert!(

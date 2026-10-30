@@ -243,7 +243,7 @@ function onboarding() {
         <div style="font-weight:700;font-size:17px">NO SERVER ON THE ART'S TRUST PATH</div>
         <p class="muted small">A Hopper is a satoshi whose life is a sequence of Bitcoin transactions. The wallet signs; the chain decides. Twelve words are the only backup.</p>
         <div class="stat-grid mt10">
-          <dt>Wire</dt><dd>v6 · 0x06</dd>
+          <dt>Wire</dt><dd>v7 · 0x07</dd>
           <dt>Cards</dt><dd>25,000 sats</dd>
           <dt>Finality</dt><dd>6 blocks</dd>
         </div>
@@ -254,7 +254,7 @@ function onboarding() {
         ${hasVault() ? `<div class="mt10">${button('I HAVE A VAULT — UNLOCK', 'ob-lock', 'dim', 'small block')}</div>` : ''}
         <div class="hint">Mainnet is real Bitcoin. New wallets start live on the public defaults — Blockstream Esplora and ordinals.com. The HOPPER indexer is optional; choose Demo in Settings for the in-browser chain.</div>
       </div>
-      <div class="footer">HOPPER v6 · HOPPER-PROTOCOL</div>
+      <div class="footer">HOPPER v7 · HOPPER-PROTOCOL</div>
     </div></div>`;
   }
   if (o.step === 'words') {
@@ -1005,6 +1005,11 @@ const handlers = {
       } else if (preview.kind === 'transfer') {
         toast(`Hopper sent to ${shortHash(preview.to, 6)}`, 'ok');
         navigate('pond');
+      } else if (preview.kind === 'hop') {
+        const direction = ['LEFT', 'STRAIGHT', 'RIGHT'][preview.dir];
+        sound.sfx('cross');
+        toast(`HOP ${direction} confirmed at H ${sats(app.w.tipHeight)} — the next block decides, settlement in 6`, 'ok');
+        navigate('road');
       } else {
         toast(`Sent ${sats(preview.amountNumber)} sats in ${shortHash(built.txid, 6)}`, 'ok');
       }
@@ -1058,6 +1063,25 @@ const handlers = {
       openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
     });
   },
+  'export-emergency'() {
+    openOverlay(screens.emergencyWarning(app), { lily: 'dim' });
+  },
+  'show-emergency'() {
+    const doc = app.w.emergencyDescriptors();
+    if (!doc.frogs.length) {
+      toast('No staged Hopper to export — TRAVEL TO ROAD first', 'warn');
+      return;
+    }
+    openOverlay(screens.emergencySheet(app, doc), { lily: 'accent' });
+  },
+  'copy-emergency'() {
+    const text = document.querySelector('[data-emergency-json]')?.textContent || '';
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(
+      () => toast('Emergency descriptors copied', 'ok'),
+      () => toast('Clipboard is not available', 'warn'),
+    );
+  },
   'travel-to-road'(el) {
     const f = app.w?.frogBySat(el.dataset.sat);
     if (f) openOverlay(screens.travelWarning(app, f), { lily: 'accent' });
@@ -1078,22 +1102,57 @@ const handlers = {
       navigate('road');
     });
   },
-  'do-cross'(el) {
+  'preview-hop'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
     if (!f) return;
+    const dir = Number(el.dataset.dir);
+    if (!Number.isInteger(dir) || dir < 0 || dir > 2) {
+      toast('Choose LEFT, STRAIGHT or RIGHT', 'warn');
+      return;
+    }
     const ownerAddr = (document.querySelector('[data-input=cross-owner]')?.value || '').trim();
     const fee = Number(document.querySelector('[data-input=cross-fee]')?.value || app.settings.feeRate);
-    run('crossing the road', async () => {
-      let newOwnerXonly = null;
-      if (ownerAddr) {
+    let newOwnerXonly = null;
+    if (ownerAddr) {
+      try {
         const d = decodeAddress(ownerAddr, app.w.network);
         if (d.type !== 'p2tr') throw new Error('The new owner must be a P2TR address');
         newOwnerXonly = d.program;
+      } catch (err) {
+        toast(err.message || 'The new owner must be a P2TR address', 'warn');
+        return;
       }
-      const built = await app.w.cross(f, { feeRate: fee, newOwnerXonly });
+    }
+    run('building the hop preview', async () => {
+      const preview = await app.w.previewCross(f, { dir, feeRate: fee, newOwnerXonly });
+      app.previewTx = preview;
+      openOverlay(screens.hopReviewSheet(app, preview), { lily: 'accent' });
+    });
+  },
+  'do-cross'(el) {
+    const f = app.w.frogBySat(el.dataset.sat);
+    if (!f) return;
+    const dir = Number(el.dataset.dir);
+    if (!Number.isInteger(dir) || dir < 0 || dir > 2) {
+      toast('Choose LEFT, STRAIGHT or RIGHT', 'warn');
+      return;
+    }
+    const direction = ['LEFT', 'STRAIGHT', 'RIGHT'][dir];
+    const fee = Number(el.dataset.fee || app.settings.feeRate);
+    const ownerHex = String(el.dataset.owner || '');
+    let newOwnerXonly = null;
+    if (ownerHex) {
+      if (!/^[0-9a-f]{64}$/i.test(ownerHex)) {
+        toast('The previewed owner key is malformed', 'warn');
+        return;
+      }
+      newOwnerXonly = Uint8Array.from(ownerHex.match(/../g).map((x) => parseInt(x, 16)));
+    }
+    run(`hopping ${direction.toLowerCase()}`, async () => {
+      const built = await app.w.cross(f, { feeRate: fee, newOwnerXonly, dir });
       closeOverlay();
       sound.sfx('cross');
-      toast(`Crossing confirmed at H ${sats(app.w.tipHeight)} — settles in 6 blocks`, 'ok');
+      toast(`HOP ${direction} confirmed at H ${sats(app.w.tipHeight)} — the next block decides, settlement in 6`, 'ok');
       navigate('road');
     });
   },

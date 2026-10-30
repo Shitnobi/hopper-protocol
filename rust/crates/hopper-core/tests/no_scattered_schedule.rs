@@ -10,9 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The genesis-0 anchors of the default schedule (`base 5`, `step1 64`,
-/// `until1 25`, `step2 144`, `until2 50`, `step3 2016`, ceiling 100).
-const ANCHORS: [&str; 3] = ["1280", "4880", "105680"];
+/// Markers of retired wire versions and re-derived schedules. They belong
+/// to no live code path outside `hopper-core`; seeing one elsewhere means a
+/// second implementation survived the v7 cutover.
+const FORBIDDEN: [&str; 4] = ["FRG6CROSS", "death_bps", "dies_v3", "success_floor_bps"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -51,10 +52,10 @@ fn schedule_anchor_literals_live_only_in_hopper_core() {
                     // Comments may explain the schedule; code may not
                     // restate it. A trailing comment is excluded too.
                     let code = line.split("//").next().unwrap_or("");
-                    for anchor in ANCHORS {
-                        if code.contains(anchor) {
+                    for marker in FORBIDDEN {
+                        if code.contains(marker) {
                             offenders.push(format!(
-                                "{}:{}: `{anchor}` in `{}`",
+                                "{}:{}: `{marker}` in `{}`",
                                 file.display(),
                                 lineno + 1,
                                 code.trim()
@@ -67,7 +68,7 @@ fn schedule_anchor_literals_live_only_in_hopper_core() {
     }
     assert!(
         offenders.is_empty(),
-        "the hop schedule must be derived from hopper_core::hops, not restated:\n{}",
+        "retired v6/derived-schedule code must not survive outside hopper-core:\n{}",
         offenders.join("\n")
     );
 }

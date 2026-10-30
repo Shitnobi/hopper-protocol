@@ -13,12 +13,12 @@ import { buildMint } from './actions.js';
 
 self.onmessage = (event) => {
   const {
-    mnemonic, network, utxos, seed, name, feeRate, changeIndex, revealFeeRate,
+    mnemonic, network, utxos, seed, name, feeRate, changeIndex, revealFeeRate, genHint,
   } = event.data || {};
   try {
     const keys = deriveWallet(mnemonic, network);
     const built = buildMint({
-      keys, utxos, seed, name, feeRate, changeIndex, revealFeeRate,
+      keys, utxos, seed, name, feeRate, changeIndex, revealFeeRate, genHint,
     });
     self.postMessage({ ok: true, built });
   } catch (err) {

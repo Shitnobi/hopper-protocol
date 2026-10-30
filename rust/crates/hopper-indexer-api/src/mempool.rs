@@ -88,6 +88,8 @@ pub struct CrossBodyDto {
     /// Display order, as explorers print it.
     pub mint_txid: String,
     pub mint_index: u32,
+    /// The direction the body commits to (0 left, 1 straight, 2 right).
+    pub dir: u8,
 }
 
 /// What the indexer would make of this CROSS if it confirmed next block.
@@ -222,6 +224,7 @@ pub fn preview_raw_tx(
                                 .unwrap_or_default()
                                 .to_string(),
                             mint_index: c.mint_index,
+                            dir: c.dir,
                         }),
                 });
                 running_index += 1;
@@ -531,7 +534,7 @@ mod tests {
     /// (BIP342 clean-stack) + the golden-pinned envelope script.
     fn frog_reveal_tapscript(seed: u32) -> Vec<u8> {
         let mut bytes = vec![0x51]; // OP_TRUE
-        bytes.extend_from_slice(&hopper_core::build_frog_mint_script(seed, 1_000));
+        bytes.extend_from_slice(&hopper_core::build_frog_mint_script(seed, 1_000, "Victim", 1));
         bytes
     }
 
@@ -543,10 +546,10 @@ mod tests {
         assert_eq!(entry.inscriptions.len(), 1);
         let ins = &entry.inscriptions[0];
         assert_eq!(ins.input, 0);
-        assert_eq!(ins.content_type, hopper_core::V6_CONTENT_TYPE);
+        assert_eq!(ins.content_type, hopper_core::V7_CONTENT_TYPE);
         assert_eq!(
             ins.body_hash,
-            hex32(&hopper_core::live_v6_html_digest(seed, 1_000))
+            hex32(&hopper_core::live_v7_html_digest(seed, 1_000, "Victim", 1))
         );
         assert_eq!(ins.inscription_id, "cafebabei0");
     }
@@ -557,6 +560,7 @@ mod tests {
             sat: 1_000,
             mint_txid: [2u8; 32],
             mint_index: 5,
+            dir: 2,
         };
         let leaf = hopper_core::state_leaf_script(&[0x11; 32], &body);
         let raw = reveal_tx(leaf, None);
@@ -565,6 +569,7 @@ mod tests {
         let cross = entry.inscriptions[0].cross.as_ref().expect("state body");
         assert_eq!(cross.sat, 1_000);
         assert_eq!(cross.mint_index, 5);
+        assert_eq!(cross.dir, 2);
         // Display order of an all-0x02 txid is still all 02s.
         assert_eq!(cross.mint_txid, "02".repeat(32));
         // The route fills the verdict; the pure preview leaves it empty.

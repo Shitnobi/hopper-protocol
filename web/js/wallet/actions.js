@@ -7,7 +7,7 @@
 import { bytesToHex, concatBytes, hexToBytes, reverseBytes, sha256 } from '../core/hex.js';
 import { mintEnvelope } from '../core/envelope.js';
 import { mintBody } from '../core/mintdoc.js';
-import { mintCommitLeafScript, sendLeafScript, stateLeafScript } from '../core/v6.js';
+import { crossLeafScript, mintCommitLeafScript, sendLeafScript } from '../core/v7.js';
 import { CARD_VALUE, DUST_P2WPKH, NUMS_XONLY } from '../core/params.js';
 import { p2trScript } from './addresses.js';
 import { branchHash, controlBlock, leafHash, taprootOutputKey } from './keys.js';
@@ -20,29 +20,44 @@ export const FEE_FLOOR = 1;
 
 // --- state output ---------------------------------------------------------
 
-export function frogBody(frog) {
+export function frogBody(frog, dir = 0) {
   return {
     sat: Number(frog.sat),
     mintTxid: reverseBytes(hexToBytes(frog.mint_txid)),
     mintIndex: frog.mint_index ?? 0,
+    dir,
   };
 }
 
+// The four-leaf state output (SPEC §3.1):
+//
+//   hL = leaf(L)   hS = leaf(S)   hR = leaf(R)   hX = leaf(X)
+//   hLS = branch(hL, hS)   hRX = branch(hR, hX)   root = branch(hLS, hRX)
+//
+// The three crossing leaves differ only in the direction byte of the body
+// they push, so their hashes are fixed when the output is created.
 export function stateScripts(frog, ownerXonly) {
-  const body = frogBody(frog);
-  const cross = stateLeafScript(ownerXonly, body);
+  const body = frogBody(frog, 0);
+  const crosses = [crossLeafScript(ownerXonly, body), ...([1, 2].map((dir) => crossLeafScript(ownerXonly, body, dir)))];
   const send = sendLeafScript(ownerXonly);
-  const crossHash = leafHash(cross);
-  const sendHash = leafHash(send);
-  const root = branchHash(crossHash, sendHash);
+  const [hL, hS, hR] = crosses.map((script) => leafHash(script));
+  const hX = leafHash(send);
+  const hLS = branchHash(hL, hS);
+  const hRX = branchHash(hR, hX);
+  const root = branchHash(hLS, hRX);
   const { outputXonly, parity } = taprootOutputKey(NUMS_XONLY, root);
+  // Sibling order from the SPEC §3.1 table.
+  const paths = [[hS, hRX], [hL, hRX], [hX, hLS]];
   return {
     script: p2trScript(outputXonly),
     outputXonly,
-    crossLeaf: cross,
+    internalXonly: NUMS_XONLY,
+    leafHashes: [hL, hS, hR, hX],
+    root,
+    crossLeaves: crosses,
+    crossControls: paths.map((path) => controlBlock(NUMS_XONLY, path, parity)),
     sendLeaf: send,
-    crossControl: controlBlock(NUMS_XONLY, [sendHash], parity),
-    sendControl: controlBlock(NUMS_XONLY, [crossHash], parity),
+    sendControl: controlBlock(NUMS_XONLY, [hR, hLS], parity),
     body,
   };
 }
@@ -159,6 +174,7 @@ function finalize({ tx, inputs, sign, inputTypes, changeIndex, rate, dust = DUST
 
 export function buildMint({
   keys, utxos, seed, name = '', feeRate = 2, changeIndex = 0, revealFeeRate = null,
+  genHint = 1,
 }) {
   const rate = Math.max(FEE_FLOOR, feeRate);
   const revealRate = Math.max(FEE_FLOOR, revealFeeRate ?? feeRate);
@@ -175,7 +191,7 @@ export function buildMint({
   let chosen = null;
   for (const anchor of anchors) {
     const sat = anchorSatOf(anchor);
-    const { contentType, body } = mintBody(seed, sat);
+    const { contentType, body } = mintBody(seed, sat, name, genHint);
     const leaf = mintCommitLeafScript(owner, contentType, body);
     const leafH = leafHash(leaf);
     const commitOut = taprootOutputKey(owner, leafH);
@@ -383,8 +399,11 @@ export function buildPrepare({
 
 export function buildCross({
   keys, stateUtxo, frog, funding = [], feeRate = 2, changeIndex = 0,
-  newOwnerXonly = null, ownerXonly = null,
+  newOwnerXonly = null, ownerXonly = null, dir = 0,
 }) {
+  if (!Number.isInteger(dir) || dir < 0 || dir > 2) {
+    throw new Error('dir must be 0 (left), 1 (straight) or 2 (right)');
+  }
   const ord = keys.ord;
   const owner = ownerXonly || ord.ownerXonly;
   const nextOwner = newOwnerXonly || owner;
@@ -402,7 +421,7 @@ export function buildCross({
     outputs: [output(CARD_VALUE, next.script), output(0n, change.script)],
   });
   const types = inputs.map((u, i) => (i === 0
-    ? { type: 'tapscript', scriptLen: state.crossLeaf.length }
+    ? { type: 'tapscript', scriptLen: state.crossLeaves[dir].length }
     : { type: 'p2wpkh' }));
   const prevouts = inputs.map((u) => ({ value: BigInt(u.value), script: u.script }));
 
@@ -413,7 +432,7 @@ export function buildCross({
     changeIndex: 1,
     rate,
     sign: (t) => {
-      signTapscript(t, 0, ord.ownerPrivate, state.crossLeaf, state.crossControl, prevouts);
+      signTapscript(t, 0, ord.ownerPrivate, state.crossLeaves[dir], state.crossControls[dir], prevouts);
       picked.forEach((u, i) => signP2wpkh(t, i + 1, u.key.privateKey, u.key.publicKey, u.value));
     },
   });
@@ -423,6 +442,12 @@ export function buildCross({
     hex: bytesToHex(serializeTx(final.tx, true)),
     txid: txid(final.tx),
     stateScript: next.script,
+    inputs: inputs.map((u) => ({
+      txid: u.txid, vout: Number(u.vout), value: u.value, script: u.script,
+    })),
+    changeIndex: 1,
+    vsize: estimateVsize(final.tx, actualTypes(final.tx, types)),
+    dir,
     fee: final.fee,
   };
 }

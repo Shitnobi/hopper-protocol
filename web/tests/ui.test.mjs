@@ -1,6 +1,7 @@
 // Screen policy that is easy to regress: no sound-test affordance belongs in
 // the UI, and the demo chain's block-production controls are demo-only.
 import * as screens from '../js/ui/screens.js';
+import { GENESIS } from '../js/core/params.js';
 import { Sound } from '../js/sound.js';
 
 let checks = 0;
@@ -93,4 +94,66 @@ const hopperPreview = screens.txPreviewSheet(quoteApp, {
 ok(hopperPreview.includes('SEND HOPPER') && hopperPreview.includes('one output'),
   'Hopper preview explains that a transfer has no change output');
 
-console.log(`ui: ${checks} checks passed (fee/preview)`);
+// ---- v7 road: three directions, fixed at approval ---------------------
+const hopApp = { w: { ...demo, tipHeight: GENESIS }, settings: demo.settings };
+const hopSheet = screens.crossSheet(hopApp, {
+  sat: 7000000, name: 'Hopkinson', dist: 2, gen: 1, state: 'idle',
+});
+for (const [dir, label] of [[0, 'LEFT'], [1, 'STRAIGHT'], [2, 'RIGHT']]) {
+  ok(hopSheet.includes(`data-dir="${dir}"`), `hop sheet offers ${label}`);
+}
+ok(hopSheet.includes('one direction for') && hopSheet.includes('dies'),
+  'the sheet states the block-wide rule');
+ok(hopSheet.includes('33.33%') && hopSheet.includes('one of three'),
+  'the sheet states the one-in-three hop risk');
+ok(hopSheet.includes('review the destination, change and fee'), 'the chooser says what the signed preview will show');
+ok(!hopSheet.includes('Death at target'), 'the v6 death table is gone');
+
+const settingsHtml = screens.settings({ w: live, settings: live.settings, scanArmed: false });
+ok(settingsHtml.includes('HOPPER v7') && settingsHtml.includes('WIRE 0x07'), 'the footer names v7');
+
+const emergencySettings = screens.settings({ w: demo, settings: demo.settings, scanArmed: false });
+ok(emergencySettings.includes('EXPORT EMERGENCY DESCRIPTORS')
+  && emergencySettings.includes('data-action="export-emergency"'),
+  'settings offers the emergency descriptor export');
+const warn = screens.emergencyWarning();
+ok(warn.includes('Never contains') && warn.includes('seed') && warn.includes('SHOW THE EXPORT'),
+  'the export sits behind a confirmation that names what it never contains');
+const exported = screens.emergencySheet({ w: demo }, {
+  type: 'hopper-v7-emergency', version: 1, network: 'regtest',
+  fingerprint: 'deadbeef', owner_path: "m/84'/1'/0'/2/0",
+  descriptor: null, generated_at: '2026-10-30T00:00:00Z', tip_height: 100,
+  frogs: [{
+    sat: 1, gen: 1, dist: 0, state: 'idle', name: 'A', mint_id: 'aai0',
+    state_outpoint: 'aa:0', state_value: 25000, owner_xonly: '11'.repeat(32),
+    internal_key: '22'.repeat(32), output_key: '33'.repeat(32),
+    leaves: [], send_leaf: {}, descriptor: 'tr(22,{raw(00),raw(01),raw(02),raw(03)})#89f8spxm',
+  }],
+});
+ok(exported.includes('data-emergency-json') && exported.includes('COPY JSON'),
+  'the export sheet shows the JSON and a copy button');
+ok(exported.includes('Snapshot only'), 'the sheet warns that a spent outpoint is stale');
+
+// The signed HOP review is the only thing a player can approve; it shows
+// the destination, change and actual fee that the old choose-only sheet
+// could not (SPEC §3.6).
+const hopReview = screens.hopReviewSheet(
+  { w: { ...demo, tipHeight: GENESIS } },
+  {
+    kind: 'hop', dir: 1, gen: 2, dist: 3, leafHex: 'ab'.repeat(161),
+    to: 'bcrt1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8x0kz',
+    destinationAmount: 25000n, changeAddress: 'bcrt1qchange0000000000000000000000000000',
+    changeAmount: 4321n, feeRate: 2, fee: 456n, vsize: 320,
+  },
+);
+ok(hopReview.includes('HOP STRAIGHT') && hopReview.includes('Destination address'),
+  'the review names the direction and the destination');
+ok(hopReview.includes('Leaf spent') && hopReview.includes('dir 1'), 'the review names the leaf and the direction byte');
+ok(hopReview.includes('Actual fee') && hopReview.includes('Change amount'),
+  'the review shows the actual fee and the change');
+ok(hopReview.includes('APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION'),
+  'the review warns that approval broadcasts these bytes');
+ok(hopReview.includes('data-action="do-approve-tx"') && !hopReview.includes('do-cross'),
+  'the signed review approves the built transaction, not a fresh build');
+
+console.log(`ui: ${checks} checks passed (fee/preview/road/emergency/hop)`);

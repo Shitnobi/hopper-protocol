@@ -1,6 +1,6 @@
 # HOPPER — the pond on Bitcoin
 
-A reference implementation of **HOPPER v6** ([`SPEC.md`](SPEC.md)):
+A reference implementation of **HOPPER v7** ([`SPEC.md`](SPEC.md)):
 
 - **`rust/`** — the consensus core, a standalone Bitcoin indexer and its
   REST/SSE API.
@@ -44,19 +44,19 @@ service worker makes the app shell work offline after the first load
 ### Demo chain
 
 Settings → **Mode** → **Demo** runs everything in the browser: FIFO sat
-assignment, mint validation, prepare/cross state scripts, the T+1 death
-decree, T+6 settlement, transfers, fee sweeps, NPC residents and a faucet.
+assignment, mint validation, the four-leaf state tree, the block-wide wrap,
+T+6 settlement, transfers, fee sweeps, NPC residents and a faucet.
 It persists to `localStorage`. Every broadcast mines one demo block, so
-`MINE 6` settles a crossing.
+`MINE 6` settles a hop.
 
 > The demo chain is **not** Bitcoin.
 
 ## Layout
 
 ```
-SPEC.md                    normative v6 rules (wire 0x06)
+SPEC.md                    normative v7 rules (wire 0x07)
 rust/
-  crates/hopper-core       params, envelope, v6 leaves, sat math, settlement,
+  crates/hopper-core       params, generations, wrap, v7 leaves, sat math,
                            inscription bodies/PNG, fold (the live viewer)
   crates/hopper-indexer    sat tracking, consensus state machine, rules,
                            snapshots, reorg replay
@@ -66,12 +66,12 @@ web/
   icons/                   pixel HOPPER tab mark + generated PWA icons
   fonts/                   Pixelify Sans (SIL OFL) for text; Silkscreen (SIL OFL) for digits
   css/app.css              mobile-first dark lily-pad UI
-  js/core/                 hex, params, settles, envelopes, inscriptions,
-                           v6 leaves, fold replay, art, PNG, mint document
+  js/core/                 hex, params, wrap, envelopes, inscriptions,
+                           v7 leaves, descriptor checksum, fold, art, PNG, mint document
   js/wallet/               keys, addresses, tx sign/serialize, actions,
                            tx parser, backends, vault, storage, session,
                            mint worker + client
-  js/mock/chain.js         in-browser v6 demo chain
+  js/mock/chain.js         in-browser v7 demo chain
   js/ui/screens.js         the screens (wallet, pond, road, mint, history,
                            leaderboard, detail, bio, settings, rules)
   js/ui/theme.js           the FROGGER egui materials: wood log-frames,
@@ -95,27 +95,32 @@ web/
 
 ## The protocol in one page
 
-- **Wire** `0x06`, magic `FRG`, mint envelope `FRG | 06 | 01 | u32 seed |
+- **Wire** `0x07`, magic `FRG`, mint envelope `FRG | 07 | 01 | u32 seed |
   u8 len | name` (≤ 38 UTF-8 bytes), opcode `OP_RETURN`.
 - **Params hash**
-  `86f35aa96824d2b0f80edf553dd25d2ca3304df89be3183fdb2b5cc37badd458`.
-- **Genesis** `973263`; schedule anchors `974543`, `978143`, `1078943`;
-  required hops start at 5, rise by 64/144/2016 to a ceiling of 100.
+  `7b6179c0ec400d0f83e31e094ef0e8beb93f9d159fa04389eb0945cf5da47d1c`.
+- **Genesis** `973263`; generations are 28,080 blocks: 5 required hops,
+  +1 every 144 blocks, 100 at +13,680, 14,400 blocks at 100, then reset to 5.
 - **Card** 25,000 sats; **anchor output** 1,000 sats; **finality** 6 blocks.
 - **Mint**: commit → reveal. The commit output is P2TR whose single tapleaf
   holds the ~14 KiB live document and the owner key. The reveal spends it,
-  pays 1,000 sats to the frog address, writes the FRG mint envelope, and the
-  anchor sat is the first sat of the commit input.
-- **Custody**: a 25,000-sat output with internal key **NUMS** (no key path).
-  Leaf 0 signs a crossing and commits to the 54-byte
-  `FRG6CROSS` state body; leaf 1 is an ordinary owner signature. The control
-  block names the NUMS key.
-- **Crossing**: spend the state output, one inscription in input 0, the
-  anchor sat at offset 0 of output 0. `target = required(T)`.
-- **Outcome**: at `T+1`, `H = block_hash(T+1)`;
-  `dead iff u32LE(SHA256("FRG3-CROSS" || sat || H)) * 10000 <
-  death_bps(target) * 2^32`. No floats. Settlement at `T+6`: survive →
-  `dist++`, `home` at `dist >= target`; otherwise `dead`.
+  pays 1,000 sats to the Hopper address, writes the FRG mint envelope, and
+  the anchor sat is the first sat of the commit input. The document embeds
+  the name and a generation *hint*; the indexer derives the real label from
+  the confirmed height.
+- **Custody**: a 25,000-sat output with internal key **NUMS** (no key path)
+  and four leaves: LEFT, STRAIGHT, RIGHT and send. Each crossing leaf
+  commits to the 55-byte `FRG7CROSS` body, whose last byte is the direction;
+  choosing a direction selects a leaf that was fixed when the output was
+  created. The control block is 97 bytes and names the NUMS key.
+- **Hop**: spend the state output through the chosen direction's leaf, one
+  inscription in input 0, the anchor sat at offset 0 of output 0.
+  `target = required(T)`.
+- **Outcome**: the road is global, not per-sat. At `T+1`,
+  `wrap(T+1) = u32LE(block_hash(T+1)[0..4]) % 3`; every Hopper whose hop
+  confirmed in `T` dies iff `dir == wrap(T+1)`, and every other Hopper in
+  that block survives. Settlement at `T+6`: survive → `dist++`, `home` at
+  `dist >= target`; otherwise `dead`.
 - **Transfer**: an ordinary spend; it publishes no envelope and changes no
   state. **Fee-swept sats**: spending the frog's sat to fees sets
   `location = burned` (an idle frog becomes `burned`; a dead frog stays
@@ -123,7 +128,7 @@ web/
 
 The wallet has no BURN action. There is no button, no `buildBurn`, and no
 session method that pays a Hopper's anchor sat to fees; `TRANSFER` moves
-the sat to a recipient, while TRAVEL TO ROAD and CROSS keep it at offset 0
+the sat to a recipient, while TRAVEL TO ROAD and HOP keep it at offset 0
 of the card. The indexer still recognizes a fee-swept anchor from a
 transaction built elsewhere, so an externally lost Hopper can be shown
 honestly instead of disappearing.
@@ -277,7 +282,6 @@ Important environment facts:
 | Variable | Meaning |
 | --- | --- |
 | `HOPPER_API_ADDR` | bind address, default `127.0.0.1:9770` |
-| `HOPPER_ACTIVATION_HEIGHT` | schedule genesis; the compiled v6 params are frozen |
 | `HOPPER_INSCRIPTION_ACTIVATION_HEIGHT` | from this height MINTs must carry the ord reveal; unset = legacy mints accepted |
 | `HOPPER_SNAPSHOT_PATH` | binary snapshot; restored on boot |
 | `HOPPER_SNAPSHOT_EVERY` | snapshot cadence (blocks) |
@@ -362,7 +366,7 @@ curl -sN localhost:9770/v1/events/stream
   coin whose script this wallet can spend; the indexer is never trusted for
   ownership. Live deep scan is **off by default**; demo mode always scans so
   the simulator has something to show. A HOPPER mint reveal carries its
-  canonical v6 body in the taproot witness, so the wallet recognizes a mint
+  canonical v7 body in the taproot witness, so the wallet recognizes a mint
   paid to its ordinals address **without an indexer or ord**. A frog that
   was transferred in later has no new inscription body on its output; that
   discovery still needs a HOPPER indexer (or ord ranges plus one).
@@ -396,7 +400,7 @@ curl -sN localhost:9770/v1/events/stream
 ```sh
 cd web
 node tests/core.test.mjs        # 64 checks against Rust vectors
-node tests/game.test.mjs        # mint → prepare → cross → settle → transfer (and no burn path)
+node tests/game.test.mjs        # mint → prepare → hop → settlement → transfer (and no burn path)
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
@@ -436,7 +440,7 @@ node tests/e2e.mjs http://127.0.0.1:8130
 It creates a wallet, checks every screen fits a phone width, verifies the
 PWA manifest/service worker, opens both RECEIVE tabs (and checks the QR
 gets real ink), mints through the worker, approves TRAVEL TO ROAD at its
-warning, crosses, mines six blocks, reloads without and with "keep this
+warning, hops, mines six blocks reloads without and with "keep this
 device unlocked", and fails on console errors or horizontal overflow.
 Screenshots land in `.shots/` (ignored).
 
@@ -468,7 +472,7 @@ mainnet value on it without review.
   can misname sats. Run your own ord (or pin a trusted instance) when
   that trust matters.
 - Demo mode is a simulator: no PoW, no mempool policy, no script execution.
-  It validates the v6 state machine and byte encodings, not Bitcoin.
+  It validates the v7 state machine and byte encodings, not Bitcoin.
 - Live mode refreshes on a block-driven schedule: an Electrum source pushes
   new headers, an Esplora source polls the tip every ten minutes while idle.
   There is no second index or full-gap sweep on a warm pass. Deep discovery

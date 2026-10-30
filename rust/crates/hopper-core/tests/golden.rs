@@ -254,13 +254,20 @@ fn golden_envelopes() {
     let g = golden();
     let e = &g["envelopes"];
 
+    // `golden.json` pins the v6 push; only the version byte moved, so
+    // rewrite byte 3 and compare the rest of the wire encoding.
+    let v7 = |hex: &str| {
+        let mut raw = hex_bytes(hex);
+        raw[3] = hopper_core::VERSION;
+        to_hex(&raw)
+    };
     let mint = encode_mint(0x9058_D0FA, "Hopkinson");
     let mint_env = hopper_core::envelope(Action::Mint, &mint);
-    assert_eq!(to_hex(&mint_env), e["mint"].as_str().unwrap());
+    assert_eq!(to_hex(&mint_env), v7(e["mint"].as_str().unwrap()));
 
     let mint_nn = encode_mint(42, "");
     let mint_nn_env = hopper_core::envelope(Action::Mint, &mint_nn);
-    assert_eq!(to_hex(&mint_nn_env), e["mint_noname"].as_str().unwrap());
+    assert_eq!(to_hex(&mint_nn_env), v7(e["mint_noname"].as_str().unwrap()));
 
     // Round-trip: decoding must reproduce the exact message.
     let msg = decode(&mint_env).expect("decode mint");
@@ -321,49 +328,63 @@ fn golden_png_digests() {
 }
 
 // ---------------------------------------------------------------------------
-// The v6 mint body is consensus-visible: the indexer recomputes it from
-// (seed, sat) and compares the inscription's digest. Pin the bytes so a
-// refactor cannot silently change what every frog mints.
+// The v7 mint body is consensus-visible: the indexer recomputes it from
+// (seed, sat, name, gen_hint) and compares the inscription's digest. Pin
+// the bytes so a refactor cannot silently change what every Hopper mints.
 //
 // (The pinned values are the body SHA-256; the full document is large and
-// the fold itself is pinned by `v6_fold_check.mjs`.)
+// the fold itself is pinned by `tests/v7_fold_check.mjs`.)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn golden_v6_mint_body() {
+fn golden_v7_mint_body() {
     use sha2::{Digest, Sha256};
-    let cases: &[(u32, u64, &str, &str)] = &[
+    let cases: &[(u32, u64, &str, u32, &str)] = &[
         (
             0x9058_D0FA,
             1_000_000_000_000,
-            "06687bb9388465abf16bf2c71c2149ee752bdfba137e1abadbab0af2b5ab8f08",
-            "90c2cd1c7cad8a1ee0ab5fd1b997c9a0731413a0f1a28e11e1d4ac5fde6de6b8",
+            "Hopkinson",
+            1,
+            "f488d4bcee8c73c7f3aea3b0a3a165758e424b68d3abd618c1ad0ade20525750",
         ),
         (
             0x0000_5EED,
             2_099_999_999_999,
-            "5167a669342926b3335f4488610cb678a8e3e6ae4e2d20c560c1e6ab396ff277",
-            "0ad5fa4ef00442b59be9719e8d26033f3d0e8929e71ce4bbc923f3f388506a04",
+            "",
+            1,
+            "4344adc47abed2f2b7e1aea61f7b7724c41f1bf7d3dff09224ca3cd032f69306",
+        ),
+        (
+            1,
+            2,
+            "Ribbit",
+            2,
+            "5d3269a08903f3e3a70ed2a8258e5da9ebd5e4d36d7c2440ecddbfadfe93522a",
         ),
     ];
-    for (seed, sat, now, v1) in cases {
-        let body = hopper_core::live_v6_html(*seed, *sat);
+    for (seed, sat, name, gen_hint, want) in cases {
+        let body = hopper_core::live_v7_html(*seed, *sat, name, *gen_hint);
         assert_eq!(
             &to_hex(&Sha256::digest(body.as_bytes())),
-            now,
-            "seed {seed:#x}: v6 mint body drifted"
+            want,
+            "seed {seed:#x}: v7 mint body drifted"
         );
-        // The pre-fix body is a fact about blocks already mined: its
-        // digest can never change, and the wire still accepts it.
-        let old = hopper_core::live_v6_html_v1(*seed, *sat);
         assert_eq!(
-            &to_hex(&Sha256::digest(old.as_bytes())),
-            v1,
-            "seed {seed:#x}: the pre-fix mint body drifted — frogs already \
-             inscribed with it would stop being validatable"
+            hopper_core::mint_body_digest(*seed, *sat, name, *gen_hint),
+            <[u8; 32]>::try_from(Sha256::digest(body.as_bytes()).as_slice()).unwrap()
         );
-        let [a, b] = hopper_core::mint_body_digests(*seed, *sat);
-        assert_eq!(&to_hex(&a), now);
-        assert_eq!(&to_hex(&b), v1);
+        assert_eq!(
+            hopper_core::parse_v7_gen_hint(body.as_bytes()),
+            Some(*gen_hint)
+        );
     }
+}
+
+#[test]
+fn v7_body_is_the_only_content_type_and_rejects_v6() {
+    let (ct, body) = hopper_core::mint_body(1, 2, "Frog", 1);
+    assert_eq!(ct, "text/html;charset=utf-8");
+    assert!(body.starts_with(b"<!doctype html>"));
+    assert!(String::from_utf8_lossy(&body).contains("var V7={sat:2,genHint:1,name:\"Frog\""));
+    assert!(!String::from_utf8_lossy(&body).contains("STATE FROM THE CHAIN"));
 }

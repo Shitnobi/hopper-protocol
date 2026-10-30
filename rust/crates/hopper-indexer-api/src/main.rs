@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 0 = keep every segment (events are re-derivable; this bounds disk).
     let event_retain = env_usize("HOPPER_EVENT_RETAIN_SEGMENTS", 0);
 
-    // There is one wire version (`0x06`): nothing to schedule and no
+    // There is one wire version (`0x07`): nothing to schedule and no
     // origin to freeze. `HOPPER_ACTIVATION_HEIGHT` is the hop-schedule
     // genesis, which lives in the compiled parameters.
     let _ = activation_height;
@@ -356,7 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|b| format!("{b:02x}"))
             .collect::<String>(),
         hopper_core::VERSION,
-        hopper_core::params::PROTOCOL.hops.genesis,
+        hopper_core::params::PROTOCOL.generations.genesis,
     );
     let state = Arc::new(api);
     if restored {

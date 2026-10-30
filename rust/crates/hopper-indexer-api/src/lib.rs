@@ -591,6 +591,7 @@ impl ApiState {
                 .map(|(_, r)| r)
                 .expect("sat from the same scan");
             (
+                std::cmp::Reverse(record.gen),
                 std::cmp::Reverse(record.dist),
                 std::cmp::Reverse(record.crossings_entered),
                 *sat,
@@ -618,7 +619,7 @@ impl ApiState {
                 return Some(Arc::clone(order));
             }
         }
-        let mut rows: Vec<(u64, u32, u32)> = Vec::new();
+        let mut rows: Vec<(u64, u32, u32, u32)> = Vec::new();
         let mut after = None;
         loop {
             let page = store.frogs_after(after, 4096).ok()?;
@@ -626,15 +627,20 @@ impl ApiState {
                 break;
             }
             for (sat, record) in &page {
-                rows.push((*sat, record.dist, record.crossings_entered));
+                rows.push((*sat, record.gen, record.dist, record.crossings_entered));
             }
             after = page.last().map(|(sat, _)| *sat);
             if page.len() < 4096 {
                 break;
             }
         }
-        rows.sort_by_key(|(sat, dist, entered)| {
-            (std::cmp::Reverse(*dist), std::cmp::Reverse(*entered), *sat)
+        rows.sort_by_key(|(sat, gen, dist, entered)| {
+            (
+                std::cmp::Reverse(*gen),
+                std::cmp::Reverse(*dist),
+                std::cmp::Reverse(*entered),
+                *sat,
+            )
         });
         let order = Arc::new(rows.into_iter().map(|(sat, ..)| sat).collect());
         *cache = Some((key, Arc::clone(&order)));
@@ -1054,6 +1060,8 @@ pub fn app_with_cors(state: SharedState, cors: CorsPolicy) -> axum::Router {
     axum::Router::new()
         .route("/v1/status", get(routes::status))
         .route("/v1/params", get(routes::params))
+        .route("/v1/generation/{height}", get(routes::generation))
+        .route("/v1/wrap/{height}", get(routes::wrap_at))
         .route("/v1/froggers", get(routes::list_froggers))
         .route("/v1/frogger/{sat}", get(routes::get_frogger))
         .route("/v1/road", get(routes::road))

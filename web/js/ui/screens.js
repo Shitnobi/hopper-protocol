@@ -9,8 +9,11 @@
 import {
   btc, esc, frogImg, pips, sats, seedText, targetOf,
 } from './dom.js';
-import { requiredAt, deathBps, nextIncrement, paramsHashHex } from '../core/params.js';
+import {
+  completionBps, generationAt, hopDeathBps, nextIncrement, paramsHashHex, requiredAt,
+} from '../core/params.js';
 import { canBumpSend } from '../wallet/rbf.js';
+import { stateScripts } from '../wallet/actions.js';
 import {
   FEE_SOURCE, feeRateLabel, feeRecommendations, usableFeeRate,
 } from '../wallet/fees.js';
@@ -68,7 +71,7 @@ function chip(text, tone = 'dim') {
 
 const LIFE = {
   idle: ['IDLE', 'dim'],
-  crossing: ['CROSSING', 'accent'],
+  crossing: ['HOPPING', 'accent'],
   home: ['HOME 👑', 'home'],
   dead: ['DEAD 💀', 'dead'],
   burned: ['LOST TO FEES', 'dead'],
@@ -239,7 +242,9 @@ function pondItem(app, f, { mode } = {}) {
   const state = SPRITE_STATE(f);
   const crossing = f.state === 'crossing';
   const pending = !!f.commit_pending;
-  const name = esc(f.name || 'UNNAMED');
+  const gen = Number(f.gen) || generationAt(f.mint_height ?? (app.w?.tipHeight || 0));
+  const displayName = state === 'dead' ? `RIP ${f.name || 'UNNAMED'}` : (f.name || 'UNNAMED');
+  const name = esc(displayName);
   let action = '';
   if (pending) {
     action = '<span class="tiny muted">✏ INSCRIBING</span>';
@@ -250,7 +255,7 @@ function pondItem(app, f, { mode } = {}) {
     // the 25,000-sat tapscript state output before a crossing can be signed.
     const utxo = app.w._frogUtxo?.(f);
     action = utxo?.kind === 'state'
-      ? logBtn('🚦 CROSS', 'sheet-cross', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` })
+      ? logBtn('🚦 HOP', 'sheet-cross', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` })
       : logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
   } else if (mode === 'wallet' || mode === 'pond') {
     const utxo = app.w._frogUtxo?.(f);
@@ -262,9 +267,9 @@ function pondItem(app, f, { mode } = {}) {
   const sub = pending
     ? '<span class="tiny muted">✏ INSCRIBING</span>'
     : mode === 'pond'
-      ? `<span style="color:${rarityColor(rarityOf(f))}">${esc(rarityOf(f))}</span>`
+      ? `<span style="color:${rarityColor(rarityOf(f))}">${esc(rarityOf(f))}</span> · G${gen}`
       : mode === 'road'
-        ? '<span class="tiny muted">inscribed on Bitcoin</span>'
+        ? `G${gen} · <span class="tiny muted">inscribed on Bitcoin</span>`
         : '';
   return `
     <div class="pond-item">
@@ -293,7 +298,7 @@ export function road(app) {
     ${idle.length ? `
       <div class="water-box">
         <canvas class="pond-water" data-pond-water></canvas>
-        <div class="box-title">Start a crossing</div>
+        <div class="box-title">Choose a direction</div>
         <div class="pond-grid">
           ${idle.map((f) => pondItem(app, f, { mode: 'road' })).join('')}
         </div>
@@ -331,7 +336,7 @@ function roadEntry(app, c) {
       <div class="pond-tap road-no-tap">
         <canvas class="pond-art" data-roadfrog="${seed >>> 0}" width="320" height="275"></canvas>
         <span class="pf-name">${esc(name)}</span>
-        <span class="pf-sub">${pips(c.dist, target)}</span>
+        <span class="pf-sub">G${Number(c.gen) || generationAt(f?.mint_height ?? tip)} · ${pips(c.dist, target)}</span>
         <span class="pf-sub" style="display:flex;justify-content:center;gap:6px;align-items:center;margin-top:2px">
           ${chip(label, tone)}
           <span class="tiny muted">${blocks ? `⬛ ${blocks}` : 'settling…'}</span>
@@ -912,7 +917,7 @@ function sameTxRank(r) {
 }
 
 const KIND_LABEL = {
-  mint: 'MINT', prepare: 'TRAVEL TO ROAD', cross: 'CROSS', settle: 'SETTLE',
+  mint: 'MINT', prepare: 'TRAVEL TO ROAD', cross: 'HOP', settle: 'SETTLE',
   transfer: 'TRANSFER', send: 'SEND', receive: 'RECEIVE', faucet: 'RECEIVE',
   change: 'CHANGE', chain: 'CHAIN',
   // Only an indexer event from a transaction built elsewhere. The wallet
@@ -1031,7 +1036,6 @@ export function mint(app) {
   const seed = app.mintSeed >>> 0;
   const tip = w.tipHeight || 0;
   const target = requiredAt(tip + 1);
-  const bps = deathBps(target);
   const next = nextIncrement(tip);
   const coin = w._funding?.().find((u) => u.ranges && u.ranges.length);
   const traits = deriveTraits(seed);
@@ -1054,7 +1058,7 @@ export function mint(app) {
             ${logBtn('🎲 Reroll', 'random-seed', { edge: 'dim', cls: '' })}
             ${logBtn('MINT!', 'preview-mint', { edge: 'accent', cls: '', attrs: `${app.busy || !coin ? 'disabled' : ''}` })}
           </div>
-          <div class="hint">Rarity is cosmetic — it never affects crossing odds. Fair by design.</div>
+          <div class="hint">Rarity is cosmetic — it never affects the road. Every hop is one of three directions, and the next block decides one for everyone.</div>
         </div>
       </div>
 
@@ -1072,7 +1076,7 @@ export function mint(app) {
         <div class="stat-grid">
           <dt>Next target</dt><dd>${target} hops at H ${sats(tip)}</dd>
           <dt>Next rise</dt><dd>${next ? `H ${sats(next[0])} → ${next[1]} hops` : 'capped at 100'}</dd>
-          <dt>Death at target</dt><dd>${(bps / 100).toFixed(2)}%</dd>
+          <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% — one of three directions</dd>
           <dt>Finality</dt><dd>6 blocks</dd>
           <dt>Params</dt><dd class="tiny wrap">${esc(paramsHashHex())}</dd>
         </div>
@@ -1090,7 +1094,7 @@ export function leaders(app) {
   const rows = app.leaders || [];
   return `
     ${heading('🏆 Leaderboard')}
-    <div class="sub">Every Hopper the Hopper indexer has seen, ranked by distance.</div>
+    <div class="sub">Every Hopper the indexer has seen, ranked by generation, then distance.</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => {
     const mine = app.w.frogs.some((f) => Number(f.sat) === Number(r.sat));
@@ -1098,7 +1102,7 @@ export function leaders(app) {
           <div class="leader-row" data-action="open-frog" data-sat="${r.sat}">
             <span class="rank">#${r.rank}</span>
             <span class="name">${esc(shortName(r.name))}${mine ? ' <span class="chip-ui accent">YOU</span>' : ''}</span>
-            <span class="hops">${r.dist} hops</span>
+            <span class="hops">G${Number(r.gen) || 1} · ${r.dist} hops</span>
             <span class="state">${esc(String(r.state || '').toUpperCase())}</span>
           </div>`;
   }).join('') : `
@@ -1148,18 +1152,19 @@ export function frogDetail(app, sat) {
         </div>
 
         <div class="stat-grid mt14">
+          <dt>Generation</dt><dd>G${Number(f.gen) || generationAt(f.mint_height ?? (w.tipHeight || 0))}</dd>
           <dt>Crossings completed</dt><dd>${Number(f.dist) || 0}</dd>
           <dt>Road entries</dt><dd>${Number(f.crossings_entered) || 0}</dd>
           <dt>Seed</dt><dd>${(Number(f.seed) >>> 0).toString(16).toUpperCase().padStart(8, '0')}</dd>
           <dt>Hopper sat</dt><dd>${sats(f.sat)}</dd>
           <dt>${targetLabel}</dt><dd>${target} hops</dd>
-          <dt>${state === 'idle' ? 'Next hop risk' : 'Target risk'}</dt><dd>${(deathBps(target) / 100).toFixed(2)}% roadkill</dd>
+          <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% roadkill (1 of 3 directions)</dd>
           <dt>Inscription</dt><dd class="tiny wrap">${esc(body || (f.commit_pending ? 'inscribing…' : '—'))}</dd>
         </div>
 
         <div class="mt14">
           ${state === 'idle' && !f.commit_pending ? (canCross
-    ? logBtn('🚦 CROSS THE ROAD', 'sheet-cross', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
+    ? logBtn('🚦 HOP THE ROAD', 'sheet-cross', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
     : canPrepare
       ? logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', attrs: `data-sat="${f.sat}"` })
       : '') : ''}
@@ -1197,9 +1202,11 @@ export function frogDetail(app, sat) {
     <div class="mt18">
       <div style="font-weight:700">VERIFICATION</div>
       <div class="stat-grid mt6">
-        <dt>Target at T</dt><dd>${f.in_flight ? f.in_flight.target_hops : (f.last_target_hops != null ? `${f.last_target_hops} (last)` : '— no crossing')}</dd>
+        <dt>Target at T</dt><dd>${f.in_flight ? f.in_flight.target_hops : (f.last_target_hops != null ? `${f.last_target_hops} (last)` : '— no hop')}</dd>
         <dt>Required at next</dt><dd>${requiredAt((w.tipHeight || 0) + 1)} hops</dd>
-        <dt>Death table now</dt><dd>${(deathBps(requiredAt((w.tipHeight || 0) + 1)) / 100).toFixed(2)}%</dd>
+        <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% — the block wraps one direction</dd>
+        <dt>Chosen direction</dt><dd>${f.in_flight ? ['LEFT', 'STRAIGHT', 'RIGHT'][f.in_flight.dir] || '—' : '—'}</dd>
+        <dt>Block wrap</dt><dd>${f.outcome_wrap == null ? 'not sealed' : ['LEFT', 'STRAIGHT', 'RIGHT'][f.outcome_wrap]}</dd>
         <dt>Outcome hash</dt><dd class="tiny wrap">${esc(f.outcome_block_hash || 'not sealed')}</dd>
         <dt>Provisional</dt><dd>${f.provisional_dead == null ? '—' : f.provisional_dead ? '<span style="color:#d98a80">DEAD PENDING FINALITY</span>' : '<span style="color:var(--tx-in)">ALIVE PENDING FINALITY</span>'}</dd>
       </div>
@@ -1406,6 +1413,12 @@ export function settings(app) {
       <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
     </div>
 
+    <div class="window" data-lily="home">
+      <div style="font-weight:700">EMERGENCY DESCRIPTORS</div>
+      <div class="sub">A layout backup for every staged Hopper: raw leaves, control blocks, output key and owner path. It never contains the seed.</div>
+      <div class="actions mt10">${logBtn('EXPORT EMERGENCY DESCRIPTORS', 'export-emergency', { edge: 'dim', cls: 'small' })}</div>
+    </div>
+
     <div class="window" data-lily="accent">
       <div style="font-weight:700">BACKUP</div>
       <div class="sub">The 12 words ARE the wallet. They never leave this device.</div>
@@ -1460,7 +1473,7 @@ export function settings(app) {
       </div>
     </div>
 
-    <div class="footer">HOPPER v6 · WIRE 0x06 · ${esc(paramsHashHex().slice(0, 16))}…</div>`;
+    <div class="footer">HOPPER v7 · WIRE 0x07 · ${esc(paramsHashHex().slice(0, 16))}…</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1491,8 +1504,8 @@ export const RULES = [
     title: 'THE ROAD',
     art: 'hop',
     lines: [
-      'Crossing moves the Hopper: its coin is spent into a new output whose inscription records the next state. That is the whole game — one crossing, one state.',
-      'You cannot take a Hopper back. A crossing is a spend: once it confirms, the old state is history.',
+      'A hop moves the Hopper: its coin is spent into a new output whose inscription records the direction. That is the whole game — one hop, one state.',
+      'You cannot take a Hopper back. A hop is a spend: once it confirms, the old state is history.',
     ],
   },
   {
@@ -1500,8 +1513,8 @@ export const RULES = [
     title: 'HOME',
     art: 'home',
     lines: [
-      'A Hopper is home once it has survived the number of crossings the road asks, and no car can kill it after that.',
-      'Distance is how many crossings it has survived; the leaderboard ranks Hoppers by it.',
+      'A Hopper is home once it has survived the number of hops the road asks, and no block can kill it after that.',
+      'Distance is how many hops it has survived; the leaderboard ranks by generation, then distance.',
     ],
   },
   {
@@ -1509,17 +1522,17 @@ export const RULES = [
     title: 'THE TOLL',
     art: 'toll',
     lines: [
-      'The road raises its toll with the block height: one more every 64 blocks since the Hopper genesis block, then every 144 until 50, then every 2,016 until 100, where it stops.',
-      'Mint later and the road asks more of you.',
+      'The road runs in generations of 28,080 blocks: 5 hops at the start of each, one more every 144 blocks up to 100, then 14,400 blocks at 100, and a reset to 5.',
+      'The generation a Hopper was minted in is its label forever: G1, G2, … Mint later and the road asks more of you.',
     ],
   },
   {
     kicker: '6 / 8',
-    title: 'CARS AND DEATH',
+    title: 'THE BLOCK DECIDES',
     art: 'squish',
     lines: [
-      'Whether a Hopper lives is not a choice and not a skill: the block that confirms the crossing already decides it. A dead Hopper is gone for good.',
-      'The verdict settles a few blocks later, once the chain has buried it; until then the Hopper shows as crossing.',
+      'You choose left, straight or right. The next block picks one direction for the whole block: a Hopper that picked that direction dies, every other Hopper in the block survives.',
+      'The verdict is fixed at the next block and settles six blocks later; until then the Hopper shows as crossing.',
     ],
   },
   {
@@ -1527,9 +1540,9 @@ export const RULES = [
     title: 'THE ODDS',
     art: 'grave',
     lines: [
-      'About one death in four at the start, one in fifteen at 25, one in thirty-four at 100.',
-      'Fewer die per crossing later — but each Hopper must make more, so a path from scratch falls from about one in four to about one in twenty.',
-      'Only ever cross a Hopper you can afford to lose.',
+      'Every hop is one of three directions against a block that picks one, so each hop is a one-in-three chance of dying — no matter the generation.',
+      'Longer roads are harder, not safer: surviving 5 hops is about 13%, 10 hops about 1.7%.',
+      'Only ever hop a Hopper you can afford to lose.',
     ],
   },
   {
@@ -1827,19 +1840,118 @@ export function transferSheet(app, f) {
 }
 
 export function crossSheet(app, f) {
-  const target = requiredAt((app.w.tipHeight || 0) + 1);
+  const tip = app.w.tipHeight || 0;
+  const target = requiredAt(tip + 1);
+  const gen = Number(f.gen) || generationAt(f.mint_height ?? tip);
   return `
-    <div class="row"><h2>CROSS ${esc(f.name || '')}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">One inscription. One state output. The anchor sat at offset 0.</div>
+    <div class="row"><h2>HOP ${esc(f.name || '')}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">Choose a direction. The next block picks one direction for <b>every</b> Hopper; a Hopper that picked it dies.</div>
     <div class="stat-grid mt10">
+      <dt>Generation</dt><dd>G${gen}</dd>
       <dt>Current dist</dt><dd>${f.dist}</dd>
       <dt>Target at T</dt><dd>${target} hops</dd>
-      <dt>Death at target</dt><dd>${(deathBps(target) / 100).toFixed(2)}%</dd>
+      <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% roadkill (one of three)</dd>
       <dt>Settlement</dt><dd>T+6 blocks</dd>
     </div>
     <label class="field"><span>New owner P2TR address (optional)</span><input type="text" data-input="cross-owner" placeholder="leave empty to keep in this wallet"></label>
-    ${feePicker(app, { input: 'cross-fee', label: 'Crossing fee rate' })}
-    <div class="mt14">${logBtn('CROSS', 'do-cross', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
+    ${feePicker(app, { input: 'cross-fee', label: 'Hop fee rate' })}
+    <div class="mt14" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+      ${['⬅ LEFT', '⬆ STRAIGHT', '➡ RIGHT'].map((label, dir) => logBtn(label, 'preview-hop', {
+    edge: dir === 1 ? 'accent' : 'dim', cls: 'block',
+    attrs: `data-sat="${f.sat}" data-dir="${dir}"`,
+  })).join('')}
+    </div>
+    <div class="hint mt10">Choosing a direction builds the exact signed transaction: it selects the leaf spent and the byte the body inscribes. You will review the destination, change and fee before anything is broadcast.</div>`;
+}
+
+/** The signed HOP, ready to approve: direction, destination, change, fee
+ *  (SPEC §3.6). Nothing here can change after this preview. */
+export function hopReviewSheet(app, p) {
+  const direction = ['LEFT', 'STRAIGHT', 'RIGHT'][p.dir];
+  const tip = app.w.tipHeight || 0;
+  const target = requiredAt(tip + 1);
+  const gen = p.gen || generationAt(tip);
+  return `
+    <div class="row"><h2>HOP ${direction}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">This is the preview. The direction and the leaf are fixed: approving broadcasts exactly this signed transaction.</div>
+    <div class="stat-grid mt10">
+      <dt>Direction</dt><dd>${direction} (dir ${p.dir})</dd>
+      <dt>Leaf spent</dt><dd class="tiny wrap">${esc(p.leafHex)}</dd>
+      <dt>Generation</dt><dd>G${gen} · dist ${p.dist}</dd>
+      <dt>Target at T</dt><dd>${target} hops</dd>
+      <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% roadkill (one of three)</dd>
+      <dt>Destination address</dt><dd class="tiny wrap">${esc(p.to)}</dd>
+      <dt>Destination amount</dt><dd>${sats(p.destinationAmount)} sats</dd>
+      <dt>Change address</dt><dd class="tiny wrap">${esc(p.changeAddress || 'none — no change output')}</dd>
+      <dt>Change amount</dt><dd>${sats(p.changeAddress ? p.changeAmount : 0n)} sats</dd>
+      <dt>Fee rate</dt><dd>${esc(feeRateLabel(p.feeRate))}</dd>
+      <dt>Actual fee</dt><dd>${sats(p.fee)} sats</dd>
+      <dt>Transaction size</dt><dd>${sats(p.vsize || 0)} vB</dd>
+      <dt>Settlement</dt><dd>T+6 blocks</dd>
+    </div>
+    <div class="warnbox mt10"><b>APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION.</b><br>
+      The wallet rechecks the Hopper output and every funding input first, then broadcasts these
+      bytes. The direction is already in the leaf and the body; no later screen can change it.
+      Cancel leaves the wallet untouched and puts nothing in the mempool.</div>
+    <div class="hint">The next block picks one direction for every Hopper. If it picks ${direction}, this Hopper dies; any other direction and it survives.</div>
+    <div class="actions mt14">
+      ${logBtn('CANCEL', 'abort-preview', { edge: 'dim', cls: 'small' })}
+      ${logBtn(`CONFIRM HOP ${direction}`, 'do-approve-tx', { edge: 'accent' })}
+    </div>`;
+}
+
+export function emergencyWarning() {
+  return `
+    <div class="row"><h2>Emergency descriptors</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">This document describes how each staged Hopper's taproot output is built, so another taproot-capable tool can spend it if this wallet is gone.</div>
+    <div class="stat-grid mt10">
+      <dt>Contains</dt><dd>leaves, control blocks, output keys, owner path, fingerprint</dd>
+      <dt>Never contains</dt><dd>seed words, xprv, private keys</dd>
+      <dt>Still public</dt><dd>yes — it describes your holdings</dd>
+    </div>
+    <div class="hint">The 12 words remain the only key backup. Hand this out only to a tool you trust, and never share it in public.</div>
+    <div class="mt14">${logBtn('SHOW THE EXPORT', 'show-emergency', { edge: 'accent', cls: 'block' })}</div>`;
+}
+
+export function emergencySheet(app, doc) {
+  const json = JSON.stringify(doc, null, 2);
+  // A QR version-40/M code holds 2,331 bytes. The full document is far
+  // larger once a Hopper has three 161-byte leaves; the QR therefore
+  // carries the compact document when it fits, or the one-Hopper layout
+  // summary (descriptor + outpoint) when it does not. The JSON is always
+  // authoritative.
+  const compact = JSON.stringify(doc);
+  let qrPayload = compact.length <= 2300 ? compact : null;
+  let qrNote = '';
+  if (!qrPayload && (doc.frogs || []).length === 1) {
+    const f = doc.frogs[0];
+    qrPayload = JSON.stringify({
+      type: doc.type, version: doc.version, network: doc.network,
+      fingerprint: doc.fingerprint, owner_path: doc.owner_path,
+      generated_at: doc.generated_at, tip_height: doc.tip_height,
+      frog: {
+        sat: f.sat, mint_id: f.mint_id, state_outpoint: f.state_outpoint,
+        state_value: f.state_value, descriptor: f.descriptor,
+      },
+    });
+    qrNote = 'The QR carries the layout summary; the JSON above is authoritative.';
+  }
+  const qrFit = qrPayload && qrPayload.length <= 2300;
+  const qr = qrFit
+    ? `<canvas class="qr-canvas" data-qr="${esc(qrPayload)}" width="260" height="260" role="img" aria-label="QR code for the emergency descriptors"></canvas>`
+    : '<div class="hint">The export is too large for one QR. Copy the JSON instead.</div>';
+  const staged = (doc.frogs || []).filter((f) => f.state_outpoint).length;
+  return `
+    <div class="row"><h2>Emergency descriptors</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">${staged} staged Hopper${staged === 1 ? '' : 's'} · tip ${sats(doc.tip_height)} · generated ${esc(doc.generated_at)}</div>
+    <div class="hint">Snapshot only: every HOP, PREPARE or TRANSFER changes a state outpoint. A tool that sees a spent outpoint must discard the entry.</div>
+    <div class="mt10">${qr}</div>
+    ${qrFit && qrNote ? `<div class="hint">${esc(qrNote)}</div>` : ''}
+    <pre class="emergency-json" data-emergency-json style="max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px">${esc(json)}</pre>
+    <div class="actions mt10">
+      <button class="copy" data-action="copy-emergency">COPY JSON</button>
+      ${logBtn('CLOSE', 'close-overlay', { edge: 'dim', cls: 'small' })}
+    </div>`;
 }
 
 export function travelWarning(app, f) {
@@ -1855,7 +1967,7 @@ export function travelWarning(app, f) {
         ? `This wallet cannot find a spendable output for ${name} right now. Nothing will be signed or broadcast.`
         : staged
           ? `${name} is already in the HOPPER tapscript staging address used to play the game. No new transaction will be broadcast.`
-          : `Approving moves ${name} into the HOPPER tapscript staging address used to play the game. It is not a crossing: no road result starts yet.`}
+          : `Approving moves ${name} into the HOPPER tapscript staging address used to play the game. It is not a hop: no road result starts yet.`}
     </div>
     <div class="stat-grid mt10">
       <dt>Hopper</dt><dd>${name}</dd>
@@ -1864,8 +1976,8 @@ export function travelWarning(app, f) {
       <dt>Broadcast</dt><dd>${unavailable ? 'unavailable' : staged ? 'none — already staged' : 'on approval'}</dd>
     </div>
     ${unavailable ? '' : `<div class="warnbox mt10"><b>NORMAL SPENDS ARE STILL POSSIBLE.</b><br>
-      You can SEND or TRANSFER the Hopper normally from this tapscript address without crossing.
-      Traveling to The Road only makes it ready for a future CROSS. The 25,000-sat card stays
+      You can SEND or TRANSFER the Hopper normally from this tapscript address without hopping.
+      Traveling to The Road only makes it ready for a future HOP. The 25,000-sat card stays
       yours; only the Bitcoin miner fee leaves the wallet.
     </div>`}
     <div class="hint">${unavailable ? 'Close this window and refresh the wallet after its scan finishes.' : 'The approval button is the last step. Nothing is signed or broadcast before it.'}</div>

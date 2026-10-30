@@ -235,20 +235,35 @@ fn process_tx<S: ConsensusState + ?Sized>(state: &mut S, tx: &Tx, sink: &mut Blo
         // The body is the authority, wherever the inscription sits: a
         // misplaced CROSS must be rejected as such by `validate_cross`,
         // not reported as malformed.
+        let mut bad_dir = false;
         let decoded = tx
             .inputs
             .iter()
             .filter_map(|input| input.inscription.as_ref())
             .filter_map(|ins| ins.body.as_deref())
-            .find_map(|body| hopper_core::decode_state_body(body).ok().map(|b| b.sat));
+            .find_map(|body| match hopper_core::decode_state_body(body) {
+                Ok(b) => Some((b.sat, b.dir)),
+                Err(hopper_core::StateBodyError::BadDirection) => {
+                    bad_dir = true;
+                    None
+                }
+                Err(_) => None,
+            });
         match decoded {
-            None => sink.reject(tx.txid, RejectionReason::CrossBodyMalformed),
-            Some(sat) => match state.frog(sat) {
+            None => sink.reject(
+                tx.txid,
+                if bad_dir {
+                    RejectionReason::CrossBadDirection
+                } else {
+                    RejectionReason::CrossBodyMalformed
+                },
+            ),
+            Some((sat, dir)) => match state.frog(sat) {
                 None => sink.reject_for(tx.txid, sat, RejectionReason::CrossUnknownFrog),
                 Some(frog) => {
-                    // v6: the frog is input 0; funding starts at input 1.
+                    // v7: the frog is input 0; funding starts at input 1.
                     let funding = crate::rules::funding_carries_frog(state, tx, 1);
-                    candidate = Some((frog, funding));
+                    candidate = Some((frog, funding, dir));
                 }
             },
         }
@@ -257,13 +272,13 @@ fn process_tx<S: ConsensusState + ?Sized>(state: &mut S, tx: &Tx, sink: &mut Blo
     state.journal_tx_coins(tx);
     let flow = state.apply_tx(tx);
     let mut begun = None;
-    if let Some((frog, funding)) = candidate {
+    if let Some((frog, funding, dir)) = candidate {
         match crate::rules::validate_cross(tx, &flow, &frog, &params, funding, sink.height) {
-            Ok(sat) => begun = Some((sat, frog.sat)),
+            Ok(sat) => begun = Some((sat, frog.sat, dir)),
             Err(reason) => sink.reject_for(tx.txid, frog.sat, reason),
         }
     }
-    let begun_sat = begun.as_ref().map(|(_, sat)| *sat);
+    let begun_sat = begun.as_ref().map(|(_, sat, _)| *sat);
     for mv in &flow.moves {
         let sat = mv.sat;
         note_move(state, sat, mv, tx.txid, sink.height, sink);
@@ -278,9 +293,9 @@ fn process_tx<S: ConsensusState + ?Sized>(state: &mut S, tx: &Tx, sink: &mut Blo
             sink.event(Some(tx.txid), EventAction::Transfer { frogger_sat: sat });
         }
     }
-    if let Some((_, sat)) = begun {
+    if let Some((_, sat, dir)) = begun {
         if let Some(frog) = state.frog(sat) {
-            crate::rules::begin_crossing(state, tx, &frog, sink.height, &params);
+            crate::rules::begin_crossing(state, tx, &frog, sink.height, &params, dir);
         }
     }
 
@@ -383,7 +398,7 @@ fn process_mint<S: ConsensusState + ?Sized>(
     // (and when enforcement is off) legacy single-tx mints are
     // accepted. An inscription present on a legacy mint is still
     // recorded (inscription id surfaced, never relied upon).
-    let inscription_id = match validate_mint_inscription(state, tx, seed, sat, sink) {
+    let inscription_id = match validate_mint_inscription(state, tx, seed, sat, &name, sink) {
         Ok(id) => id,
         Err(()) => return,
     };
@@ -397,12 +412,14 @@ fn process_mint<S: ConsensusState + ?Sized>(
         .and_then(|(_, index)| index.parse().ok())
         .unwrap_or(0);
     // Reverse half: the coin at output 0 now lists this frog sat.
+    let gen = state.config().params.generations.generation(sink.height);
     state.register_frog(sat, anchor);
     state.journal_frog(sat);
     state.put_frog(FroggerRecord {
         sat,
         seed,
         name: name.clone(),
+        gen,
         state: FroggerState::Idle,
         dist: 0,
         crossings_entered: 0,
@@ -418,6 +435,7 @@ fn process_mint<S: ConsensusState + ?Sized>(
         deaths: 0,
         in_flight: None,
         outcome_block_hash: None,
+        outcome_wrap: None,
         provisional_dead: None,
         immortal_height: None,
         death_height: None,
@@ -431,6 +449,7 @@ fn process_mint<S: ConsensusState + ?Sized>(
             frogger_sat: sat,
             seed,
             name,
+            gen,
         },
     );
 }
@@ -444,10 +463,10 @@ fn process_mint<S: ConsensusState + ?Sized>(
 ///
 /// - exactly one inscription in the tx, on input 0
 ///   (`MintWithoutInscription` / `MultipleInscriptions`),
-/// - content-type `text/html;charset=utf-8` and a body digest equal to
-///   `live_v6_html(seed, sat)` (`InscriptionContentType` /
-///   `InscriptionArtMismatch`). The body embeds the anchor sat, which the
-///   caller has already resolved.
+/// - content-type `text/html;charset=utf-8` and a body equal to
+///   `live_v7_html(seed, sat, name, gen_hint)` (`InscriptionContentType`
+///   / `InscriptionArtMismatch`). The body embeds the anchor sat and the
+///   hint, which the caller resolves from the document itself.
 ///
 /// Below the activation height (or with enforcement off, the
 /// default) any inscription present is recorded leniently —
@@ -458,6 +477,7 @@ fn validate_mint_inscription<S: ConsensusState + ?Sized>(
     tx: &Tx,
     seed: u32,
     sat: u64,
+    name: &str,
     sink: &mut BlockSink,
 ) -> Result<Option<String>, ()> {
     let reveals: Vec<(usize, &InscriptionReveal)> = tx
@@ -495,19 +515,27 @@ fn validate_mint_inscription<S: ConsensusState + ?Sized>(
             sink.reject(tx.txid, RejectionReason::MintWithoutInscription);
             return Err(());
         }
-        let (content_type, accepted) = (
-            hopper_core::V6_CONTENT_TYPE,
-            hopper_core::mint_body_digests(seed, sat),
-        );
+        let content_type = hopper_core::V7_CONTENT_TYPE;
         if reveal.content_type != content_type {
             sink.reject(tx.txid, RejectionReason::InscriptionContentType);
             return Err(());
         }
-        // The current body and the pre-fix one are both legal forever:
-        // every frog minted before the fold's boot fix is inscribed with
-        // the old bytes, and a block already mined cannot be re-written.
-        // A wallet can only produce the first.
-        if !accepted.contains(&reveal.body_hash) {
+        // One body per (seed, sat, name, gen_hint). The hint is read from
+        // the document itself; it is a display value, never state. v6
+        // bodies are not accepted: v7 is a new deployment (SPEC §2.3).
+        let gen_hint = reveal
+            .body
+            .as_deref()
+            .and_then(hopper_core::parse_v7_gen_hint);
+        let Some(gen_hint) = gen_hint else {
+            sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
+            return Err(());
+        };
+        // The body hash is recomputed from the canonical render below, so
+        // the ingest-supplied digest is never trusted on its own.
+        if !reveal.body.as_deref().is_some_and(|body| {
+            body == hopper_core::live_v7_html(seed, sat, &name, gen_hint).as_bytes()
+        }) {
             sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
             return Err(());
         }

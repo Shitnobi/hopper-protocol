@@ -1,4 +1,4 @@
-// FRG OP_RETURN envelope: "FRG" | version 0x06 | action 0x01 | payload.
+// FRG OP_RETURN envelope: "FRG" | version 0x07 | action 0x01 | payload.
 // This is the MINT message only; a crossing is a state inscription.
 
 import { concatBytes, fromUtf8, readU32LE, u32le, utf8 } from './hex.js';

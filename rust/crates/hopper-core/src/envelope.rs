@@ -3,8 +3,8 @@
 //! Wire format: `"FRG" | version:u8 | action:u8 | payload` — all integers
 //! little-endian, one envelope per transaction, ≤ 80-byte OP_RETURN push.
 //!
-//! `0x06` is the only version this build speaks. A MINT is the envelope;
-//! a crossing is a *state inscription* ([`crate::v6`]), never an
+//! `0x07` is the only version this build speaks. A MINT is the envelope;
+//! a hop is a *state inscription* ([`crate::v7`]), never an
 //! envelope. Every earlier version (v2's game actions, v3's `0x04`
 //! tickets, v5's `0x05` live art) was removed: those bytes are
 //! [`DecodeError::UnknownVersion`] now, and an indexer treats them as
@@ -14,7 +14,7 @@
 pub const MAGIC: [u8; 3] = *b"FRG";
 
 /// The only wire version: inscription-native state (`docs/V6-SPEC.md`).
-pub const VERSION: u8 = 0x06;
+pub const VERSION: u8 = 0x07;
 
 /// Action bytes. `MINT` is the only one; the v2 game actions are gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl core::fmt::Display for DecodeError {
             DecodeError::UnknownVersion(v) => {
                 write!(
                     f,
-                    "version {v:#04x} is not supported (this build speaks 0x06)"
+                    "version {v:#04x} is not supported (this build speaks 0x07)"
                 )
             }
             DecodeError::UnknownAction(a) => write!(f, "unknown action {a:#04x}"),
@@ -164,10 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn only_version_0x06_is_spoken() {
+    fn only_version_0x07_is_spoken() {
         // Every earlier version byte — v2 (0x03), v3 (0x04), live art
         // (0x05) — is simply not this protocol.
-        for version in [0x02u8, 0x03, 0x04, 0x05, 0x07] {
+        for version in [0x02u8, 0x03, 0x04, 0x05, 0x06] {
             let push = [b'F', b'R', b'G', version, 0x01, 0, 0, 0, 0, 0];
             assert_eq!(decode(&push), Err(DecodeError::UnknownVersion(version)));
         }
@@ -191,11 +191,11 @@ mod tests {
             Err(DecodeError::UnknownVersion(0x09))
         );
         assert_eq!(
-            decode(b"FRG\x06\x07\xff"),
+            decode(b"FRG\x07\x07\xff"),
             Err(DecodeError::UnknownAction(0x07))
         );
         assert_eq!(
-            decode(b"FRG\x06\x01\x00"),
+            decode(b"FRG\x07\x01\x00"),
             Err(DecodeError::TruncatedPayload)
         );
     }

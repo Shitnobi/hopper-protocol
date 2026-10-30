@@ -9,7 +9,7 @@ globalThis.localStorage = {
   removeItem: (k) => { store.delete(k); },
 };
 
-const { WalletSession, DEFAULT_SETTINGS } = await import('../js/wallet/wallet.js');
+const { WalletSession, DEFAULT_SETTINGS, scriptToAddress } = await import('../js/wallet/wallet.js');
 
 let checks = 0;
 const ok = (cond, message) => { checks += 1; assert.ok(cond, message); };
@@ -143,6 +143,29 @@ function counter(w) {
   await w.broadcastPreview(p);
   eq('transfer approval broadcasts once', b.count, 1);
   eq('transfer approval records a transfer', w.actions[0].kind, 'transfer');
+}
+
+{
+  const w = await wallet('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong');
+  await w.mint({ seed: 0x9058d0fa, name: 'Hop', feeRate: 1 });
+  await w.prepare(w.frogs[0]);
+  const frog = w.frogBySat(w.frogs[0].sat);
+  const p = await w.previewCross(frog, { dir: 1, feeRate: 2 });
+  eq('hop preview kind', p.kind, 'hop');
+  eq('hop preview direction', p.dir, 1);
+  eq('hop preview destination amount', p.destinationAmount, 25000n);
+  eq('hop preview leaf is the straight leaf (161 bytes)', p.leafHex.length, 322);
+  eq('hop preview destination is the next state address', p.to, scriptToAddress(p.built.stateScript, 'regtest'));
+  ok(p.changeAddress && p.changeAmount > 0n, 'hop preview has change');
+  ok(p.fee > 0n && p.vsize > 0, 'hop preview has an actual fee and size');
+  eq('hop preview has no crossing action yet', w.actions.filter((a) => a.kind === 'cross').length, 0);
+  eq('hop preview is not on the demo chain', await w.backend.getTx(p.built.txid), null);
+  const b = counter(w);
+  const built = await w.broadcastPreview(p);
+  eq('hop approval broadcasts once', b.count, 1);
+  eq('hop approval returns the preview txid', built.txid, p.built.txid);
+  eq('hop approval records a crossing', w.actions.filter((a) => a.kind === 'cross')[0]?.dir, 1);
+  eq('hop approval put the preview bytes on the chain', !!(await w.backend.getTx(p.built.txid)), true);
 }
 
 console.log(`preview: ${checks} checks passed`);

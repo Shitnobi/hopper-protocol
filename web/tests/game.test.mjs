@@ -2,11 +2,16 @@
 // transfer, using the real wallet transaction builders.
 import assert from 'node:assert/strict';
 import { deriveWallet } from '../js/wallet/keys.js';
+import { crossLeafScript } from '../js/core/v7.js';
 import { DemoBackend } from '../js/wallet/backend.js';
 import { buildMint, buildPrepare, buildCross, buildTransfer, buildSend } from '../js/wallet/actions.js';
 import { stateScripts } from '../js/wallet/actions.js';
 import * as actions from '../js/wallet/actions.js';
-import { requiredAt, CARD_VALUE } from '../js/core/params.js';
+import { requiredAt, CARD_VALUE, generationAt } from '../js/core/params.js';
+import { wrapOfDisplayHex } from '../js/core/wrap.js';
+import { decodeStateBody } from '../js/core/v7.js';
+import { parseInscriptions } from '../js/core/inscription.js';
+import { witnessTapscript } from '../js/wallet/txparse.js';
 import { p2trScript } from '../js/wallet/addresses.js';
 import { parseTx } from '../js/wallet/txparse.js';
 import { writeFileSync } from 'node:fs';
@@ -128,26 +133,45 @@ const stUtxo = {
 };
 assert.equal(chain.utxo(prep.txid, 0).value, Number(CARD_VALUE));
 
-// CROSS.
+// HOP: pick a direction that will NOT meet the next block's wrap, so the
+// rest of the test can exercise the transfer leg. The decision itself is
+// still made before the block exists (that is the game).
+const hopDir = (wrapOfDisplayHex(chain.blockHashAt(chain.tipHeight() + 2)) + 1) % 3;
 utxos = await scan();
-const cross = buildCross({ keys: wallet, stateUtxo: stUtxo, frog, funding: utxos, feeRate: 2 });
-assert.ok(cross.tx.inputs.every((i) => i.sequence === 0xffffffff), 'CROSS is not RBF');
+const cross = buildCross({
+  keys: wallet, stateUtxo: stUtxo, frog, funding: utxos, feeRate: 2, dir: hopDir,
+});
+assert.ok(cross.tx.inputs.every((i) => i.sequence === 0xffffffff), 'HOP is not RBF');
+assert.equal(cross.dir, hopDir);
+const crossTx = parseTx(cross.hex);
+const spentLeaf = witnessTapscript(crossTx.inputs[0]);
+const crossBody = decodeStateBody(parseInscriptions(spentLeaf)[0].body);
+assert.equal(crossBody.dir, hopDir, 'the body carries the chosen direction');
+assert.equal(spentLeaf[spentLeaf.length - 3], hopDir, 'the spent leaf is the chosen direction');
+const otherDir = (hopDir + 1) % 3;
+const otherLeaf = crossLeafScript(wallet.ord.ownerXonly, crossBody, otherDir);
+assert.notDeepEqual(spentLeaf, otherLeaf, 'another direction would be a different leaf');
 collect('cross', cross.hex);
 chain.submit(cross.hex);
 frog = chain.record(mint.sat);
 assert.equal(frog.state, 'crossing');
+assert.equal(frog.gen, generationAt(frog.mint_height), 'the generation is stamped at mint');
 assert.equal(frog.in_flight.height, chain.tipHeight());
+assert.equal(frog.in_flight.dir, hopDir);
 assert.equal(frog.in_flight.target_hops, requiredAt(chain.tipHeight()));
 // A crossing spends the frog's state output, but it is not a handoff:
 // the mock history must not publish a Transfer for the CROSS txid.
 assert.ok(!chain.events.some((e) => e.txid === cross.txid && e.action.action === 'transfer'),
   'CROSS must not also be a Transfer event');
 
-// Timers: outcome at T+1, settlement at T+6.
+// Timers: one block picks one wrap for everyone.
 chain.mine(1);
 frog = chain.record(mint.sat);
 assert.equal(typeof frog.provisional_dead, 'boolean');
 assert.equal(frog.outcome_block_hash, chain.blockHashAt(frog.in_flight.height + 1));
+assert.equal(frog.outcome_wrap, wrapOfDisplayHex(frog.outcome_block_hash));
+assert.equal(frog.provisional_dead, frog.outcome_wrap === hopDir, 'the wrap alone decides');
+assert.equal(frog.state, 'crossing');
 chain.mine(5);
 frog = chain.record(mint.sat);
 assert.ok(['idle', 'home', 'dead', 'burned'].includes(frog.state), frog.state);

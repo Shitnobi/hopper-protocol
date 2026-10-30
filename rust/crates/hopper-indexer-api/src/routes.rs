@@ -199,11 +199,17 @@ pub async fn road(State(state): State<SharedState>) -> Json<RoadDto> {
         .in_flight()
         .iter()
         .map(|entry| {
-            let (provisional_dead, outcome_block_hash) = idx
+            let (provisional_dead, outcome_block_hash, outcome_wrap) = idx
                 .frogger(entry.sat)
-                .map(|f| (f.provisional_dead, f.outcome_block_hash))
-                .unwrap_or((None, None));
-            in_flight_dto_with(entry, &params, provisional_dead, outcome_block_hash)
+                .map(|f| (f.provisional_dead, f.outcome_block_hash, f.outcome_wrap))
+                .unwrap_or((None, None, None));
+            in_flight_dto_with(
+                entry,
+                &params,
+                provisional_dead,
+                outcome_block_hash,
+                outcome_wrap,
+            )
         })
         .collect();
     Json(RoadDto { active })
@@ -215,6 +221,7 @@ fn leaderboard_entry(rank: usize, r: &hopper_indexer::types::FroggerRecord) -> L
         sat: r.sat,
         name: r.name.clone(),
         seed: r.seed,
+        gen: r.gen,
         dist: r.dist,
         state: match r.state {
             hopper_indexer::types::FroggerState::Idle => "idle",
@@ -647,12 +654,13 @@ fn mempool_utxo_ranges(
 pub async fn params(State(state): State<SharedState>) -> Json<serde_json::Value> {
     use hopper_core::params::{self, PROTOCOL};
     let p = &PROTOCOL;
-    let h = &p.hops;
+    let g = &p.generations;
     let chain = state.chain_identity();
     let tip = {
         let idx = state.read();
         (idx.tip_height(), idx.tip_hash())
     };
+    let tip_height = tip.0;
     Json(serde_json::json!({
         // A wallet compares these before trusting a "not yours" answer:
         // the wrong chain makes every frog look sent away (A6).
@@ -669,22 +677,66 @@ pub async fn params(State(state): State<SharedState>) -> Json<serde_json::Value>
         }),
         "wire_version": hopper_core::VERSION,
         "cross_finality": p.cross_finality,
-        "death_model": p.death.name(),
-        "success_floor_bps": p.success_floor_bps,
-        "hop_schedule": {
-            "genesis": h.genesis,
-            "base": h.base,
-            "step1": h.step1,
-            "until1": h.until1,
-            "step2": h.step2,
-            "until2": h.until2,
-            "step3": h.step3,
-            "ceiling": h.ceiling,
-        },
-        "anchors": [h.anchor1(), h.anchor2(), h.anchor3()],
         "card_value": p.card_value,
+        // The road's difficulty is a sawtooth in generations (SPEC §1.1).
+        "generations": {
+            "genesis": g.genesis,
+            "base": g.base,
+            "growth_interval": g.growth_interval,
+            "ceiling": g.ceiling,
+            "hold": g.hold,
+            "generation_len": g.generation_len,
+        },
+        "generation_now": tip_height.map(|h| g.generation(h)),
+        "required_now": tip_height.map(|h| g.required(h)),
+        "required_next": tip_height.map(|h| g.required(h + 1)),
         "params_hash": crate::dto::hex_bytes(&params::params_hash(p)),
     }))
+}
+
+/// `GET /v1/generation/{height}` — the generation a height belongs to and
+/// the crossing requirement it carries (SPEC §6.4).
+pub async fn generation(
+    axum::extract::Path(height): axum::extract::Path<u32>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use hopper_core::params::PROTOCOL;
+    let g = &PROTOCOL.generations;
+    let k = g.generation(height);
+    let start = g.generation_start(k);
+    let end = start.saturating_add(g.generation_len);
+    Ok(Json(serde_json::json!({
+        "height": height,
+        "generation": k,
+        "start": start,
+        "end": end,
+        "required": g.required(height),
+        "next_change": g.next_increment(height).map(|(h, r)| serde_json::json!({
+            "height": h, "required": r
+        })),
+    })))
+}
+
+/// `GET /v1/wrap/{height}` — the block's wrap (0|1|2); 404 until the
+/// height is ingested (SPEC §6.4).
+///
+/// The API never publishes a wrap for a height it has not ingested: the
+/// outcome of a future block is not predictable from the indexer either.
+pub async fn wrap_at(
+    axum::extract::Path(height): axum::extract::Path<u32>,
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let hash = {
+        let idx = state.read();
+        idx.block_hash_at(height)
+    };
+    let Some(hash) = hash else {
+        return Err(ApiError::NotFound("block not ingested".into()));
+    };
+    Ok(Json(serde_json::json!({
+        "height": height,
+        "hash": crate::dto::hex_display(&hash),
+        "wrap": hopper_core::wrap::wrap(&hash),
+    })))
 }
 
 /// POST /v1/admin/rollback — truncate the chain by `n` blocks and replay.
@@ -879,7 +931,7 @@ pub async fn mempool(
             mint_txid: body.mint_txid.clone(),
             mint_index: body.mint_index,
             state: frog.as_ref().map(|f| crate::dto::state_str(f.state)),
-            target_hops: config.params.hops.required(confirm),
+            target_hops: config.params.generations.required(confirm),
             settle_height: confirm.saturating_add(config.params.cross_finality),
             provisional: true,
             rejection,

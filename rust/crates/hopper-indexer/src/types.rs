@@ -190,6 +190,10 @@ pub struct FroggerRecord {
     pub seed: u32,
     /// Minted name (≤ 38 bytes, per the envelope codec).
     pub name: String,
+    /// Generation of the mint confirmation height (SPEC §1.1). Immutable
+    /// for the frog's life; the art renders it as `G1`, `G2`, …
+    #[serde(default = "one")]
+    pub gen: u32,
     /// Current lifecycle state.
     pub state: FroggerState,
     /// Completed crossings; never exceeds `HOME_DIST` (SPEC §8.2.6).
@@ -226,9 +230,12 @@ pub struct FroggerRecord {
     /// The crossing currently in flight, if any (V3 §8.1).
     #[serde(default)]
     pub in_flight: Option<InFlight>,
-    /// `H(T+1)`, captured once when block `T+1` connects (V3 §5.2).
+    /// `H(T+1)`, captured once when block `T+1` connects (SPEC §4.4).
     #[serde(default)]
     pub outcome_block_hash: Option<[u8; 32]>,
+    /// `wrap(H(T+1))` — the block's single direction (SPEC §1.2).
+    #[serde(default)]
+    pub outcome_wrap: Option<u8>,
     /// Outcome determined at `T+1`, applied only at `T+6` (V3 §5.4).
     #[serde(default)]
     pub provisional_dead: Option<bool>,
@@ -255,6 +262,10 @@ const fn legacy_wire_version() -> u8 {
     LEGACY_WIRE_VERSION
 }
 
+const fn one() -> u32 {
+    1
+}
+
 /// Wire version of a v2.2 mint envelope.
 pub const LEGACY_WIRE_VERSION: u8 = 0x03;
 
@@ -266,8 +277,11 @@ pub struct InFlight {
     pub txid: [u8; 32],
     /// Height `T` of the block containing it — settlement is `T+6`.
     pub height: u32,
-    /// `required_hops(T)`, frozen at `T` (V3 §3.4).
+    /// `required_hops(T)`, frozen at `T` (SPEC §1.1).
     pub target_hops: u32,
+    /// The direction the player committed to: 0 left, 1 straight, 2 right.
+    #[serde(default)]
+    pub dir: u8,
 }
 
 // The v2 crossing ledger (Crossing/CarCommit/AnchorInfo/FinishedCrossing)
@@ -310,6 +324,9 @@ pub enum EventAction {
         frogger_sat: u64,
         seed: u32,
         name: String,
+        /// Generation of the mint confirmation height (SPEC §4.6).
+        #[serde(default = "one")]
+        gen: u32,
     },
     /// The anchor-sat UTXO was spent: a plain transfer. Transfers are
     /// ALWAYS inert to crossing state (SPEC §4.2, §6.2 v2.1): the
@@ -321,6 +338,12 @@ pub enum EventAction {
     Settle {
         frogger_sat: u64,
         outcome: SettleOutcome,
+        /// The direction the Hopper picked (SPEC §4.6).
+        #[serde(default)]
+        dir: u8,
+        /// `wrap(H(T+1))`, when the outcome block was captured.
+        #[serde(default)]
+        wrap: Option<u8>,
     },
     /// The anchor sat was paid to fees; its location is no longer tracked
     /// (modeling gap — see `NOTES.md`).
@@ -422,8 +445,12 @@ pub enum RejectionReason {
     /// the art does not match the claimed seed.
     InscriptionArtMismatch,
     // --- v3 CROSS rejections (V3 §8.7) -------------------------------
-    /// CROSS: the inscription body did not decode (magic/length/version).
+    /// HOP: the inscription body did not decode (magic/length/version/dir).
     CrossBodyMalformed,
+    /// HOP: `dir > 2` (a well-formed-looking body with no road).
+    CrossBadDirection,
+    /// HOP: the spent leaf is not the canonical leaf for `body.dir`.
+    CrossDirectionMismatch,
     /// CROSS: the tag-3 parent disagrees with the body's mint id.
     CrossParentMismatch,
     /// CROSS: the frog's mint is v2 (`0x03`) — transfer-only, `Retired`.
@@ -450,7 +477,7 @@ pub enum RejectionReason {
     CrossOnRetiredFrog,
     /// CROSS: the frog sat did not land in output 1.
     CrossFrogNotInOutput1,
-    /// CROSS (v6): the frog sat did not land in output 0.
+    /// HOP (v7): the frog sat did not land in output 0.
     CrossFrogNotInFirstOutput,
     /// CROSS: a funding input carries a frog or ticket sat.
     CrossFundingCarriesFrog,
@@ -498,6 +525,7 @@ mod tests {
                 frogger_sat: 1_234,
                 seed: 0xABCD,
                 name: "Testfrog".into(),
+                gen: 2,
             },
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -514,6 +542,8 @@ mod tests {
             action: EventAction::Settle {
                 frogger_sat: 5,
                 outcome: SettleOutcome::Dead,
+                dir: 2,
+                wrap: Some(2),
             },
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -571,6 +601,7 @@ mod tests {
             txid: [0xAB; 32],
             height: 1_000,
             target_hops: 57,
+            dir: 1,
         };
         let bytes = bincode::serialize(&crossing).unwrap();
         assert_eq!(bincode::deserialize::<InFlight>(&bytes).unwrap(), crossing);

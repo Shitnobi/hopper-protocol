@@ -66,6 +66,8 @@ pub struct FroggerDto {
     pub sat: u64,
     pub seed: u32,
     pub name: String,
+    /// Generation of the mint confirmation height (SPEC §1.1).
+    pub gen: u32,
     pub state: &'static str,
     /// Completed crossings — the "×N" number (plan §5).
     pub dist: u32,
@@ -112,16 +114,21 @@ pub struct FroggerDto {
     /// The sealed verdict while the crossing is still provisional.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provisional_dead: Option<bool>,
+    /// `wrap(H(T+1))` — the block's single direction, once captured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_wrap: Option<u8>,
 }
 
 /// A crossing in flight (V3 §8.1): settles at `height + 6`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct InFlightDto {
     pub txid: String,
-    /// `T`, the CROSS's block height.
+    /// `T`, the HOP's block height.
     pub height: u32,
     /// `required_hops(T)`, frozen.
     pub target_hops: u32,
+    /// The direction the player committed to (0 left, 1 straight, 2 right).
+    pub dir: u8,
     /// `T + 6`.
     pub settle_height: u32,
 }
@@ -164,12 +171,18 @@ pub struct CrossingDto {
     pub seed: u32,
     pub name: String,
     pub dist: u32,
-    /// V3 only: the target frozen at the crossing height (§3.4).
+    /// The target frozen at the hop height (§1.1).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_hops: Option<u32>,
+    /// The direction the player committed to (SPEC §2.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<u8>,
     /// `H(T+1)`, sealed one block after the crossing, in display order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome_block_hash: Option<String>,
+    /// `wrap(H(T+1))` — the block's single direction, once captured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_wrap: Option<u8>,
     /// The sealed verdict while the crossing is still provisional, so the
     /// road can show it before finality.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,6 +222,8 @@ pub struct LeaderboardEntryDto {
     pub sat: u64,
     pub name: String,
     pub seed: u32,
+    /// Generation label; the leaderboard ranks by it before `dist`.
+    pub gen: u32,
     pub dist: u32,
     pub state: &'static str,
 }
@@ -253,6 +268,7 @@ pub fn frogger_dto(
         sat: record.sat,
         seed: record.seed,
         name: record.name.clone(),
+        gen: record.gen,
         state: state_str(record.state),
         dist: record.dist,
         crossings_entered: record.crossings_entered,
@@ -271,6 +287,7 @@ pub fn frogger_dto(
             txid: hex_display(&f.txid),
             height: f.height,
             target_hops: f.target_hops,
+            dir: f.dir,
             settle_height: f.height + hopper_core::params::PROTOCOL.cross_finality,
         }),
         target_hops: record.last_target_hops,
@@ -280,6 +297,7 @@ pub fn frogger_dto(
         burn_txid: record.burn_txid.map(|txid| hex_display(&txid)),
         outcome_block_hash: record.outcome_block_hash.map(|h| hex_display(&h)),
         provisional_dead: record.provisional_dead,
+        outcome_wrap: record.outcome_wrap,
     }
 }
 
@@ -288,7 +306,7 @@ pub fn in_flight_dto(
     entry: &crate::engine::InFlightEntry,
     params: &hopper_core::params::ProtocolParams,
 ) -> CrossingDto {
-    in_flight_dto_with(entry, params, None, None)
+    in_flight_dto_with(entry, params, None, None, None)
 }
 
 /// The same DTO with the frog record's sealed-outcome fields attached.
@@ -297,6 +315,7 @@ pub fn in_flight_dto_with(
     params: &hopper_core::params::ProtocolParams,
     provisional_dead: Option<bool>,
     outcome_block_hash: Option<[u8; 32]>,
+    outcome_wrap: Option<u8>,
 ) -> CrossingDto {
     CrossingDto {
         frogger_sat: entry.sat,
@@ -320,7 +339,9 @@ pub fn in_flight_dto_with(
         name: entry.name.clone(),
         dist: entry.dist,
         target_hops: Some(entry.target_hops),
+        dir: Some(entry.dir),
         outcome_block_hash: outcome_block_hash.map(|h| hex_display(&h)),
+        outcome_wrap,
         provisional_dead,
     }
 }
@@ -331,8 +352,10 @@ pub fn event_dto(e: &ChainEvent) -> EventDto {
             frogger_sat,
             seed,
             name,
+            gen,
         } => serde_json::json!({
-            "kind": "mint", "frogger_sat": frogger_sat, "seed": seed, "name": name
+            "kind": "mint", "frogger_sat": frogger_sat, "seed": seed,
+            "name": name, "gen": gen
         }),
         EventAction::Transfer { frogger_sat } => serde_json::json!({
             "kind": "transfer", "frogger_sat": frogger_sat
@@ -340,9 +363,11 @@ pub fn event_dto(e: &ChainEvent) -> EventDto {
         EventAction::Settle {
             frogger_sat,
             outcome,
+            dir,
+            wrap,
         } => serde_json::json!({
             "kind": "settle", "frogger_sat": frogger_sat,
-            "outcome": outcome_str(*outcome)
+            "outcome": outcome_str(*outcome), "dir": dir, "wrap": wrap
         }),
         EventAction::Burn { frogger_sat } => {
             serde_json::json!({ "kind": "burn", "frogger_sat": frogger_sat })
@@ -526,6 +551,7 @@ mod tests {
             txid: [7u8; 32],
             height: 101,
             target_hops: 12,
+            dir: 1,
             seed: 0xABCD,
             name: "Roadfrog".into(),
             dist: 3,

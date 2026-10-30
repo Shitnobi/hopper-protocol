@@ -1034,13 +1034,14 @@ mod tests {
     // ---- Change B: inscription-backed mint validation ----
 
     fn ins_reveal(seed: u32, reveal_index: u32) -> InscriptionReveal {
-        // The v6 mint body embeds the anchor sat; these fixtures all mint
-        // at SAT, so that is what the digest is computed for.
+        // The v7 mint body embeds the anchor sat and the name; these
+        // fixtures all mint at SAT with name "Testfrog".
+        let body = hopper_core::live_v7_html(seed, SAT, "Testfrog", 1);
         InscriptionReveal {
-            content_type: hopper_core::V6_CONTENT_TYPE.to_string(),
-            body_hash: hopper_core::live_v6_html_digest(seed, SAT),
+            content_type: hopper_core::V7_CONTENT_TYPE.to_string(),
+            body_hash: <sha2::Sha256 as sha2::Digest>::digest(body.as_bytes()).into(),
             inscription_id: format!("{}i{reveal_index}", hex_string(&b32(2))),
-            body: None,
+            body: Some(body.into_bytes()),
             parents: Vec::new(),
             tapscript: None,
             control_block: None,
@@ -1272,7 +1273,7 @@ mod tests {
     }
     #[test]
     fn foreign_version_envelopes_create_nothing() {
-        // This build speaks 0x06 and nothing else. An envelope wearing
+        // This build speaks 0x07 and nothing else. An envelope wearing
         // another version byte is not "a future rule to ignore": it is a
         // malformed envelope, recorded as such, and no frog exists.
         let mut idx = Indexer::new(IndexerConfig::default());
@@ -1658,6 +1659,7 @@ mod tests {
                 txid: [7u8; 32],
                 height: 101,
                 target_hops: 42,
+                dir: 2,
             });
             rec.outcome_block_hash = Some([9u8; 32]);
             rec.provisional_dead = Some(false);

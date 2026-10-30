@@ -1,7 +1,7 @@
 // Recognise a HOPPER mint directly from the reveal transaction.
 //
 // A HOPPER mint is a taproot script spend whose leaf carries the canonical
-// v6 HTML document, and whose output 0 pays 1,000 sats to the wallet's
+// v7 HTML document, and whose output 0 pays 1,000 sats to the wallet's
 // ordinals address. The committed leaf is visible in the reveal witness,
 // so the wallet can identify its own mint without an indexer or ord's
 // `/r/utxo` endpoint. This is a discovery fallback only: when a HOPPER
@@ -10,9 +10,9 @@
 import { equalBytes, fromUtf8, utf8 } from '../core/hex.js';
 import { decodeMint } from '../core/envelope.js';
 import { parseInscriptions } from '../core/inscription.js';
-import { liveV6Html } from '../core/mintdoc.js';
+import { liveV7Html } from '../core/mintdoc.js';
 import {
-  ANCHOR_OUTPUT_VALUE, V6_CONTENT_TYPE, WIRE_VERSION,
+  ANCHOR_OUTPUT_VALUE, V7_CONTENT_TYPE, WIRE_VERSION, generationAt,
 } from '../core/params.js';
 import { opReturnPush, parseTx, witnessTapscript } from './txparse.js';
 
@@ -69,21 +69,23 @@ export function parseLocalMint({ hex, utxo, script = null, mintHeight = null } =
       const contentType = typeof inscription.content_type === 'string'
         ? inscription.content_type
         : fromUtf8(inscription.content_type || new Uint8Array());
-      if (contentType !== V6_CONTENT_TYPE || !inscription.body) continue;
+      if (contentType !== V7_CONTENT_TYPE || !inscription.body) continue;
       const body = fromUtf8(inscription.body);
-      const found = /var V6=\{sat:(\d+),p:/.exec(body);
+      const found = /var V7=\{sat:(\d+),genHint:(\d+),name:/.exec(body);
       if (!found) continue;
       const sat = Number(found[1]);
+      const genHint = Number(found[2]);
       if (!Number.isSafeInteger(sat) || sat <= 0) continue;
-      // Re-render the canonical document for this seed and sat. A random
-      // inscription that merely contains "V6" cannot pass this check.
-      if (!equalBytes(inscription.body, utf8(liveV6Html(envelope.seed, sat)))) continue;
+      // Re-render the canonical document for this seed, sat, name and
+      // hint. A random inscription that merely contains "V7" cannot pass.
+      if (!equalBytes(inscription.body, utf8(liveV7Html(envelope.seed, sat, envelope.name, genHint)))) continue;
       const height = Number(mintHeight ?? utxo.status?.block_height ?? 0);
       const commit = String(tx.inputs[0]?.txid || '').toLowerCase();
       return {
         sat,
         seed: envelope.seed >>> 0,
         name: envelope.name,
+        gen: height > 0 ? generationAt(height) : genHint || 1,
         state: 'idle',
         dist: 0,
         crossings_entered: 0,

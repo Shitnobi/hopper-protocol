@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Headless end-to-end smoke: onboarding → wallet → mint → prepare → cross.
+// Headless end-to-end smoke: onboarding → wallet → mint → prepare → hop.
 // Requires Chromium with --remote-debugging-port=9222 and a static server.
 //
 //   python3 -m http.server 8130 &
@@ -773,10 +773,10 @@ else {
   if (!Array.isArray(debugData.rows) || !debugData.rows.length) errors.push('history debug: no grouped rows');
   if (!debugData.rows?.every((r) => typeof r.mintKey === 'string')) errors.push('history debug: row without group key');
   if (/seed|mnemonic|private/i.test(debugText)) errors.push('history debug: contains private material');
-  if (debugData.computed?.slice(0, 3).join('|') !== 'MINT|CHANGE|HOPPER ARRIVED') {
+  if (debugData.computed?.slice(0, 3).join('|') !== 'HOPPER ARRIVED|CHANGE|MINT') {
     errors.push(`history debug: computed ${debugData.computed?.slice(0, 3).join(' > ')}`);
   }
-  if (debugData.dom?.slice(0, 3).join('|') !== 'MINT|CHANGE|HOPPER ARRIVED') {
+  if (debugData.dom?.slice(0, 3).join('|') !== 'HOPPER ARRIVED|CHANGE|MINT') {
     errors.push(`history debug: painted ${debugData.dom?.slice(0, 3).join(' > ')}`);
   }
   console.log('history debug:', JSON.stringify({
@@ -961,7 +961,7 @@ if (bigPips.sw > bigPips.cw + 1) errors.push(`100-hop pips overflow: ${JSON.stri
 await click('travel-to-road');
 await waitFor('document.querySelector(".overlay [data-action=travel-approved]")', 5000, 'travel warning');
 const travelWarn = await evaluate(`document.querySelector('.overlay').innerText`);
-if (!/tapscript/i.test(travelWarn) || !/normal spends/i.test(travelWarn) || !/not a crossing/i.test(travelWarn)) {
+if (!/tapscript/i.test(travelWarn) || !/normal spends/i.test(travelWarn) || !/not a hop/i.test(travelWarn)) {
   errors.push(`travel warning copy: ${JSON.stringify(travelWarn.slice(0, 500))}`);
 }
 if (!/APPROVE/i.test(travelWarn)) errors.push('travel warning has no approval action');
@@ -976,14 +976,27 @@ await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cro
 
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);
-await waitFor('document.querySelector("[data-action=do-cross]")');
+await waitFor('document.querySelector("[data-action=preview-hop]")');
 const crossOwnerHint = await evaluate(`document.querySelector('[data-input=cross-owner]')?.placeholder || ''`);
 console.log('cross owner hint:', crossOwnerHint);
 if (crossOwnerHint !== 'leave empty to keep in this wallet') {
   errors.push(`cross owner placeholder: ${JSON.stringify(crossOwnerHint)}`);
 }
-await evaluate(`document.querySelector('[data-action=do-cross]').click()`);
-await waitFor('location.hash === "#/road"', 30000, 'road after cross');
+await evaluate(`document.querySelector('[data-action=preview-hop][data-dir="1"]').click()`);
+await waitFor('document.querySelector("[data-action=do-approve-tx]")', 15000, 'signed hop preview');
+const hopPreview = await evaluate(`document.querySelector('.overlay').innerText`);
+if (!/HOP STRAIGHT/.test(hopPreview) || !/Leaf spent/.test(hopPreview)
+  || !/Destination address/.test(hopPreview) || !/Actual fee/.test(hopPreview)
+  || !/APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION/.test(hopPreview)) {
+  errors.push(`hop preview: ${JSON.stringify(hopPreview.slice(0, 600))}`);
+}
+const hopFit = await evaluate(`(() => {
+  const m = document.querySelector('.overlay .modal');
+  return m ? { sw: m.scrollWidth, cw: m.clientWidth } : null;
+})()`);
+if (!hopFit || hopFit.sw > hopFit.cw + 1) errors.push(`hop preview overflows horizontally: ${JSON.stringify(hopFit)}`);
+await evaluate(`document.querySelector('[data-action=do-approve-tx]').click()`);
+await waitFor('location.hash === "#/road"', 30000, 'road after hop');
 await sleep(500);
 const road = await evaluate('document.body.innerText');
 console.log('road:', road.split('\n').filter(Boolean).slice(0, 12).join(' | '));
@@ -995,7 +1008,7 @@ const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
 
 // 5b. Route changes and history must not show a previous frog's record.
-// A crossing can kill (25% at the genesis target): the living pond then
+// A HOP can kill (one of three directions at every generation): the living pond then
 // shows nothing and the frog lives on the graveyard's road.
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await sleep(400);
@@ -1057,6 +1070,20 @@ await call('Page.reload', { ignoreCache: true });
 await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'auto unlock');
 await skipTour();
 console.log('lock: remembered KEK auto-unlocks');
+
+// 7. Emergency descriptor export is behind a confirmation and names what
+// it never contains.
+await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await waitFor('document.querySelector("[data-action=export-emergency]")', 15000, 'emergency export button');
+await click('export-emergency');
+await waitFor('document.querySelector("[data-action=show-emergency]")', 5000, 'emergency confirmation');
+const emergencyWarn = await evaluate(`document.querySelector('.overlay')?.innerText || ''`);
+if (!/Never contains/i.test(emergencyWarn) || !/seed/i.test(emergencyWarn)) {
+  errors.push(`emergency warning: ${JSON.stringify(emergencyWarn.slice(0, 300))}`);
+}
+await evaluate(`document.querySelector('.overlay [data-action=close-overlay]').click()`);
+await sleep(150);
+console.log('emergency: confirmation shown');
 
 // Persist a screenshot path for inspection.
 await call('Page.captureScreenshot', { format: 'png' }).then(async (shot) => {
