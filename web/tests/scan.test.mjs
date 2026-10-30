@@ -161,10 +161,44 @@ const savedMempool = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.finger
 eq('mempool rows persist with the ledger', savedMempool.mempool[0].txid, memTxid);
 eq('the pending total persists with the ledger', savedMempool.balance.pending, '1234');
 
+// A paid receive address retires immediately, even while the payment is
+// still in the mempool. The next pass is forced once so the new address is
+// watched; after that the tip gate is quiet again.
+eq('a paid receive address rotates automatically', wallet.receiveIndex, 1);
+eq('the paid receive address is marked used', wallet.used[receive0.address], true);
+eq('the rotated address is not marked used', !!wallet.used[wallet.keys.receive(1).address], false);
 const afterMempool = mempoolAddressCalls;
 await wallet.refresh({ force: false });
-eq('an unchanged tip does not re-ask addresses for mempool rows', mempoolAddressCalls, afterMempool);
+eq('rotation queues one warm pass for the new address', mempoolAddressCalls > afterMempool, true);
+const afterRotationPass = mempoolAddressCalls;
+await wallet.refresh({ force: false });
+eq('an unchanged tip is quiet again after rotation', mempoolAddressCalls, afterRotationPass);
+
+fake.tip = 103;
+await wallet.refresh({ force: false });
+eq('a payment to an older address does not rotate the current one', wallet.receiveIndex, 1);
 eq('the known mempool row survives the tip gate', wallet.mempool.length, 1);
+
+// Rotation never lands on a known-paid address. If every index in the old
+// window is exhausted, continue the derivation beyond it rather than reuse.
+const rotate = new WalletSession({
+  mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
+  network: 'regtest',
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+});
+rotate.receiveIndex = 0;
+rotate.receiveHistory = [rotate.keys.receive(0).address];
+rotate.used = { [rotate.keys.receive(1).address]: true };
+eq('rotation skips a paid address even without scan history', rotate._advanceReceiveAddress().index, 2);
+const exhausted = new WalletSession({
+  mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
+  network: 'regtest',
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+});
+exhausted.receiveIndex = GAP_LIMIT - 1;
+exhausted.receiveHistory = Array.from({ length: GAP_LIMIT }, (_, i) => exhausted.keys.receive(i).address);
+exhausted.used = Object.fromEntries(exhausted.receiveHistory.map((a) => [a, true]));
+eq('exhausted rotation advances past the old window', exhausted._advanceReceiveAddress().index, GAP_LIMIT);
 
 const { history: historyHtml } = await import('../js/ui/screens.js');
 const html = historyHtml({

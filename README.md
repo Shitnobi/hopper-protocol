@@ -167,9 +167,11 @@ RECEIVE is the egui bottom window, not an address list: a tab for
 ADDRESSES) and a tab for **HOPPERS** (the fixed BIP86 frog address), each
 with the warning band the tab demands ("DON'T SEND HOPPERS HERE" /
 "🐸 ONLY SEND HOPPERS HERE"), a scannable QR with the spec's quiet zone,
-the selectable address, COPY and FULL QR. The window is height-stable:
-both tabs use the same fixed QR, address, note and action rows, so
-flipping BITCOIN/HOPPERS never moves or resizes it.
+the selectable address, COPY and FULL QR. A BITCOIN address retires as
+soon as the wallet sees it paid — mempool or confirmed — and the open
+window immediately repaints with the next unused address. The window is
+height-stable: both tabs use the same fixed QR, address, note and action
+rows, so flipping BITCOIN/HOPPERS never moves or resizes it.
 
 The music is the egui app's `music.mid` played through WebAudio with the
 same tempo map, voice and master fader; the mute and volume still live in

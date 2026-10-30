@@ -1241,6 +1241,22 @@ window.addEventListener('hopper:scan', () => {
   if (app.view === 'settings') refreshScanPanel();
 });
 
+// A paid receive address is retired by the wallet. If the receive window is
+// open on BITCOIN, repaint it with the next address instead of leaving a QR
+// that is no longer the wallet's fresh receive address. The HOPPERS tab is a
+// fixed Taproot address and must not be repainted by BTC rotation.
+window.addEventListener('hopper:receive-address', () => {
+  if (!app.w) return;
+  const node = document.getElementById('overlay');
+  if (!node || node.hidden) return;
+  const sheet = node.querySelector('.sheet');
+  if (!sheet || !sheet.querySelector('.receive-tabs')) return;
+  if (app.receiveTab !== 'btc') return;
+  const shown = sheet.querySelector('.receive-address')?.textContent.trim() || '';
+  if (shown === app.w.receiveAddress()) return;
+  openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
+});
+
 // Keep settings in sync if another tab edits them.
 window.addEventListener('storage', (ev) => {
   if (ev.key === KEYS.settings) {

@@ -454,6 +454,10 @@ The wallet and indexer both verify this with ordinal range arithmetic.
 
 * The mint pays the wallet's **frog address** (BIP86 P2TR at `…/2/0`), never
   a BIP-84 receive address. Coins there are never funding candidates.
+* A BIP-84 receive address retires once the wallet sees any history on it,
+  including an unconfirmed payment. The next unused index becomes current;
+  an open receive window repaints with it. A paid address is never handed
+  out again.
 * The state output's script is per `(sat, mint id, owner)`; it matches no
   derivation path. A wallet finds it by deriving the script from the frog
   record, and by watching its frog address.

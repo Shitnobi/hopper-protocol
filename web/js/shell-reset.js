@@ -12,7 +12,7 @@
 // page still loads from the network instead of reloading forever.
 (() => {
   'use strict';
-  const EXPECTED = 'hopper-v6-29';
+  const EXPECTED = 'hopper-v6-30';
   const FLAG = 'hopper.shell-reset';
   if (!('serviceWorker' in navigator) || !('caches' in window)) return;
 

@@ -898,6 +898,10 @@ export class WalletSession {
     const priorTotal = this.balance.total;
     this._computeBalance();
     if (preserve && this.balance.total < priorTotal) this.balance = previousBalance;
+    // A receive address that has been paid is retired. If the receive window
+    // is open, the receive-address event repaints it with the next one; if it
+    // is closed, the wallet simply opens on a fresh address next time.
+    const rotatedReceive = this._rotatePaidReceive();
 
     try {
       const ev = await this.backend.events(200);
@@ -939,6 +943,7 @@ export class WalletSession {
     this.scan.note = notes.join(' · ');
     this._saveLedger();
     this.dispatch('refresh', this.summary());
+    if (rotatedReceive) this.dispatch('receive-address', rotatedReceive);
     return this;
   }
 
@@ -1096,22 +1101,45 @@ export class WalletSession {
   /** Rotate to a previously-unused receive address (never the frogs' one).
    *  The floor only moves forward: every address we ever handed out stays
    *  covered by the scan. */
-  newReceiveAddress() {
+  _advanceReceiveAddress() {
     const gap = Math.max(1, this.gapLimit());
+    const current = this.receiveIndex || 0;
     const history = new Set(this.receiveHistory || []);
-    history.add(this.keys.receive(this.receiveIndex || 0).address);
-    let next = (this.receiveIndex + 1) % gap;
+    history.add(this.keys.receive(current).address);
+    // Skip addresses this wallet already handed out OR saw funds on. The
+    // latter matters after an upgrade: an old receiveIndex could point at a
+    // paid address that was never rotated.
+    let next = null;
     for (let step = 1; step <= gap; step += 1) {
-      const candidate = (this.receiveIndex + step) % gap;
-      if (!history.has(this.keys.receive(candidate).address)) { next = candidate; break; }
+      const candidate = (current + step) % gap;
+      const address = this.keys.receive(candidate).address;
+      if (!history.has(address) && !this.used?.[address]) { next = candidate; break; }
     }
+    // Every address in the window is spent. Do not reuse one; continue the
+    // derivation beyond the old window and let the scan follow the floor.
+    if (next == null) next = current + 1;
     this.receiveIndex = next;
     this.receiveFloor = Math.max(Number(this.receiveFloor) || 0, next);
     this.forceWatch = true;
     const address = this.receiveAddress();
     this._saveLedger();
-    this.dispatch('receive-address', { address, index: next });
+    return { address, index: next };
+  }
+
+  newReceiveAddress() {
+    const { address, index } = this._advanceReceiveAddress();
+    this.dispatch('receive-address', { address, index });
     return address;
+  }
+
+  /** A fresh receive address is the default after the current one is paid.
+   *  This is deliberately silent: refresh() emits one receive-address event
+   *  after the pass, so an open receive window can repaint without races. */
+  _rotatePaidReceive() {
+    const current = this.receiveIndex || 0;
+    const address = this.keys.receive(current).address;
+    if (!this.used?.[address]) return null;
+    return this._advanceReceiveAddress();
   }
 
   /** Every bitcoin receive address handed out, newest first. */

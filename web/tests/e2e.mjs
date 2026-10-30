@@ -210,10 +210,40 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
   await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=btc]').click()`);
   await sleep(200);
   const before = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
+
+  // A payment to the open BITCOIN tab retires that address. The sheet must
+  // repaint with the next one without a manual NEW ADDRESS tap. The faucet
+  // lives in SETTINGS, but navigating leaves the sheet mounted; the refresh
+  // that sees the coins is the same one the background scan performs.
+  await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+  await sleep(250);
+  await click('faucet');
+  await waitFor(
+    `document.querySelector('.overlay .receive-tabs') && document.querySelector('.overlay .receive-address')?.textContent.trim() !== ${JSON.stringify(before)}`,
+    30000, 'receive sheet auto-rotation after payment',
+  );
+  const auto = await evaluate(`({
+    address: document.querySelector('.overlay .receive-address')?.textContent.trim(),
+    tab: document.querySelector('.overlay .receive-tab.on')?.textContent.trim(),
+    note: document.querySelector('.overlay .receive-note')?.textContent.trim(),
+  })`);
+  console.log('receive auto-rotation:', { from: before.slice(0, 12), to: auto.address.slice(0, 12), tab: auto.tab });
+  if (!auto.address || auto.address === before) errors.push('receive: paid address did not auto-rotate');
+  if (auto.tab !== 'BITCOIN' || !/rotates after it is paid/.test(auto.note)) {
+    errors.push(`receive: auto-rotation lost the bitcoin tab ${JSON.stringify(auto)}`);
+  }
+  await click('close-overlay');
+  await sleep(150);
+  await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+  await sleep(150);
+  await click('sheet-receive');
+  await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window after auto-rotation');
+
+  const afterAuto = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
   await click('new-receive');
   await sleep(250);
   const after = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
-  if (!after || after === before) errors.push('receive: NEW ADDRESS did not rotate');
+  if (!after || after === afterAuto) errors.push('receive: NEW ADDRESS did not rotate');
   await click('close-overlay');
   await sleep(150);
 }
