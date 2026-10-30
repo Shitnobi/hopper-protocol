@@ -143,14 +143,25 @@ are never replaceable and have no bump button. The builder repeats the
 range audit on the final bytes and blocks a replacement if a known Hopper
 sat would land in its fee.
 
-Ordinary **SEND** and sending a Hopper (**TRANSFER**) are two-step in the
-browser UI. The first button is **PREVIEW TRANSACTION**: it builds the exact
-signed transaction without broadcasting it, and the preview names the
-destination address and amount, the change address and amount, the chosen fee
-rate, the actual fee in sats, and the transaction size. **CANCEL** (or ✕,
-Escape and the backdrop) discards it. **APPROVE & BROADCAST** rechecks every
-input against a fresh scan and broadcasts exactly once; a stale preview is
-refused. A transfer has no change output, so its preview says so explicitly.
+Ordinary **SEND**, sending a Hopper (**TRANSFER**) and minting are two-step
+in the browser UI. SEND and TRANSFER start with **PREVIEW TRANSACTION**; the
+mint keeps its **MINT!** button and opens the same review screen. The preview
+builds and signs the exact transaction(s) without broadcasting: destination
+address and amount, change address and amount, chosen fee rate, actual fee in
+sats, and transaction size. A mint preview shows both the **commit** and
+**reveal** txids, both change outputs, both fees and the total. **CANCEL** (or
+✕, Escape and the backdrop) discards it. **APPROVE & BROADCAST** rechecks
+every input against a fresh scan and broadcasts exactly once; a stale preview
+is refused. For a mint, approval broadcasts the commit first and then the
+reveal that spends it. A transfer has no change output, so its preview says
+so explicitly.
+
+History is wallet-scoped. It merges local actions, indexer events for this
+wallet's Hoppers, settled outputs observed on our addresses, and faded
+mempool rows. That is how an initial deposit and a Hopper arrival appear
+alongside the mint; the indexer's global mint feed is filtered so unrelated
+NPC mints are not shown. Observed receives are persisted in the local ledger,
+so an initial deposit does not disappear when its coin is later spent.
 
 Transaction fee fields show mempool.space's
 `/api/v1/fees/precise` recommendations: **FAST** (`fastestFee`), **MEDIUM**
@@ -362,8 +373,11 @@ node tests/game.test.mjs        # mint → prepare → cross → settle → tran
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
-node tests/localmint.test.mjs   # mint recognition from the reveal witness without an indexer
+node tests/localmint.test.mjs   # 25 mint-recognition checks from the reveal witness without an indexer
+node tests/history.test.mjs     # 27 checks: deposits, Hopper arrivals, wallet-scoped events
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
+node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
+node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```

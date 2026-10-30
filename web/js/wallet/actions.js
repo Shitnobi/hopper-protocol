@@ -264,12 +264,33 @@ export function buildMint({
     sign: (tx) => signTapscript(tx, 0, ord.ownerPrivate, leaf, commitControl, revealPrevouts),
   });
   const revealId = txid(revealFinal.tx);
+  const commitVsize = vsize(commit);
+  const revealVsize = vsize(revealFinal.tx);
+  const commitChange = commit.outputs[1] || null;
+  const revealChange = revealFinal.tx.outputs[2] || null;
+  const sanitizedInputs = inputs.map((u) => ({
+    txid: String(u.txid).toLowerCase(),
+    vout: Number(u.vout),
+    value: Number(u.value),
+    script: bytesToHex(u.script),
+    kind: u.kind,
+    ranges: Array.isArray(u.ranges)
+      ? u.ranges.map(([a, b]) => [Number(a), Number(b)]) : null,
+  }));
 
   return {
     sat,
     seed,
     name,
-    commit: { tx: commit, hex: bytesToHex(serializeTx(commit, true)), txid: commitId },
+    commit: {
+      tx: commit,
+      hex: bytesToHex(serializeTx(commit, true)),
+      txid: commitId,
+      fee: commitFinal.fee,
+      vsize: commitVsize,
+      changeAddress: commitChange ? change.address : null,
+      changeValue: commitChange ? commitChange.value : 0n,
+    },
     reveal: {
       tx: revealFinal.tx,
       hex: bytesToHex(serializeTx(revealFinal.tx, true)),
@@ -280,9 +301,21 @@ export function buildMint({
       body,
       tapscript: leaf,
       controlBlock: commitControl,
+      fee: revealFinal.fee,
+      vsize: revealVsize,
+      changeAddress: revealChange ? change.address : null,
+      changeValue: revealChange ? revealChange.value : 0n,
+    },
+    inputs: sanitizedInputs,
+    anchor: {
+      txid: String(anchor.txid).toLowerCase(),
+      vout: Number(anchor.vout),
+      ranges: Array.isArray(anchor.ranges)
+        ? anchor.ranges.map(([a, b]) => [Number(a), Number(b)]) : null,
     },
     anchorUtxo: anchor,
     fee: commitFinal.fee + revealFinal.fee,
+    vsize: commitVsize + revealVsize,
   };
 }
 

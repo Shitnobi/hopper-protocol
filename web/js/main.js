@@ -996,7 +996,13 @@ const handlers = {
       const built = await app.w.broadcastPreview(preview);
       app.previewTx = null;
       closeOverlay();
-      if (preview.kind === 'transfer') {
+      if (preview.kind === 'mint') {
+        resetMintDraft();
+        updateMintPreview();
+        sound.sfx('mint');
+        toast(`Minted ${preview.name || 'frog'} on sat ${sats(preview.sat)}`, 'ok');
+        navigate('pond');
+      } else if (preview.kind === 'transfer') {
         toast(`Hopper sent to ${shortHash(preview.to, 6)}`, 'ok');
         navigate('pond');
       } else {
@@ -1034,25 +1040,14 @@ const handlers = {
     newMintSeed();
     updateMintPreview();
   },
-  mint() {
-    run('inscribing the frog (commit + reveal)', async () => {
-      const seed = app.mintSeed >>> 0;
-      const name = app.mintName.slice(0, 38);
-      let rotated = false;
-      const rotateDraft = () => {
-        if (rotated) return;
-        rotated = true;
-        resetMintDraft();
-        updateMintPreview();
-      };
-      // The wallet calls this as soon as the reveal transaction is broadcast,
-      // before its post-broadcast refresh. The fallback covers an alternate
-      // wallet path that returns without invoking the hook.
-      const built = await app.w.mint({ seed, name, onBroadcast: rotateDraft });
-      rotateDraft();
-      sound.sfx('mint');
-      toast(`Minted ${name || 'frog'} on sat ${sats(built.sat)}`, 'ok');
-      navigate('pond');
+  'preview-mint'() {
+    if (app.busy) return;
+    const seed = app.mintSeed >>> 0;
+    const name = app.mintName.slice(0, 38);
+    run('building the mint preview', async () => {
+      const preview = await app.w.previewMint({ seed, name });
+      app.previewTx = preview;
+      openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
     });
   },
   'travel-to-road'(el) {
@@ -1173,6 +1168,9 @@ const handlers = {
       app.w.backend = new DemoBackend(app.w.network, { fresh: true });
       app.w.imported.clear();
       app.w.actions = [];
+      app.w.receives = [];
+      app.w.mempool = [];
+      app.w.pending = [];
       app.w.history = [];
       app.w.frogs = [];
       app.w.utxos = [];

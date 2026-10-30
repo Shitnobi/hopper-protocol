@@ -156,6 +156,12 @@ function rateOr(value, fallback = 2) {
   return Math.max(1, Math.min(1000, n));
 }
 
+function sameRanges(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((r, i) => Array.isArray(r) && Array.isArray(b[i])
+    && Number(r[0]) === Number(b[i][0]) && Number(r[1]) === Number(b[i][1]));
+}
+
 export const DEFAULT_SETTINGS = {
   mode: 'live',
   esploraUrl: '',
@@ -218,6 +224,7 @@ export class WalletSession {
     this.frogs = [];
     this.history = [];
     this.actions = [];
+    this.receives = [];
     this.mempool = [];
     this.pending = [];
     this.imported = new Set();
@@ -264,6 +271,8 @@ export class WalletSession {
     const l = loadJson(this._ledgerKey(), null);
     if (!l) return;
     this.actions = l.actions || [];
+    this.receives = Array.isArray(l.receives)
+      ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.history = l.history || [];
     this.mempool = Array.isArray(l.mempool)
@@ -300,6 +309,7 @@ export class WalletSession {
     saveJson(this._ledgerKey(), {
       network: this.network,
       actions: this.actions.slice(-300),
+      receives: this.receives.slice(-300),
       pending: this.pending.slice(-24),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
@@ -908,6 +918,7 @@ export class WalletSession {
     for (const u of utxos) unique.set(`${u.txid}:${u.vout}`, u);
     this.utxos = [...unique.values()].sort((a, b) => b.value - a.value);
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
+    this._recordObservedReceives(this.utxos);
     this.used = used;
 
     const priorTotal = this.balance.total;
@@ -920,10 +931,24 @@ export class WalletSession {
 
     try {
       const ev = await this.backend.events(200);
-      this.history = (ev.events || []).map((e) => ({
-        height: e.height, txid: e.txid, blockHash: e.block_hash,
-        kind: e.action.kind || e.action.action, payload: e.action,
-      }));
+      // The indexer event feed is global. History is about this wallet, so
+      // keep only events for Hoppers we own, imported, received, or have an
+      // action for. Otherwise every NPC mint on the demo chain appears as if
+      // this wallet made it.
+      const walletSats = new Set();
+      for (const f of this.frogs) walletSats.add(Number(f.sat));
+      for (const sat of this.imported) walletSats.add(Number(sat));
+      for (const a of this.actions) if (a?.sat != null) walletSats.add(Number(a.sat));
+      for (const r of this.receives) if (r?.frog && r?.sat != null) walletSats.add(Number(r.sat));
+      this.history = (ev.events || [])
+        .filter((e) => {
+          const sat = Number(e.action?.frogger_sat ?? e.action?.sat);
+          return Number.isSafeInteger(sat) && walletSats.has(sat);
+        })
+        .map((e) => ({
+          height: e.height, txid: e.txid, blockHash: e.block_hash,
+          kind: e.action.kind || e.action.action, payload: e.action,
+        }));
     } catch { /* history is optional */ }
 
     // 3. Scan bookkeeping and the tip gate.
@@ -1051,6 +1076,106 @@ export class WalletSession {
     return found;
   }
 
+  /** Record every settled wallet output the chain has shown us. This is
+   *  the receive half of history: chain/indexer events and local actions do
+   *  not describe an ordinary deposit, and a confirmed deposit otherwise
+   *  vanished from the UI when it left the mempool. Grouping is by txid so
+   *  a transaction paying two of our addresses is one row. Nothing here
+   *  makes a network request. */
+  _recordObservedReceives(utxos) {
+    if (!Array.isArray(this.receives)) this.receives = [];
+    const actions = new Map();
+    const commits = new Set();
+    for (const a of this.actions || []) {
+      if (a?.txid) actions.set(String(a.txid).toLowerCase(), a);
+      if (a?.commit) commits.add(String(a.commit).toLowerCase());
+    }
+    const frogAt = new Map();
+    for (const f of this.frogs || []) {
+      const location = f?.location;
+      if (location?.txid) {
+        frogAt.set(`${String(location.txid).toLowerCase()}:${Number(location.vout)}`, f);
+      }
+    }
+    const existing = new Map();
+    for (const r of this.receives) {
+      const key = `${r.frog ? 'frog' : 'receive'}:${String(r.txid).toLowerCase()}`;
+      if (!existing.has(key)) existing.set(key, r);
+    }
+    const frogForTx = new Map();
+    for (const u of utxos || []) {
+      if (!u?.address || u.kind === 'state' || u.unconfirmed) continue;
+      const txid = String(u.txid || '').toLowerCase();
+      const record = frogAt.get(`${txid}:${Number(u.vout)}`)
+        || (Array.isArray(u.frogs) && u.frogs.length
+          ? { sat: Number(u.frogs[0]), name: null, seed: null } : null);
+      if (record) frogForTx.set(txid, record);
+    }
+    const groups = new Map();
+    for (const u of utxos || []) {
+      if (!u?.address || u.kind === 'state' || u.unconfirmed) continue;
+      const txid = String(u.txid || '').toLowerCase();
+      if (!txid || commits.has(txid)) continue;
+      const action = actions.get(txid) || null;
+      const record = frogAt.get(`${txid}:${Number(u.vout)}`)
+        || (Array.isArray(u.frogs) && u.frogs.length
+          ? { sat: Number(u.frogs[0]), name: null, seed: null } : null);
+      // A transaction we built has no receive row for its ordinary change.
+      // Its frog output is still a real arrival and gets its own row.
+      if (action && !record) continue;
+      const frog = frogForTx.get(txid) || record;
+      const key = frog ? `frog:${txid}` : `receive:${txid}`;
+      const height = Number.isInteger(Number(u.status?.block_height))
+        ? Number(u.status.block_height)
+        : Number.isInteger(Number(u.status?.height)) && Number(u.status.height) > 0
+          ? Number(u.status.height) : null;
+      const row = groups.get(key) || {
+        txid, amount: 0, address: u.address, height,
+        frog: !!frog, sat: frog ? Number(frog.sat) : null,
+        name: frog?.name ?? null, seed: frog?.seed ?? null,
+        confirmed: true, at: new Date().toISOString(),
+      };
+      row.amount += Number(u.value) || 0;
+      if (row.height == null && height != null) row.height = height;
+      if (record) {
+        row.frog = true;
+        row.sat = Number(record.sat);
+        if (record.name != null) row.name = record.name;
+        if (record.seed != null) row.seed = record.seed;
+        row.address = u.address;
+      }
+      groups.set(key, row);
+    }
+    for (const [key, incoming] of groups) {
+      let prior = existing.get(key);
+      // A delayed local-mint/indexer answer can upgrade a plain receive row
+      // for the same transaction into a Hopper arrival. Do not add a second
+      // row for the same txid.
+      if (!prior && key.startsWith('frog:')) {
+        const ordinaryKey = `receive:${incoming.txid}`;
+        const ordinary = existing.get(ordinaryKey);
+        if (ordinary) {
+          Object.assign(ordinary, {
+            frog: true, sat: incoming.sat, name: incoming.name, seed: incoming.seed,
+            address: incoming.address,
+          });
+          existing.delete(ordinaryKey);
+          existing.set(key, ordinary);
+          prior = ordinary;
+        }
+      }
+      if (prior) {
+        if (prior.height == null && incoming.height != null) prior.height = incoming.height;
+        if (prior.name == null && incoming.name != null) prior.name = incoming.name;
+        if (prior.seed == null && incoming.seed != null) prior.seed = incoming.seed;
+        continue;
+      }
+      this.receives.push(incoming);
+      existing.set(key, incoming);
+    }
+    if (this.receives.length > 300) this.receives = this.receives.slice(-300);
+  }
+
   async _ownsFrog(record, utxos) {
     // 1. The location is one of our watched outputs (mint / received).
     const direct = utxos.find((u) => record.location && u.txid === record.location.txid && u.vout === record.location.vout);
@@ -1119,6 +1244,7 @@ export class WalletSession {
       frogs: this.frogs,
       history: this.history,
       actions: this.actions,
+      receives: this.receives,
       mempool: this.mempool,
       keys: this.keys,
       ord: this.ord,
@@ -1295,12 +1421,15 @@ export class WalletSession {
     });
   }
 
-  async mint({ seed, name = '', feeRate = null, revealFeeRate = null, onBroadcast = null }) {
+  /** Build the commit/reveal pair and stop. This is the mint preview:
+   *  building signs both transactions, but nothing is broadcast or recorded
+   *  until broadcastPreview() is called. */
+  async previewMint({ seed, name = '', feeRate = null, revealFeeRate = null } = {}) {
     await this.refresh();
     const rate = rateOr(feeRate ?? this.settings.feeRate);
+    const revealRate = rateOr(revealFeeRate ?? rate);
     const args = {
-      utxos: this._funding(), seed, name, feeRate: rate,
-      revealFeeRate: rateOr(revealFeeRate ?? rate),
+      utxos: this._funding(), seed, name, feeRate: rate, revealFeeRate: revealRate,
     };
     let built;
     try {
@@ -1315,23 +1444,43 @@ export class WalletSession {
       console.warn('mint worker unavailable; building on the main thread', err.message);
       built = buildMint({ keys: this.keys, ...args });
     }
-    await this.backend.broadcast(built.commit.hex);
-    await this.backend.broadcast(built.reveal.hex);
-    // The reveal is the mint. Tell the UI immediately so its seed draft can
-    // rotate even if the post-broadcast refresh (below) fails.
-    if (onBroadcast) {
-      try { onBroadcast(built); } catch (e) {
-        console.warn('mint broadcast callback failed', e.message || String(e));
-      }
-    }
-    this._recordAction({
-      kind: 'mint', sat: built.sat, seed, name,
-      txid: built.reveal.txid, commit: built.commit.txid, inscriptionId: built.reveal.inscriptionId,
-    });
-    this.imported.add(Number(built.sat));
-    // The mint output belongs to the minted sat; a refresh sees it.
-    await this.refresh();
-    return built;
+    const destinationAmount = built.reveal.tx.outputs[0]?.value ?? 1000n;
+    return {
+      kind: 'mint',
+      built,
+      seed,
+      name,
+      mintName: name || 'UNNAMED',
+      sat: Number(built.sat),
+      to: this.keys.frogAddress(),
+      destinationAddress: this.keys.frogAddress(),
+      destinationAmount,
+      amount: destinationAmount,
+      amountNumber: Number(destinationAmount),
+      changeAddress: built.commit.changeAddress,
+      changeAmount: built.commit.changeValue,
+      revealChangeAddress: built.reveal.changeAddress,
+      revealChangeAmount: built.reveal.changeValue,
+      feeRate: rate,
+      revealFeeRate: revealRate,
+      fee: built.fee,
+      vsize: built.vsize,
+      effectiveFeeRate: Number(built.fee) / Math.max(1, built.vsize),
+      commitFee: built.commit.fee,
+      revealFee: built.reveal.fee,
+      commitVsize: built.commit.vsize,
+      revealVsize: built.reveal.vsize,
+      commitTxid: built.commit.txid,
+      revealTxid: built.reveal.txid,
+      inscriptionId: built.reveal.inscriptionId,
+    };
+  }
+
+  /** Direct mint helper retained for non-UI callers. The UI uses
+   *  previewMint() followed by broadcastPreview() so approval is explicit. */
+  async mint({ seed, name = '', feeRate = null, revealFeeRate = null, onBroadcast = null } = {}) {
+    const preview = await this.previewMint({ seed, name, feeRate, revealFeeRate });
+    return this.broadcastPreview(preview, { onMintBroadcast: onBroadcast });
   }
 
   async prepare(frog, { feeRate = null } = {}) {
@@ -1460,13 +1609,30 @@ export class WalletSession {
       if (Number(live.value) !== Number(input.value)) {
         throw new Error('preview expired: an input value changed; cancel and preview again');
       }
-      if (live.script && input.script && !equalBytes(live.script, input.script)) {
+      const inputScript = typeof input.script === 'string' ? hexToBytes(input.script) : input.script;
+      if (live.script && inputScript && !equalBytes(live.script, inputScript)) {
         throw new Error('preview expired: an input script changed; cancel and preview again');
       }
-      if (preview.kind === 'send'
+      if ((preview.kind === 'send' || preview.kind === 'mint')
           && (live.kind !== 'p2wpkh' || live.exact === false || live.spendable === false
             || (live.frogs && live.frogs.length))) {
         throw new Error('preview expired: a funding coin now carries a Hopper; cancel and preview again');
+      }
+    }
+    if (preview.kind === 'mint') {
+      const anchor = preview.built.anchor;
+      const anchorTxid = String(anchor?.txid || '').toLowerCase();
+      const liveAnchor = (this.utxos || []).find((u) => String(u.txid).toLowerCase() === anchorTxid
+        && Number(u.vout) === Number(anchor?.vout));
+      if (!liveAnchor) {
+        throw new Error('preview expired: the anchor coin has already been spent; cancel and preview again');
+      }
+      if (!sameRanges(liveAnchor.ranges, anchor.ranges)) {
+        throw new Error('preview expired: the anchor coin ordinal ranges changed; cancel and preview again');
+      }
+      if (!preview.built.inputs?.some((i) => String(i.txid).toLowerCase() === anchorTxid
+        && Number(i.vout) === Number(anchor.vout))) {
+        throw new Error('preview expired: the mint inputs changed; cancel and preview again');
       }
     }
     if (preview.kind === 'transfer') {
@@ -1481,9 +1647,18 @@ export class WalletSession {
   }
 
   /** Approve a preview: revalidate state, then broadcast exactly once.
-   *  There is no broadcast call anywhere in previewSend/previewTransfer. */
-  async broadcastPreview(preview, { revalidate = true } = {}) {
-    if (!preview?.built?.hex || !preview?.built?.tx) throw new Error('no transaction preview to broadcast');
+   *  There is no broadcast call anywhere in previewMint/previewSend/
+   *  previewTransfer. A mint is the one preview that approves two chained
+   *  transactions: the commit, then the reveal that spends it. */
+  async broadcastPreview(preview, { revalidate = true, onMintBroadcast = null } = {}) {
+    const mint = preview?.kind === 'mint';
+    if (mint) {
+      if (!preview?.built?.commit?.hex || !preview?.built?.reveal?.hex) {
+        throw new Error('no mint preview to broadcast');
+      }
+    } else if (!preview?.built?.hex || !preview?.built?.tx) {
+      throw new Error('no transaction preview to broadcast');
+    }
     if (revalidate) await this._revalidatePreview(preview);
     if (preview.kind === 'send') {
       // Record the full safety envelope before broadcasting. If it cannot be
@@ -1509,6 +1684,31 @@ export class WalletSession {
         kind: 'send', txid: preview.built.txid, to: preview.to, amount: String(preview.amountNumber),
         fee: Number(preview.built.fee), rbf,
       });
+    } else if (preview.kind === 'mint') {
+      const built = preview.built;
+      await this.backend.broadcast(built.commit.hex);
+      try {
+        await this.backend.broadcast(built.reveal.hex);
+      } catch (e) {
+        const err = new Error(`commit ${String(built.commit.txid).slice(0, 12)}… was accepted, but the reveal was rejected: ${e.message || String(e)}`);
+        err.commitBroadcast = true;
+        err.commitTxid = built.commit.txid;
+        throw err;
+      }
+      // The reveal is the mint. Tell the UI immediately so its seed draft can
+      // rotate even if the post-broadcast refresh (below) fails.
+      if (onMintBroadcast) {
+        try { onMintBroadcast(built); } catch (e) {
+          console.warn('mint broadcast callback failed', e.message || String(e));
+        }
+      }
+      this._recordAction({
+        kind: 'mint', sat: built.sat, seed: preview.seed, name: preview.name,
+        txid: built.reveal.txid, commit: built.commit.txid,
+        inscriptionId: built.reveal.inscriptionId,
+        fee: Number(built.fee), vsize: built.vsize,
+      });
+      this.imported.add(Number(built.sat));
     } else if (preview.kind === 'transfer') {
       await this.backend.broadcast(preview.built.hex);
       this._recordAction({

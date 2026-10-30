@@ -336,6 +336,7 @@ await fill('send-amount', '12345');
 await fill('send-fee', '2');
 await click('preview-send');
 await waitFor(`document.querySelector('.overlay')?.innerText.includes('Actual fee')`, 15000, 'send preview again');
+await waitFor('document.getElementById("busy")?.hidden !== false', 5000, 'send approval ready');
 await click('do-approve-tx');
 await waitFor(`document.querySelector('#toasts')?.innerText.includes('Sent 12,345 sats')`, 30000, 'sent toast');
 console.log('send approval: broadcast');
@@ -601,7 +602,10 @@ console.log('scroll: route starts at top');
 // 2. Mint view: the seed is wallet-assigned, dice-rerollable, never typed;
 // the name starts blank.
 await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
-await waitFor('document.querySelector("[data-action=mint]")');
+await waitFor('document.querySelector("[data-action=preview-mint]")');
+const mintButtonLabel = await evaluate(`document.querySelector('[data-action=preview-mint]')?.textContent.trim()`);
+console.log('mint button:', mintButtonLabel);
+if (mintButtonLabel !== 'MINT!') errors.push(`mint button label changed: ${JSON.stringify(mintButtonLabel)}`);
 const draft = await evaluate(`({
   seed: document.querySelector('[data-seed-label]')?.textContent || '',
   name: document.querySelector('[data-input=mint-name]')?.value,
@@ -622,12 +626,72 @@ if (rolled.seed === draft.seed) errors.push('mint: dice did not change the seed'
 if (rolled.name !== '') errors.push('mint: dice changed the name');
 await fill('mint-name', 'Test Hopper');
 await sleep(300);
-await click('mint');
-await waitFor('location.hash === "#/pond"', 40000, 'mint to navigate to pond');
+
+// MINT! is still the button, but it now opens the same review boundary as a
+// send. Build the commit/reveal pair, show both transactions, and do not
+// broadcast until approval.
+await click('preview-mint');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('REVIEW MINT')`, 40000, 'mint preview');
+await waitFor('document.getElementById("busy")?.hidden !== false', 5000, 'mint preview build finished');
+const mintPreview = await evaluate(`(() => {
+  const overlay = document.querySelector('.overlay');
+  const text = overlay?.innerText || '';
+  const modal = overlay?.querySelector('.modal, .sheet');
+  return {
+    text,
+    cancel: Boolean(overlay?.querySelector('[data-action=abort-preview]')),
+    approve: Boolean(overlay?.querySelector('[data-action=do-approve-tx]')),
+    sw: modal?.scrollWidth || 0,
+    cw: modal?.clientWidth || 0,
+  };
+})()`);
+console.log('mint preview:', mintPreview.text.replace(/\n/g, ' | ').slice(0, 420));
+if (!mintPreview.text.includes('Commit txid')
+  || !mintPreview.text.includes('Reveal txid')
+  || !mintPreview.text.includes('Commit fee')
+  || !mintPreview.text.includes('Reveal fee')
+  || !mintPreview.text.includes('Total actual fee')
+  || !mintPreview.text.includes('2 transactions')
+  || !mintPreview.text.includes('APPROVING BROADCASTS BOTH TRANSACTIONS')
+  || !mintPreview.cancel || !mintPreview.approve) {
+  errors.push(`mint preview is incomplete: ${JSON.stringify(mintPreview.text.slice(0, 700))}`);
+}
+if (mintPreview.sw > mintPreview.cw + 1) {
+  errors.push(`mint preview overflows: ${JSON.stringify({ sw: mintPreview.sw, cw: mintPreview.cw })}`);
+}
+await click('abort-preview');
+await waitFor('document.getElementById("overlay").hidden', 5000, 'mint preview cancelled');
+const preservedDraft = await evaluate(`({
+  seed: document.querySelector('[data-seed-label]')?.textContent || '',
+  name: document.querySelector('[data-input=mint-name]')?.value,
+})`);
+if (preservedDraft.seed !== rolled.seed || preservedDraft.name !== 'Test Hopper') {
+  errors.push(`mint cancel changed the draft: ${JSON.stringify({ rolled, preservedDraft })}`);
+}
+console.log('mint cancel: draft preserved');
+
+await click('preview-mint');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('REVIEW MINT')`, 40000, 'mint preview again');
+await waitFor('document.getElementById("busy")?.hidden !== false', 5000, 'mint approval ready');
+await click('do-approve-tx');
+await waitFor('location.hash === "#/pond"', 40000, 'approved mint to navigate to pond');
 await waitFor('document.querySelectorAll(".pond-item").length > 0', 20000, 'minted frog card');
 const pond = await evaluate('document.querySelector("#app")?.innerText');
 console.log('pond:', pond?.replace(/\n/g, ' | '));
 if (logs.some((l) => /mint worker unavailable/i.test(l))) errors.push('mint worker fell back to the main thread');
+
+// History is a wallet ledger, not a chain-wide event dump: the initial
+// faucet deposit and the Hopper output must be visible beside the MINT row.
+await evaluate(`document.querySelector('[data-action=nav][data-view=history]').click()`);
+await sleep(250);
+const historyText = await evaluate('document.querySelector("#app")?.innerText || ""');
+console.log('history:', historyText.replace(/\n/g, ' | ').slice(0, 500));
+if (!/HOPPER ARRIVED/.test(historyText)) errors.push('history: missing the Hopper arrival');
+if (!/\+200,000 sats/.test(historyText)) errors.push('history: missing the initial wallet deposit');
+if (!/MINT/.test(historyText)) errors.push('history: missing the mint action');
+if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC mints are still visible');
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await waitFor('document.querySelectorAll(".pond-item").length > 0', 15000, 'pond after history check');
 
 // The pond card offers SEND and TRAVEL TO ROAD side by side.
 const pondActions = await evaluate(`(() => {
@@ -653,6 +717,7 @@ await fill('transfer-to', autoReceive);
 await fill('transfer-fee', '2');
 await click('preview-transfer');
 await waitFor(`document.querySelector('.overlay')?.innerText.includes('SEND HOPPER')`, 15000, 'Hopper transfer preview');
+await waitFor('document.getElementById("busy")?.hidden !== false', 5000, 'Hopper preview build finished');
 const hopperPreviewUi = await evaluate(`(() => {
   const t = document.querySelector('.overlay')?.innerText || '';
   return {

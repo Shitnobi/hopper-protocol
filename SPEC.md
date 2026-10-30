@@ -437,15 +437,22 @@ The wallet never replaces a HOPPER action. The transaction builder recomputes
 the FIFO sat ranges and refuses a replacement if a known Hopper sat would land
 in its fee.
 
-A browser **SEND** or Hopper **TRANSFER** is previewed before broadcast. The
-preview shows the destination address and amount, change address and amount
-(or "one output" for a transfer), chosen fee rate and actual fee in sats.
+A browser **SEND**, Hopper **TRANSFER** or **MINT** is previewed before
+broadcast. SEND and TRANSFER display **PREVIEW TRANSACTION**; MINT keeps its
+**MINT!** button and opens the same review window. The preview shows the
+destination address and amount, change address and amount (or "one output"
+for a transfer), chosen fee rate and actual fee in sats. A mint shows the
+commit and reveal txids, both change outputs, both fees and the total size.
 CANCEL performs no broadcast, persists no action and spends nothing.
-Approval re-scans and refuses the preview if any input moved or gained a
-Hopper, then broadcasts the exact previewed bytes. Fee recommendations come
-from mempool.space `/api/v1/fees/precise` (`fastestFee`, `halfHourFee`,
-`economyFee`); the chosen rate remains manually editable, and values below
-the 1 sat/vB wallet relay floor are raised to it.
+Approval re-scans and refuses the preview if any input moved, an anchor's
+ordinal ranges changed, or a coin gained a Hopper, then broadcasts the exact
+previewed bytes. A mint approval broadcasts the commit and then the reveal
+that spends it; if the reveal is rejected after the commit was accepted, the
+error names the accepted commit and no mint action is recorded. A mint never
+has an RBF path. Fee recommendations come from mempool.space
+`/api/v1/fees/precise` (`fastestFee`, `halfHourFee`, `economyFee`); the
+chosen rate remains manually editable, and values below the 1 sat/vB wallet
+relay floor are raised to it.
 
 ### 3.7 Sat assignment invariant
 
@@ -475,6 +482,12 @@ The wallet and indexer both verify this with ordinal range arithmetic.
   by the wallet's address scan plus the indexer/ord. It is imported by
   reading its mint inscription and replaying its history from the mint
   outpoint.
+* History is wallet-scoped, not a raw indexer feed. It merges local actions,
+  events whose Hopper sat belongs to this wallet, settled outputs observed
+  on its watched scripts, and mempool rows. A confirmed ordinary deposit or
+  a Hopper output is retained as a `receive` row in the ledger, so it stays
+  visible after the coin is spent. Events for unrelated public/NPC Hoppers
+  are filtered out.
 
 ---
 

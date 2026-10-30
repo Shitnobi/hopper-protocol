@@ -420,6 +420,28 @@ function historyRows(w) {
       bumpable: false,
     });
   }
+  for (const r of w.receives || []) {
+    if (!r?.txid) continue;
+    rows.push({
+      kind: 'receive',
+      height: r.height ?? null,
+      txid: r.txid,
+      sat: r.sat ?? null,
+      seed: r.seed,
+      name: r.name,
+      amount: r.amount,
+      address: r.address,
+      at: r.at,
+      chain: true,
+      pending: false,
+      confirmed: r.confirmed !== false,
+      frog: !!r.frog,
+      fee: null,
+      bumps: 0,
+      bumpable: false,
+      outcome: null,
+    });
+  }
   for (const a of w.actions || []) {
     const isPending = pending.has(a.txid);
     rows.push({
@@ -450,14 +472,19 @@ function historyRows(w) {
     rows.push({
       kind: 'receive', height: null, txid: m.txid, sat: null, seed: undefined,
       name: undefined, amount: m.amount, address: m.address, at: m.at ?? null,
-      chain: true, mempool: true, pending: true, fee: null, bumps: 0, bumpable: false,
-      outcome: null,
+      chain: true, mempool: true, pending: true, confirmed: false,
+      fee: null, bumps: 0, bumpable: false, outcome: null,
     });
   }
   const seen = new Set();
   return rows
     .filter((r) => {
-      const k = `${r.kind}:${r.txid || ''}:${r.sat ?? ''}`;
+      // Receives are one row per transaction even when a frog output and
+      // ordinary change were both observed. A mint is still allowed to have
+      // its own MINT row beside the Hopper-arrival row.
+      const k = r.kind === 'receive'
+        ? `receive:${r.txid || ''}`
+        : `${r.kind}:${r.txid || ''}:${r.sat ?? ''}`;
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -508,8 +535,9 @@ function txRow(app, r) {
   }
 
   const inMempool = !!(r.mempool || r.pending);
+  const label = r.frog ? 'HOPPER ARRIVED' : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
-  if (r.mempool && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
+  if ((r.mempool || r.kind === 'receive') && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
   if (r.to) detail.push(`to ${truncTxid(r.to)}`);
@@ -532,7 +560,9 @@ function txRow(app, r) {
     ? chip('IN MEMPOOL', 'accent')
     : r.height != null
       ? `<span class="tiny muted">⬛ ${sats(r.height)}</span>`
-      : chip('PENDING', 'accent');
+      : r.confirmed
+        ? chip('CONFIRMED', 'dim')
+        : chip('PENDING', 'accent');
 
   return `
     <div class="card-row${inMempool ? ' mempool' : ''}" ${r.sat != null ? `data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer"` : ''}>
@@ -540,7 +570,7 @@ function txRow(app, r) {
         <div class="tx-icon">${icon}</div>
         <div class="tx-main">
           <div class="tx-top">
-            <span class="kind">${esc(KIND_LABEL[r.kind] || String(r.kind).toUpperCase())}</span>
+            <span class="kind">${esc(label)}</span>
             <span class="txid">${esc(truncTxid(r.txid))}</span>
           </div>
           ${detail.length ? `<div class="tx-detail">${esc(detail.join(' · '))}</div>` : ''}
@@ -587,7 +617,7 @@ export function mint(app) {
           </label>
           <div class="mint-actions">
             ${logBtn('🎲 Reroll', 'random-seed', { edge: 'dim', cls: '' })}
-            ${logBtn('MINT!', 'mint', { edge: 'accent', cls: '', attrs: `${app.busy || !coin ? 'disabled' : ''}` })}
+            ${logBtn('MINT!', 'preview-mint', { edge: 'accent', cls: '', attrs: `${app.busy || !coin ? 'disabled' : ''}` })}
           </div>
           <div class="hint">Rarity is cosmetic — it never affects crossing odds. Fair by design.</div>
         </div>
@@ -1261,29 +1291,57 @@ export function sendSheet(app) {
 
 export function txPreviewSheet(app, p) {
   const hopper = p.kind === 'transfer';
-  const change = p.changeAddress
-    ? `<dd class="tiny wrap">${esc(p.changeAddress)}</dd>`
-    : '<dd>none — this transaction has one output</dd>';
-  const changeAmount = p.changeAddress ? `${sats(p.changeAmount)} sats` : '0 sats';
-  return `
-    <div class="row"><h2>REVIEW TRANSACTION</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">${hopper ? 'SEND HOPPER' : 'SEND BITCOIN'} · nothing is broadcast until you approve.</div>
-    <div class="stat-grid mt10">
+  const mint = p.kind === 'mint';
+  const title = mint ? 'REVIEW MINT' : 'REVIEW TRANSACTION';
+  const subtitle = mint
+    ? 'MINT HOPPER · nothing is broadcast until you approve.'
+    : `${hopper ? 'SEND HOPPER' : 'SEND BITCOIN'} · nothing is broadcast until you approve.`;
+  const changeRow = (label, address, amount) => (address
+    ? `<dt>${esc(label)}</dt><dd class="tiny wrap">${esc(address)}</dd>
+       <dt>${esc(label)} amount</dt><dd>${sats(amount)} sats</dd>`
+    : `<dt>${esc(label)}</dt><dd>none — no change output</dd>`);
+  const feeRate = mint && Number(p.revealFeeRate) !== Number(p.feeRate)
+    ? `${feeRateLabel(p.feeRate)} commit / ${feeRateLabel(p.revealFeeRate)} reveal`
+    : feeRateLabel(p.feeRate);
+  const rows = mint ? `
+      <dt>Hopper</dt><dd>${esc(p.mintName || 'UNNAMED')}</dd>
+      <dt>Seed</dt><dd>${esc(seedText(p.seed))}</dd>
+      <dt>Frog address</dt><dd class="tiny wrap">${esc(p.destinationAddress || p.to)}</dd>
+      <dt>Frog amount</dt><dd>${sats(p.destinationAmount)} sats + 0-sat envelope</dd>
+      <dt>Commit txid</dt><dd class="tiny wrap">${esc(p.commitTxid || p.built.commit.txid)}</dd>
+      <dt>Reveal txid</dt><dd class="tiny wrap">${esc(p.revealTxid || p.built.reveal.txid)}</dd>
+      ${changeRow('Commit change', p.changeAddress, p.changeAmount)}
+      ${changeRow('Reveal change', p.revealChangeAddress, p.revealChangeAmount)}
+      <dt>Commit fee</dt><dd>${sats(p.commitFee ?? p.built.commit.fee)} sats · ${sats(p.commitVsize ?? p.built.commit.vsize)} vB</dd>
+      <dt>Reveal fee</dt><dd>${sats(p.revealFee ?? p.built.reveal.fee)} sats · ${sats(p.revealVsize ?? p.built.reveal.vsize)} vB</dd>
+      <dt>Total actual fee</dt><dd>${sats(p.fee)} sats</dd>
+      <dt>Total size</dt><dd>${sats(p.vsize || (Number(p.commitVsize) + Number(p.revealVsize)) || 0)} vB · 2 transactions</dd>
+      <dt>Fee rate</dt><dd>${esc(feeRate)}</dd>` : `
       <dt>Destination address</dt><dd class="tiny wrap">${esc(p.to)}</dd>
       <dt>Destination amount</dt><dd>${sats(p.destinationAmount)} sats</dd>
-      <dt>Change address</dt>${change}
-      <dt>Change amount</dt><dd>${esc(changeAmount)}</dd>
-      <dt>Fee rate</dt><dd>${esc(feeRateLabel(p.feeRate))}</dd>
+      <dt>Change address</dt>${p.changeAddress
+        ? `<dd class="tiny wrap">${esc(p.changeAddress)}</dd>`
+        : '<dd>none — this transaction has one output</dd>'}
+      <dt>Change amount</dt><dd>${sats(p.changeAddress ? p.changeAmount : 0n)} sats</dd>
+      <dt>Fee rate</dt><dd>${esc(feeRate)}</dd>
       <dt>Actual fee</dt><dd>${sats(p.fee)} sats</dd>
-      <dt>Transaction size</dt><dd>${sats(p.built.vsize || 0)} vB</dd>
-    </div>
-    <div class="warnbox mt10">
-      <b>APPROVING BROADCASTS THIS TRANSACTION.</b><br>
+      <dt>Transaction size</dt><dd>${sats(p.built.vsize || 0)} vB</dd>`;
+  const warning = mint
+    ? `<b>APPROVING BROADCASTS BOTH TRANSACTIONS.</b><br>
+      The commit is broadcast first. The reveal spends that commit and creates the Hopper. The
+      wallet rechecks the anchor and funding inputs before either goes out. Cancel leaves the
+      wallet untouched and puts nothing in the mempool.`
+    : `<b>APPROVING BROADCASTS THIS TRANSACTION.</b><br>
       The wallet rechecks the inputs first, then broadcasts this exact signed
-      transaction. Cancel leaves the wallet untouched and puts nothing in the mempool.
+      transaction. Cancel leaves the wallet untouched and puts nothing in the mempool.`;
+  return `
+    <div class="row"><h2>${title}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">${subtitle}</div>
+    <div class="stat-grid mt10">${rows}
     </div>
-    <div class="hint">Actual fee is what this signed transaction pays, not an estimate. Effective rate:
-      ${esc(feeRateLabel(p.effectiveFeeRate))}.</div>
+    <div class="warnbox mt10">${warning}</div>
+    <div class="hint">Actual fee is what these signed transactions pay, not an estimate. Effective rate:
+      ${esc(feeRateLabel(p.effectiveFeeRate))}.${mint ? ' The reveal cannot confirm before its commit.' : ''}</div>
     <div class="actions mt14">
       ${logBtn('CANCEL', 'abort-preview', { edge: 'dim', cls: 'small' })}
       ${logBtn('APPROVE & BROADCAST', 'do-approve-tx', { edge: 'accent' })}
