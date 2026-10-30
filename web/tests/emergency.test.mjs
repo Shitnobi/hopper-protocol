@@ -13,7 +13,11 @@ import { branchHash, controlBlock, leafHash, taprootOutputKey } from '../js/wall
 import { bytesToHex, hexToBytes, equalBytes } from '../js/core/hex.js';
 import { descriptorChecksumOk } from '../js/core/descriptor.js';
 import { qrModules } from '../js/ui/qr.js';
-import { emergencySheet } from '../js/ui/screens.js';
+import { emergencySheet, recoverySheet } from '../js/ui/screens.js';
+import {
+  emptyRecoveryStore, normalizeRecoveryStore, reconcileRecoveryStore, recoveryPackDoc,
+  PENDING_RECOVERY_BLOCKS,
+} from '../js/wallet/recovery.js';
 
 const MNEMONIC = 'deliver cat inch coyote consider beyond extend fence fish grain million stock';
 let checks = 0;
@@ -64,6 +68,8 @@ const staged = {
   network: 'regtest',
   frogs: [frog],
   tipHeight: chain.tipHeight(),
+  _emergencyEntry: WalletSession.prototype._emergencyEntry,
+  _emergencyFingerprint: WalletSession.prototype._emergencyFingerprint,
   _frogUtxo: () => ({ kind: 'state', value: CARD_VALUE, txid: prep.txid, vout: 0 }),
 };
 const doc = WalletSession.prototype.emergencyDescriptors.call(staged, { now: '2026-10-30T00:00:00Z' });
@@ -149,5 +155,118 @@ const payload = /data-qr="([^"]*)"/.exec(html)?.[1] || '';
 ok(payload.length > 0 && payload.length <= 2300, `QR payload fits (${payload.length} bytes)`);
 ok(qrModules(payload.replaceAll('&quot;', '"')) !== null, 'the QR encoder accepts the payload');
 ok(html.includes('JSON above is authoritative') || payload.length <= 2300, 'the sheet names the authoritative form');
+
+
+// --- automatic recovery packs -------------------------------------------
+const store0 = emptyRecoveryStore({ fingerprint: doc.fingerprint, network: 'regtest' });
+const r1 = reconcileRecoveryStore(store0, doc, {
+  tipHeight: doc.tip_height, now: '2026-10-30T00:00:02Z',
+});
+eq(r1.created, 1, 'first staged layout creates one pack');
+const pack1 = r1.store.packs[String(e.sat)];
+eq(pack1.state_outpoint, `${prep.txid}:0`, 'pack records the staged outpoint');
+eq(pack1.descriptor, e.descriptor, 'pack carries the descriptor');
+eq(pack1.first_staged_tip, doc.tip_height, 'pack records the first staged tip');
+eq(pack1.history.length, 0, 'a new pack has no history');
+
+const r2 = reconcileRecoveryStore(r1.store, doc, {
+  tipHeight: doc.tip_height, now: '2026-10-30T00:00:03Z',
+});
+eq(r2.changed, false, 're-seeing the same layout does not rewrite it');
+eq(r2.store.packs[String(e.sat)].updated_at, '2026-10-30T00:00:02Z', 'created timestamp survives');
+
+const nextTxid = 'ef'.repeat(32);
+const movedDoc = {
+  ...doc,
+  frogs: [{ ...e, state_outpoint: `${nextTxid}:0`, state_value: CARD_VALUE }],
+};
+const r3 = reconcileRecoveryStore(r2.store, movedDoc, {
+  tipHeight: doc.tip_height + 1, now: '2026-10-30T00:00:04Z',
+});
+eq(r3.moved, 1, 'a moved state output is recorded');
+const pack2 = r3.store.packs[String(e.sat)];
+eq(pack2.state_outpoint, `${nextTxid}:0`, 'pack follows the new staged outpoint');
+eq(pack2.history.length, 1, 'the old layout is kept in history');
+eq(pack2.history[0].state_outpoint, `${prep.txid}:0`, 'history names the old outpoint');
+eq(pack2.history[0].descriptor, e.descriptor, 'history keeps the old descriptor');
+eq(pack2.created_at, pack1.created_at, 'the pack keeps its creation time');
+eq(pack2.first_staged_tip, pack1.first_staged_tip, 'the first staged tip is preserved');
+
+const exportedPacks = recoveryPackDoc(r3.store, { now: '2026-10-30T00:00:05Z' });
+ok(Array.isArray(exportedPacks.packs) && exportedPacks.packs.length === 1, 'export has a packs array');
+ok(exportedPacks.packs[0].history.length === 1, 'export carries layout history');
+ok(!/xprv|private[_-]?key|mnemonic|seed words/i.test(JSON.stringify(exportedPacks)),
+  'recovery packs carry no key material');
+for (const word of MNEMONIC.split(' ')) {
+  ok(!new RegExp(`\\b${word}\\b`, 'i').test(JSON.stringify(exportedPacks)), `pack leaked mnemonic word: ${word}`);
+}
+
+// A malformed persisted pack is dropped instead of being trusted.
+const badStore = normalizeRecoveryStore({
+  type: 'hopper-v7-recovery-store', version: 1, fingerprint: doc.fingerprint,
+  packs: [{ ...pack1, sat: 'not-a-sat', descriptor: '' }, pack1],
+}, { fingerprint: doc.fingerprint, network: 'regtest' });
+eq(Object.keys(badStore.packs).length, 1, 'only the valid stored pack survives');
+
+// The wallet-side local record used immediately after PREPARE/HOP.
+const fake = {
+  keys: wallet,
+  network: 'regtest',
+  fingerprint: wallet.fingerprint,
+  tipHeight: chain.tipHeight(),
+  recovery: emptyRecoveryStore({ fingerprint: doc.fingerprint, network: 'regtest' }),
+  saved: 0,
+  _emergencyEntry: WalletSession.prototype._emergencyEntry,
+  _emergencyFingerprint: WalletSession.prototype._emergencyFingerprint,
+  _rememberRecovery: WalletSession.prototype._rememberRecovery,
+  _saveRecovery() { this.saved += 1; },
+};
+WalletSession.prototype._rememberRecovery.call(fake, frog, {
+  txid: prep.txid, vout: 0, value: CARD_VALUE, tipHeight: chain.tipHeight(),
+});
+const local1 = fake.recovery.packs[String(frog.sat)];
+eq(local1.state_outpoint, `${prep.txid}:0`, 'PREPARE writes a pack before the indexer answers');
+eq(fake.saved, 1, 'the local pack is persisted');
+const hopTxid = 'cd'.repeat(32);
+WalletSession.prototype._rememberRecovery.call(fake, frog, {
+  txid: hopTxid, vout: 0, value: CARD_VALUE, tipHeight: chain.tipHeight() + 1,
+});
+const local2 = fake.recovery.packs[String(frog.sat)];
+eq(local2.state_outpoint, `${hopTxid}:0`, 'HOP updates the local pack');
+eq(local2.history.length, 1, 'HOP keeps the previous staged outpoint');
+eq(local2.history[0].state_outpoint, `${prep.txid}:0`, 'history is the PREPARE output');
+
+// A post-broadcast refresh may still see the old indexer location. It must
+// not walk a locally recorded pack backwards while the new tx confirms.
+const staleDoc = { ...doc, tip_height: chain.tipHeight() + 1, frogs: [e] };
+const held = reconcileRecoveryStore(fake.recovery, staleDoc, {
+  tipHeight: chain.tipHeight() + 1, now: '2026-10-30T00:00:09Z',
+});
+eq(held.store.packs[String(frog.sat)].state_outpoint, `${hopTxid}:0`,
+  'stale indexer answer does not move a pending pack backwards');
+eq(held.store.packs[String(frog.sat)].history.length, 1,
+  'stale indexer answer adds no history');
+const confirmedDoc = { ...doc, tip_height: chain.tipHeight() + 2,
+  frogs: [{ ...e, state_outpoint: `${hopTxid}:0` }] };
+const confirmed = reconcileRecoveryStore(held.store, confirmedDoc, {
+  tipHeight: chain.tipHeight() + 2, now: '2026-10-30T00:00:10Z',
+});
+eq(confirmed.store.packs[String(frog.sat)].state_outpoint, `${hopTxid}:0`,
+  'the confirmed indexer answer keeps the new outpoint');
+eq(confirmed.store.packs[String(frog.sat)].pending_outpoint, null,
+  'confirmation clears the pending marker');
+const expired = reconcileRecoveryStore(fake.recovery, staleDoc, {
+  tipHeight: Number(local2.pending_tip) + PENDING_RECOVERY_BLOCKS + 1,
+  now: '2026-10-30T00:00:11Z',
+});
+eq(expired.store.packs[String(frog.sat)].state_outpoint, `${prep.txid}:0`,
+  'after the pending window the chain answer wins');
+eq(expired.store.packs[String(frog.sat)].pending_outpoint, null,
+  'expiry clears the pending marker');
+
+const recoveryHtml = recoverySheet({ w: staged }, exportedPacks);
+ok(recoveryHtml.includes('data-recovery-json') && recoveryHtml.includes('COPY JSON'),
+  'the recovery sheet exposes the saved JSON');
+ok(recoveryHtml.includes('1 saved pack'), 'the recovery sheet counts packs');
 
 console.log(`emergency: ${checks} checks passed`);

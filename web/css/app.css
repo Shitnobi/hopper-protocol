@@ -781,6 +781,15 @@ p { margin: .45em 0; }
 .onboard .window { position: relative; background: var(--card); padding: 17px; isolation: isolate; }
 .onboard .window > * { position: relative; z-index: 1; }
 .onboard .window .lily-canvas { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.onboard .onboard-flavor {
+  max-width: 470px;
+  margin: 18px auto 6px;
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.55;
+  text-align: center;
+}
 
 .words {
   display: grid;

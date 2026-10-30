@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v7-2';
+const VERSION = 'hopper-v7-3';
 const SHELL = [
   './',
   'index.html',
@@ -15,7 +15,6 @@ const SHELL = [
   'icons/favicon-32.png',
   'js/build-guard.js',
   'js/main.js',
-  'js/shell-reset.js',
   'js/sound.js',
   'music.mid',
   'js/core/art.js',
@@ -38,6 +37,7 @@ const SHELL = [
   'js/ui/frog-mark.js',
   'js/ui/qr.js',
   'js/ui/tour.js',
+  'js/ui/volume.js',
   'js/wallet/actions.js',
   'js/wallet/fees.js',
   'js/wallet/rbf.js',
@@ -45,6 +45,7 @@ const SHELL = [
   'js/wallet/backend.js',
   'js/wallet/keys.js',
   'js/wallet/localmint.js',
+  'js/wallet/recovery.js',
   'js/wallet/mint-client.js',
   'js/wallet/mint-worker.js',
   'js/wallet/storage.js',
@@ -57,7 +58,18 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil((async () => {
+    const cache = await caches.open(VERSION);
+    // `cache: 'reload'` keeps the install from precaching a stale copy:
+    // Pages serves scripts with max-age=600, so addAll() can freeze the
+    // previous deploy for ten minutes after a release.
+    await Promise.all(SHELL.map(async (u) => {
+      const res = await fetch(u, { cache: 'reload' });
+      if (!res.ok) throw new Error(`precache ${u}: ${res.status}`);
+      await cache.put(u, res.clone());
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (event) => {

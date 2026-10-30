@@ -1358,6 +1358,12 @@ export function settings(app) {
   const w = app.w;
   const s = app.settings;
   const book = s.addressBook || [];
+  const recovery = typeof w?.recoverySummary === 'function'
+    ? w.recoverySummary()
+    : { count: 0, last_seen_tip: null, updated_at: null };
+  const recoveryLine = recovery.count
+    ? `${recovery.count} saved pack${recovery.count === 1 ? '' : 's'} · last seen at tip ${recovery.last_seen_tip == null ? '—' : sats(recovery.last_seen_tip)} · updated ${recovery.updated_at ? new Date(recovery.updated_at).toLocaleString() : '—'}`
+    : 'No packs yet — one is written automatically when a Hopper is staged.';
   return `
     ${heading('⚙ Settings')}
     <div class="hint">BUILD ${esc(globalThis.HOPPER_BUILD || 'development')}</div>
@@ -1378,8 +1384,6 @@ export function settings(app) {
         <input type="text" data-input="ordUrl" value="${esc(s.ordUrl || '')}" placeholder="https://ordinals.com (mainnet default)">
         <label>Electrum</label>
         <input type="text" data-input="electrumUrl" value="${esc(s.electrumUrl || '')}" placeholder="wss://…">
-        <label>Fee rate</label>
-        <input type="number" min="1" max="1000" data-input="fee-rate" value="${s.feeRate}">
         <label>Deep scan</label>
         <select data-input="deepScan">
           <option value="1" ${s.deepScan ? 'selected' : ''}>On</option>
@@ -1408,14 +1412,21 @@ export function settings(app) {
           <option value="1" ${s.mute ? 'selected' : ''}>Muted</option>
         </select>
         <label>Volume</label>
-        <input type="range" min="0" max="100" data-input="volume" value="${Math.round((s.volume ?? 0.55) * 100)}">
+        <input type="range" min="0" max="100" step="1" data-input="volume" aria-label="Volume" value="${Math.round((s.volume ?? 0.55) * 100)}">
       </div>
       <div class="sound-line" data-sound-line>${esc(soundLine(app))}</div>
     </div>
 
     <div class="window" data-lily="home">
+      <div style="font-weight:700">AUTO RECOVERY PACKS</div>
+      <div class="sub">Saved automatically when a Hopper is staged and updated whenever a transaction moves its state output. Layout only — never the seed.</div>
+      <div class="hint" data-recovery-summary>${esc(recoveryLine)}</div>
+      <div class="actions mt10">${logBtn('EXPORT RECOVERY PACKS', 'export-recovery', { edge: 'dim', cls: 'small' })}</div>
+    </div>
+
+    <div class="window" data-lily="home">
       <div style="font-weight:700">EMERGENCY DESCRIPTORS</div>
-      <div class="sub">A layout backup for every staged Hopper: raw leaves, control blocks, output key and owner path. It never contains the seed.</div>
+      <div class="sub">A live snapshot for every staged Hopper: raw leaves, control blocks, output key and owner path. The automatic packs above keep the stored copy current. It never contains the seed.</div>
       <div class="actions mt10">${logBtn('EXPORT EMERGENCY DESCRIPTORS', 'export-emergency', { edge: 'dim', cls: 'small' })}</div>
     </div>
 
@@ -1505,7 +1516,7 @@ export const RULES = [
     art: 'hop',
     lines: [
       'A hop moves the Hopper: its coin is spent into a new output whose inscription records the direction. That is the whole game — one hop, one state.',
-      'You cannot take a Hopper back. A hop is a spend: once it confirms, the old state is history.',
+      'You cannot take a hop back. A hop is a spend: once it confirms, the old state is history.',
     ],
   },
   {
@@ -1513,7 +1524,7 @@ export const RULES = [
     title: 'HOME',
     art: 'home',
     lines: [
-      'A Hopper is home once it has survived the number of hops the road asks, and no block can kill it after that.',
+      'A Hopper is home once it has survived the number of hops the road asks, and nothing on the blockchain can kill it after that.',
       'Distance is how many hops it has survived; the leaderboard ranks by generation, then distance.',
     ],
   },
@@ -1531,7 +1542,7 @@ export const RULES = [
     title: 'THE BLOCK DECIDES',
     art: 'squish',
     lines: [
-      'You choose left, straight or right. The next block picks one direction for the whole block: a Hopper that picked that direction dies, every other Hopper in the block survives.',
+      'You choose left, straight or right. The next block picks which direction the cars drive in: a Hopper that picked that direction dies, every other Hopper in the block survives.',
       'The verdict is fixed at the next block and settles six blocks later; until then the Hopper shows as crossing.',
     ],
   },
@@ -1540,7 +1551,7 @@ export const RULES = [
     title: 'THE ODDS',
     art: 'grave',
     lines: [
-      'Every hop is one of three directions against a block that picks one, so each hop is a one-in-three chance of dying — no matter the generation.',
+      'Every hop is in one of three directions that cars could drive in, so each hop is a one-in-three chance of dying — no matter the generation.',
       'Longer roads are harder, not safer: surviving 5 hops is about 13%, 10 hops about 1.7%.',
       'Only ever hop a Hopper you can afford to lose.',
     ],
@@ -1950,6 +1961,25 @@ export function emergencySheet(app, doc) {
     <pre class="emergency-json" data-emergency-json style="max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px">${esc(json)}</pre>
     <div class="actions mt10">
       <button class="copy" data-action="copy-emergency">COPY JSON</button>
+      ${logBtn('CLOSE', 'close-overlay', { edge: 'dim', cls: 'small' })}
+    </div>`;
+}
+
+export function recoverySheet(app, doc) {
+  const packs = Array.isArray(doc?.packs) ? doc.packs : [];
+  const json = JSON.stringify(doc, null, 2);
+  return `
+    <div class="row"><h2>Recovery packs</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">${packs.length} saved pack${packs.length === 1 ? '' : 's'} · tip ${doc?.last_scan_tip == null ? '—' : sats(doc.last_scan_tip)} · updated ${esc(doc?.updated_at || '—')}</div>
+    <div class="stat-grid mt10">
+      <dt>Contains</dt><dd>leaves, control blocks, output keys, owner path, fingerprint, state outpoints</dd>
+      <dt>Never contains</dt><dd>seed words, xprv, private keys</dd>
+      <dt>History</dt><dd>previous layouts are kept; the newest state_outpoint in each pack is authoritative</dd>
+    </div>
+    <div class="hint">A pack is a snapshot of a staged output. After a HOP, PREPARE or TRANSFER, check that the on-chain script still matches the pack's newest entry before spending from it.</div>
+    <pre class="emergency-json" data-recovery-json style="max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px">${esc(json)}</pre>
+    <div class="actions mt10">
+      <button class="copy" data-action="copy-recovery">COPY JSON</button>
       ${logBtn('CLOSE', 'close-overlay', { edge: 'dim', cls: 'small' })}
     </div>`;
 }

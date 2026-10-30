@@ -7,6 +7,7 @@ import {
 import * as screens from './ui/screens.js';
 import { decorate, frogMarkSvg } from './ui/theme.js';
 import { paintRulesArt, playIntro } from './ui/tour.js';
+import { volumeFromRange } from './ui/volume.js';
 import { Sound } from './sound.js';
 import {
   DEFAULT_SETTINGS, WalletSession, loadSettings, saveSettings,
@@ -241,12 +242,7 @@ function onboarding() {
       ${logo}
       <div class="window" data-lily="accent" style="text-align:left">
         <div style="font-weight:700;font-size:17px">NO SERVER ON THE ART'S TRUST PATH</div>
-        <p class="muted small">A Hopper is a satoshi whose life is a sequence of Bitcoin transactions. The wallet signs; the chain decides. Twelve words are the only backup.</p>
-        <div class="stat-grid mt10">
-          <dt>Wire</dt><dd>v7 · 0x07</dd>
-          <dt>Cards</dt><dd>25,000 sats</dd>
-          <dt>Finality</dt><dd>6 blocks</dd>
-        </div>
+        <p class="onboard-flavor">A Hopper is a satoshi whose life is a sequence of Bitcoin transactions. The wallet signs; the chain decides. Twelve words are the only backup.</p>
         <div class="actions mt14">
           ${button('CREATE A WALLET', 'ob-create', 'accent')}
           ${button('IMPORT 12 WORDS', 'ob-import', 'dim')}
@@ -1066,6 +1062,22 @@ const handlers = {
   'export-emergency'() {
     openOverlay(screens.emergencyWarning(app), { lily: 'dim' });
   },
+  'export-recovery'() {
+    const doc = app.w?.recoveryPackDoc?.();
+    if (!doc || !doc.packs.length) {
+      toast('No recovery packs yet — TRAVEL TO ROAD first', 'warn');
+      return;
+    }
+    openOverlay(screens.recoverySheet(app, doc), { lily: 'accent' });
+  },
+  'copy-recovery'() {
+    const text = document.querySelector('[data-recovery-json]')?.textContent || '';
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(
+      () => toast('Recovery packs copied', 'ok'),
+      () => toast('Clipboard is not available', 'warn'),
+    );
+  },
   'show-emergency'() {
     const doc = app.w.emergencyDescriptors();
     if (!doc.frogs.length) {
@@ -1333,8 +1345,8 @@ document.addEventListener('input', (ev) => {
   } else if (key === 'volume' && app.w) {
     // Update the live gain while dragging; persist once on `change` so a
     // range drag does not synchronously rewrite localStorage sixty times.
-    const volume = Math.max(0, Math.min(1, Number(value)));
-    if (!Number.isFinite(volume)) return;
+    const volume = volumeFromRange(value, ev.target.max);
+    if (volume == null) return;
     app.w.settings.volume = volume;
     app.settings.volume = volume;
     sound.setVolume(volume);
@@ -1352,14 +1364,7 @@ document.addEventListener('change', (ev) => {
   const key = ev.target.dataset?.input;
   if (!key || !app.w) return;
   const value = ev.target.value;
-  if (key === 'fee-rate' || key === 'feeRate') {
-    const raw = Number(value);
-    if (!Number.isFinite(raw)) { ev.target.value = app.w.settings.feeRate; return; }
-    app.w.settings.feeRate = Math.max(1, Math.min(1000, raw));
-    app.settings.feeRate = app.w.settings.feeRate;
-    ev.target.value = app.w.settings.feeRate;
-    saveSettings(app.w.settings);
-  } else if (key === 'deepScan') {
+  if (key === 'deepScan') {
     app.w.settings.deepScan = value === '1';
     saveSettings(app.w.settings);
   } else if (key === 'mute') {
@@ -1369,8 +1374,8 @@ document.addEventListener('change', (ev) => {
     saveSettings(app.w.settings);
     render();
   } else if (key === 'volume') {
-    const volume = Math.max(0, Math.min(1, Number(value)));
-    if (!Number.isFinite(volume)) return;
+    const volume = volumeFromRange(value, ev.target.max);
+    if (volume == null) return;
     app.w.settings.volume = volume;
     app.settings.volume = volume;
     sound.setVolume(volume);

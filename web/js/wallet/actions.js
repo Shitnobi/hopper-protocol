@@ -65,13 +65,25 @@ export function stateScripts(frog, ownerXonly) {
 // --- fees -----------------------------------------------------------------
 
 export function estimateVsize(tx, inputTypes) {
+  // Witness item lengths are CompactSize varints: a 13.5 KB mint leaf needs
+  // three bytes, not one. Counting only the byte itself made the reveal
+  // estimate one vB short even after the control-block fix.
+  const varintLen = (n) => (n < 0xfd ? 1 : n <= 0xffff ? 3 : n <= 0xffffffff ? 5 : 9);
+  const pushLen = (n) => varintLen(n) + n;
   const base = serializeTx(tx, false).length;
   let witness = 2;
   for (const type of inputTypes) {
-    if (type.type === 'p2wpkh') witness += 1 + (1 + 72) + (1 + 33);
-    else if (type.type === 'p2tr-key') witness += 1 + (1 + 65);
-    else if (type.type === 'tapscript') witness += 1 + (1 + 65) + (1 + type.scriptLen) + (1 + 65);
-    else throw new Error(`unknown input type ${type.type}`);
+    if (type.type === 'p2wpkh') witness += 1 + pushLen(72) + pushLen(33);
+    else if (type.type === 'p2tr-key') witness += 1 + pushLen(65);
+    else if (type.type === 'tapscript') {
+      // The control block is 33 bytes for a depth-0 leaf (mint reveal) and
+      // 97 bytes for the depth-2 state leaves (CROSS/TRANSFER). Assuming 65
+      // undercounts a state spend by 32 bytes (8 vB) and overcounts a mint
+      // reveal by the same amount. Callers pass the real length; 65 remains
+      // the conservative default for any older tapscript caller.
+      const controlLen = type.controlLen ?? 65;
+      witness += 1 + pushLen(65) + pushLen(type.scriptLen) + pushLen(controlLen);
+    } else throw new Error(`unknown input type ${type.type}`);
   }
   return Math.ceil((base * 4 + witness) / 4);
 }
@@ -85,7 +97,7 @@ function actualTypes(tx, types) {
   return types.map((t, i) => {
     if (t.type !== 'tapscript') return t;
     const w = tx.inputs[i].witness;
-    return { type: 'tapscript', scriptLen: w && w[1] ? w[1].length : t.scriptLen };
+    return { ...t, scriptLen: w && w[1] ? w[1].length : t.scriptLen };
   });
 }
 
@@ -209,7 +221,9 @@ export function buildMint({
         output(0n, opReturnScript(mintEnvelope(seed, name))),
       ],
     });
-    const revealVsize = estimateVsize(revealDraft, [{ type: 'tapscript', scriptLen: leaf.length }]);
+    const revealVsize = estimateVsize(revealDraft, [{
+      type: 'tapscript', scriptLen: leaf.length, controlLen: commitControl.length,
+    }]);
     const revealFee = feeFor(revealVsize, revealRate);
     const commitValue = 1000n + revealFee;
 
@@ -274,7 +288,9 @@ export function buildMint({
   const revealFinal = finalize({
     tx: reveal,
     inputs: [{ value: commitValue }],
-    inputTypes: [{ type: 'tapscript', scriptLen: leaf.length }],
+    inputTypes: [{
+      type: 'tapscript', scriptLen: leaf.length, controlLen: commitControl.length,
+    }],
     changeIndex: 2,
     rate: revealRate,
     sign: (tx) => signTapscript(tx, 0, ord.ownerPrivate, leaf, commitControl, revealPrevouts),
@@ -421,7 +437,11 @@ export function buildCross({
     outputs: [output(CARD_VALUE, next.script), output(0n, change.script)],
   });
   const types = inputs.map((u, i) => (i === 0
-    ? { type: 'tapscript', scriptLen: state.crossLeaves[dir].length }
+    ? {
+      type: 'tapscript',
+      scriptLen: state.crossLeaves[dir].length,
+      controlLen: state.crossControls[dir].length,
+    }
     : { type: 'p2wpkh' }));
   const prevouts = inputs.map((u) => ({ value: BigInt(u.value), script: u.script }));
 
@@ -470,7 +490,7 @@ export function buildTransfer({
     outputs: [output(0n, recipientScript)],
   });
   const type = kind === 'state'
-    ? { type: 'tapscript', scriptLen: script.length }
+    ? { type: 'tapscript', scriptLen: script.length, controlLen: state.sendControl.length }
     : kind === 'p2wpkh' ? { type: 'p2wpkh' } : { type: 'p2tr-key' };
 
   const total = BigInt(utxo.value);

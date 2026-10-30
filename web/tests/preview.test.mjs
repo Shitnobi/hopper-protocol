@@ -1,6 +1,7 @@
 // Preview is a hard boundary: building a send/transfer must not broadcast,
 // record an action, or touch the mempool. Approval broadcasts exactly once.
 import assert from 'node:assert/strict';
+import { vsize } from '../js/wallet/tx.js';
 
 const store = new Map();
 globalThis.localStorage = {
@@ -78,6 +79,11 @@ function counter(w) {
   ok(p.revealTxid, 'mint preview has a reveal txid');
   ok(p.commitFee > 0n && p.revealFee > 0n, 'mint preview exposes both fees');
   eq('mint preview fee is commit + reveal', p.fee, p.commitFee + p.revealFee);
+  const revealActual = vsize(p.built.reveal.tx);
+  const revealNeeded = BigInt(Math.ceil(revealActual * p.revealFeeRate));
+  ok(p.revealFee >= revealNeeded, 'reveal fee covers the signed reveal');
+  ok(p.revealVsize >= revealActual && p.revealVsize - revealActual <= 2, 'reveal size estimate is not undersized');
+  ok(p.revealFee - revealNeeded <= 2n, 'reveal fee does not overpay the signed size');
   ok(p.destinationAmount === 1000n, 'the frog output is 1,000 sats');
   ok(p.changeAddress, 'the commit preview shows a change address');
   eq('mint preview has no ledger action yet', w.actions.filter((a) => a.kind === 'mint').length, 0);
@@ -139,6 +145,10 @@ function counter(w) {
   eq('transfer preview has no change output', p.changeAddress, null);
   eq('transfer preview change amount is zero', p.changeAmount, 0n);
   eq('transfer preview has no transfer action yet', w.actions.filter((a) => a.kind === 'transfer').length, 0);
+  const transferActual = vsize(p.built.tx);
+  const transferNeeded = BigInt(Math.ceil(transferActual * p.feeRate));
+  ok(p.fee >= transferNeeded, 'transfer fee covers the signed size');
+  ok(p.fee - transferNeeded <= 2n, 'transfer fee does not overpay the signed size');
   const b = counter(w);
   await w.broadcastPreview(p);
   eq('transfer approval broadcasts once', b.count, 1);
@@ -158,6 +168,11 @@ function counter(w) {
   eq('hop preview destination is the next state address', p.to, scriptToAddress(p.built.stateScript, 'regtest'));
   ok(p.changeAddress && p.changeAmount > 0n, 'hop preview has change');
   ok(p.fee > 0n && p.vsize > 0, 'hop preview has an actual fee and size');
+  const hopActual = vsize(p.built.tx);
+  const hopNeeded = BigInt(Math.ceil(hopActual * p.feeRate));
+  ok(p.vsize >= hopActual && p.vsize - hopActual <= 2, 'hop size estimate is not undersized');
+  ok(p.fee >= hopNeeded, 'hop fee covers the signed size');
+  ok(p.fee - hopNeeded <= 2n, 'hop fee does not overpay the signed size');
   eq('hop preview has no crossing action yet', w.actions.filter((a) => a.kind === 'cross').length, 0);
   eq('hop preview is not on the demo chain', await w.backend.getTx(p.built.txid), null);
   const b = counter(w);

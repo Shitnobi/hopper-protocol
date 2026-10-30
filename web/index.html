@@ -32,7 +32,41 @@
   </div>
 </div>
 <script src="js/build-guard.js"></script>
-<script src="js/shell-reset.js"></script>
+<script>
+// A blank green page is the worst possible failure: the shell (and its CSS)
+// loaded, but the module graph did not start. If #app is still empty
+// shortly after load, or the module script itself fails, say so and offer a
+// one-tap repair — build-guard revalidates the cached shell and reloads.
+(() => {
+  'use strict';
+  if (!/^https?:$/.test(location.protocol)) return;
+  let shown = false;
+  const app = document.getElementById('app');
+  const show = (why) => {
+    if (shown || !app || app.childElementCount) return;
+    const busy = document.getElementById('busy');
+    if (busy && !busy.hidden) return;
+    shown = true;
+    app.innerHTML = `
+      <div class="onboard"><div class="stage" style="text-align:center">
+        <div class="logo"><div class="word">HOPPER</div><div class="tag">THE POND ON BITCOIN</div></div>
+        <p class="sub">The app did not start${why ? ` — ${why}` : ''}.</p>
+        <p class="hint">This is usually an old cached copy of the wallet from the
+          previous version. Reloading refreshes the shell; your words and frogs
+          stay exactly where they are.</p>
+        <button class="btn accent block" id="boot-repair" data-edge="accent">RELOAD THE APP</button>
+      </div></div>`;
+    document.getElementById('boot-repair').addEventListener('click', () => {
+      if (globalThis.HOPPER_REPAIR) globalThis.HOPPER_REPAIR();
+      else location.reload();
+    });
+  };
+  window.addEventListener('error', (ev) => {
+    if (ev.target && ev.target.tagName === 'SCRIPT') show('a script failed to load');
+  }, true);
+  setTimeout(() => show(''), 5000);
+})();
+</script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

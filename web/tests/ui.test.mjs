@@ -3,6 +3,7 @@
 import * as screens from '../js/ui/screens.js';
 import { GENESIS } from '../js/core/params.js';
 import { Sound } from '../js/sound.js';
+import { volumeFromRange } from '../js/ui/volume.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -27,6 +28,14 @@ const wallet = (mode) => ({ network: 'mainnet', settings: settings(mode), scanSt
 const player = new Sound({ volume: 0.4, mute: false });
 ok(typeof player.testTone === 'undefined', 'the sound player has no test-tone entry point');
 
+// The settings fader is 0–100; the wallet gain is 0–1.
+ok(volumeFromRange('55', '100') === 0.55, 'settings volume 55% is gain 0.55');
+ok(volumeFromRange('0', '100') === 0, 'settings volume 0% is silence');
+ok(volumeFromRange('100', '100') === 1, 'settings volume 100% is full gain');
+ok(volumeFromRange('1', '100') === 0.01, 'settings volume 1% is not full gain');
+ok(volumeFromRange('0.5', '1') === 0.5, 'a 0–1 fader keeps its gain');
+ok(volumeFromRange('nope', '100') === null, 'invalid volume is refused');
+
 const demo = wallet('demo');
 const demoDrawer = screens.drawer({ w: demo, settings: demo.settings });
 ok(!demoDrawer.includes('test-sound') && !demoDrawer.includes('TEST SOUND'), 'the drawer has no TEST SOUND button');
@@ -38,6 +47,10 @@ ok(!liveSettings.includes('test-sound'), 'settings has no TEST SOUND button');
 ok(!liveSettings.includes('FAUCET') && !liveSettings.includes('data-action="mine"') && !liveSettings.includes('RESET DEMO'),
   'live settings hide the demo chain controls');
 ok(liveSettings.includes('data-sound-line'), 'settings still shows the soundtrack state');
+ok(!liveSettings.includes('data-input="fee-rate"') && !/Fee rate/.test(liveSettings),
+  'the global fee-rate setting is gone; fee choice lives in each action');
+ok(liveSettings.includes('AUTO RECOVERY PACKS') && liveSettings.includes('data-action="export-recovery"'),
+  'settings offers the automatic recovery packs');
 
 const demoSettings = screens.settings({ w: demo, settings: demo.settings, scanArmed: false });
 ok(demoSettings.includes('FAUCET') && demoSettings.includes('MINE 1') && demoSettings.includes('MINE 6')
@@ -111,6 +124,16 @@ ok(!hopSheet.includes('Death at target'), 'the v6 death table is gone');
 
 const settingsHtml = screens.settings({ w: live, settings: live.settings, scanArmed: false });
 ok(settingsHtml.includes('HOPPER v7') && settingsHtml.includes('WIRE 0x07'), 'the footer names v7');
+
+// The rules are player-facing copy: keep the road's wording exact.
+const rulesText = screens.RULES.flatMap((page) => page.lines).join('\n');
+ok(rulesText.includes('You cannot take a hop back.'), 'rules page 3 says hop, not Hopper');
+ok(!rulesText.includes('You cannot take a Hopper back.'), 'rules no longer tell players they cannot take a Hopper back');
+ok(rulesText.includes('nothing on the blockchain can kill it after that.'), 'rules page 4 names the blockchain');
+ok(rulesText.includes('The next block picks which direction the cars drive in:'), 'rules page 6 uses the car direction');
+ok(rulesText.includes('Every hop is in one of three directions that cars could drive in'), 'rules page 7 uses the car direction');
+ok(!rulesText.includes('picks one direction for the whole block') && !rulesText.includes('against a block that picks one'),
+  'the old block-wide direction wording is gone');
 
 const emergencySettings = screens.settings({ w: demo, settings: demo.settings, scanArmed: false });
 ok(emergencySettings.includes('EXPORT EMERGENCY DESCRIPTORS')

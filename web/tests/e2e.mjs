@@ -129,6 +129,28 @@ await call('Emulation.setDeviceMetricsOverride', {
 await call('Page.navigate', { url: base });
 await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboarding');
 
+// The welcome is flavor, not a protocol spec. The three stat fields are
+// gone and the sentence sits centered in their place.
+const welcome = await evaluate(`(() => {
+  const root = document.querySelector('.onboard');
+  const flavor = root?.querySelector('.onboard-flavor');
+  const cs = flavor ? getComputedStyle(flavor) : null;
+  return {
+    fields: [...(root?.querySelectorAll('.stat-grid dt') || [])].map((x) => x.textContent.trim()),
+    flavor: flavor?.textContent.trim() || '',
+    align: cs?.textAlign || '',
+    size: parseFloat(cs?.fontSize || '0'),
+  };
+})()`);
+console.log('welcome:', welcome);
+if (welcome.fields.some((x) => /^(Wire|Cards|Finality)$/.test(x))) {
+  errors.push(`welcome still shows protocol fields: ${JSON.stringify(welcome.fields)}`);
+}
+if (!welcome.flavor.startsWith('A Hopper is a satoshi')) errors.push(`welcome flavor missing: ${welcome.flavor}`);
+if (welcome.align !== 'center' || welcome.size < 18) {
+  errors.push(`welcome flavor is not prominent and centered: ${JSON.stringify(welcome)}`);
+}
+
 const title = await evaluate('document.title');
 console.log('title:', title);
 
@@ -1007,6 +1029,35 @@ await sleep(2500);
 const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
 
+// The automatic recovery pack must already exist from PREPARE and must
+// have followed the HOP to the new state outpoint.
+const recovery = await evaluate(`(() => {
+  const keys = Object.keys(localStorage).filter((k) => k.startsWith('hopper.recovery.'));
+  if (!keys.length) return null;
+  const store = JSON.parse(localStorage.getItem(keys[0]));
+  const packs = Object.values(store.packs || {});
+  return {
+    key: keys[0], count: packs.length,
+    outpoints: packs.map((p) => p.state_outpoint),
+    histories: packs.map((p) => (p.history || []).length),
+    descriptors: packs.map((p) => p.descriptor || ''),
+  };
+})()`);
+console.log('recovery packs:', recovery);
+if (!recovery || recovery.count < 1) {
+  errors.push(`automatic recovery pack missing: ${JSON.stringify(recovery)}`);
+} else {
+  if (!recovery.outpoints.every((o) => /^[0-9a-f]{64}:\d+$/.test(o))) {
+    errors.push(`recovery outpoint malformed: ${JSON.stringify(recovery.outpoints)}`);
+  }
+  if (!recovery.histories.some((n) => n >= 1)) {
+    errors.push(`recovery history did not follow PREPARE -> HOP: ${JSON.stringify(recovery.histories)}`);
+  }
+  if (!recovery.descriptors.every((d) => /^tr\(/.test(d) && /#[a-z0-9]{8}$/.test(d))) {
+    errors.push(`recovery descriptor malformed: ${JSON.stringify(recovery.descriptors)}`);
+  }
+}
+
 // 5b. Route changes and history must not show a previous frog's record.
 // A HOP can kill (one of three directions at every generation): the living pond then
 // shows nothing and the frog lives on the graveyard's road.
@@ -1074,6 +1125,38 @@ console.log('lock: remembered KEK auto-unlocks');
 // 7. Emergency descriptor export is behind a confirmation and names what
 // it never contains.
 await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await waitFor('document.querySelector("[data-input=volume]")', 15000, 'volume fader');
+const feeSettingGone = await evaluate(`!document.querySelector('[data-input=fee-rate]') && !document.querySelector('#app')?.innerText.includes('Fee rate')`);
+if (!feeSettingGone) errors.push('settings still exposes the global fee-rate field');
+const volumeFader = await evaluate(`(() => {
+  const el = document.querySelector('[data-input=volume]');
+  el.value = '37';
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return {
+    gain: window.hopperSound?.status?.().volume,
+    saved: JSON.parse(localStorage.getItem('hopper.settings.v1') || '{}').volume,
+  };
+})()`);
+console.log('volume fader:', volumeFader);
+if (!volumeFader || Math.abs(Number(volumeFader.gain) - 0.37) > 0.001
+  || Math.abs(Number(volumeFader.saved) - 0.37) > 0.001) {
+  errors.push(`settings volume does not map 37% to 0.37: ${JSON.stringify(volumeFader)}`);
+}
+await waitFor('document.querySelector("[data-action=export-recovery]")', 15000, 'recovery export button');
+const recoverySummary = await evaluate(`document.querySelector('[data-recovery-summary]')?.textContent || ''`);
+if (!/saved pack/.test(recoverySummary)) {
+  errors.push(`recovery summary not populated: ${JSON.stringify(recoverySummary)}`);
+}
+await click('export-recovery');
+await waitFor('document.querySelector("[data-recovery-json]")', 5000, 'recovery JSON sheet');
+const recoveryText = await evaluate(`document.querySelector('[data-recovery-json]')?.textContent || ''`);
+if (!recoveryText.includes('hopper-v7-recovery-store') || !recoveryText.includes('state_outpoint')) {
+  errors.push(`recovery export JSON incomplete: ${recoveryText.slice(0, 200)}`);
+}
+await evaluate(`document.querySelector('.overlay [data-action=close-overlay]').click()`);
+await sleep(150);
+console.log('recovery: stored packs and export shown');
 await waitFor('document.querySelector("[data-action=export-emergency]")', 15000, 'emergency export button');
 await click('export-emergency');
 await waitFor('document.querySelector("[data-action=show-emergency]")', 5000, 'emergency confirmation');

@@ -21,6 +21,10 @@ import { parseTx } from './txparse.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
+  emptyRecoveryStore, normalizeRecoveryStore, reconcileRecoveryStore,
+  recoveryPackDoc, recoverySummary,
+} from './recovery.js';
+import {
   anchorOffsetOf, buildCross, buildMint, buildPrepare, buildSend,
   buildTransfer, stateScripts,
 } from './actions.js';
@@ -271,6 +275,7 @@ export class WalletSession {
     this._txCache = new Map();
     this._localMintCache = new Map();
     this._loadLedger();
+    this._loadRecovery();
   }
 
   // --- persistence -------------------------------------------------------
@@ -350,6 +355,81 @@ export class WalletSession {
       lastRefresh: new Date().toISOString(),
       tipHeight: this.tipHeight,
     });
+  }
+
+  // --- automatic recovery packs -----------------------------------------
+
+  _recoveryKey() { return KEYS.recovery(this.fingerprint); }
+
+  _loadRecovery() {
+    const raw = loadJson(this._recoveryKey(), null);
+    this.recovery = normalizeRecoveryStore(raw, {
+      fingerprint: this.fingerprint, network: this.network,
+    });
+  }
+
+  _saveRecovery() {
+    try {
+      saveJson(this._recoveryKey(), this.recovery);
+    } catch { /* storage may be unavailable; the live export still works */ }
+  }
+
+  recoveryPacks() {
+    return Object.values(this.recovery?.packs || {})
+      .sort((a, b) => (Number(b.last_seen_tip) || 0) - (Number(a.last_seen_tip) || 0)
+        || Number(a.sat) - Number(b.sat));
+  }
+
+  recoverySummary() { return recoverySummary(this.recovery); }
+
+  recoveryPackDoc({ now = new Date().toISOString() } = {}) {
+    return recoveryPackDoc(this.recovery, { now });
+  }
+
+  /** Fold a fresh layout document into the persisted store. */
+  _reconcileRecoveryPacks({ tipHeight = this.tipHeight, now = new Date().toISOString() } = {}) {
+    if (!this.recovery) this.recovery = emptyRecoveryStore({
+      fingerprint: this.fingerprint, network: this.network,
+    });
+    let doc;
+    try { doc = this.emergencyDescriptors({ now }); } catch { return null; }
+    const result = reconcileRecoveryStore(this.recovery, doc, { tipHeight, now });
+    if (result.changed) {
+      this.recovery = result.store;
+      this._saveRecovery();
+    } else {
+      this.recovery = result.store;
+    }
+    return result;
+  }
+
+  /** Record a staged state output from a transaction we just broadcast.
+   *  This makes PREPARE and HOP packs available before the indexer has
+   *  confirmed the frog's new location. */
+  _rememberRecovery(frog, { txid, vout = 0, value = CARD_VALUE, tipHeight = this.tipHeight } = {}) {
+    if (!frog || !txid) return null;
+    if (!this.recovery) this.recovery = emptyRecoveryStore({
+      fingerprint: this.fingerprint, network: this.network,
+    });
+    const entry = this._emergencyEntry(frog, { txid, vout, value });
+    if (!entry) return null;
+    const now = new Date().toISOString();
+    const doc = {
+      type: 'hopper-v7-emergency',
+      version: 1,
+      network: this.network,
+      fingerprint: this._emergencyFingerprint(),
+      owner_path: this.keys.ordPath,
+      generated_at: now,
+      tip_height: Number(tipHeight) || 0,
+      frogs: [entry],
+    };
+    const result = reconcileRecoveryStore(this.recovery, doc, {
+      tipHeight: Number(tipHeight) || 0, now, local: true,
+    });
+    this.recovery = result.store;
+    if (result.changed) this._saveRecovery();
+    return result.store.packs[String(entry.sat)] || null;
   }
 
   // --- backend -----------------------------------------------------------
@@ -964,6 +1044,10 @@ export class WalletSession {
     for (const u of utxos) unique.set(`${u.txid}:${u.vout}`, u);
     this.utxos = [...unique.values()].sort((a, b) => b.value - a.value);
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
+    // Keep the automatic layout packs beside the live state. The snapshot
+    // only replaces a pack when the state outpoint or tree actually moves;
+    // a partial scan never deletes a copy.
+    this._reconcileRecoveryPacks({ tipHeight: tip });
     this.used = used;
     this._recordObservedReceives(this.utxos);
     this._recordObservedChanges(this.utxos);
@@ -1753,23 +1837,22 @@ export class WalletSession {
     this.balance = { total, spendable, cards, unspendable, pending };
   }
 
-  /** SPEC §5.5 — the emergency descriptor export.
-   *
-   * Public layout data only: the raw leaves, their control blocks, the
-   * output key and the owner path for every staged Hopper. It never
-   * contains a seed, an xprv or a private key; whoever holds it still
-   * needs the seeds. A receiving tool MUST rebuild the tree and compare
-   * it with the on-chain scriptPubKey before trusting it.
-   */
-  emergencyDescriptors({ now = null } = {}) {
+  /** Format the fingerprint exactly as the export does. */
+  _emergencyFingerprint() {
+    const fp = this.keys.fingerprint;
+    return typeof fp === 'number'
+      ? fp.toString(16).padStart(8, '0')
+      : String(fp || '').toLowerCase().padStart(8, '0');
+  }
+
+  /** One staged Hopper's public layout. `txid/vout/value` is explicit so a
+   *  transaction we just broadcast can be recorded before the indexer has
+   *  named its new location. */
+  _emergencyEntry(f, { txid, vout, value } = {}) {
+    if (!f || !txid || !Number.isInteger(Number(vout))) return null;
     const ownerXonly = this.keys.ord.ownerXonly;
     const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-    const frogs = [];
-    for (const f of this.frogs || []) {
-      const utxo = this._frogUtxo?.(f);
-      const staged = utxo && utxo.kind === 'state';
-      if (!staged) continue;
-      if (f.state === 'burned' || f.state === 'retired') continue;
+    try {
       const scripts = stateScripts(f, ownerXonly);
       const leaves = [0, 1, 2].map((dir) => ({
         dir,
@@ -1786,33 +1869,51 @@ export class WalletSession {
         hex(NUMS_XONLY),
         [...leaves.map((l) => l.script_hex), sendLeaf.script_hex],
       );
-      frogs.push({
+      return {
         sat: Number(f.sat),
         gen: Number(f.gen) || generationAt(f.mint_height || this.tipHeight || 0),
         dist: Number(f.dist) || 0,
         state: String(f.state || 'idle'),
         name: String(f.name || ''),
         mint_id: `${String(f.mint_txid || '').toLowerCase()}i${Number(f.mint_index) || 0}`,
-        state_outpoint: f.location ? `${String(f.location.txid).toLowerCase()}:${Number(f.location.vout)}` : null,
-        state_value: Number(utxo.value || CARD_VALUE),
+        state_outpoint: `${String(txid).toLowerCase()}:${Number(vout)}`,
+        state_value: Number(value || CARD_VALUE),
         owner_xonly: hex(ownerXonly),
         internal_key: hex(NUMS_XONLY),
         output_key: hex(scripts.outputXonly),
         leaves,
         send_leaf: sendLeaf,
         descriptor,
+      };
+    } catch { return null; }
+  }
+
+  /** SPEC §5.5 — the emergency descriptor export.
+   *
+   * Public layout data only: the raw leaves, their control blocks, the
+   * output key and the owner path for every staged Hopper. It never
+   * contains a seed, an xprv or a private key; whoever holds it still
+   * needs the seeds. A receiving tool MUST rebuild the tree and compare
+   * it with the on-chain scriptPubKey before trusting it.
+   */
+  emergencyDescriptors({ now = null } = {}) {
+    const frogs = [];
+    for (const f of this.frogs || []) {
+      const utxo = this._frogUtxo?.(f);
+      const staged = utxo && utxo.kind === 'state';
+      if (!staged) continue;
+      if (f.state === 'burned' || f.state === 'retired') continue;
+      const entry = this._emergencyEntry(f, {
+        txid: f.location?.txid, vout: Number(f.location?.vout), value: utxo.value,
       });
+      if (entry) frogs.push(entry);
     }
     const staged = frogs.filter((f) => f.state_outpoint);
-    const fp = this.keys.fingerprint;
-    const fingerprint = typeof fp === 'number'
-      ? fp.toString(16).padStart(8, '0')
-      : String(fp || '').toLowerCase().padStart(8, '0');
     return {
       type: 'hopper-v7-emergency',
       version: 1,
       network: this.network,
-      fingerprint,
+      fingerprint: this._emergencyFingerprint(),
       owner_path: this.keys.ordPath,
       // One descriptor can only describe one state tree (the leaf bodies
       // embed sat + mint id). The per-frog `descriptor` is authoritative;
@@ -2103,6 +2204,10 @@ export class WalletSession {
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'prepare', sat: frog.sat, txid: built.txid });
+    // The state output is known now, before the indexer has confirmed it.
+    this._rememberRecovery(frog, {
+      txid: built.txid, vout: 0, value: built.stateValue, tipHeight: this.tipHeight,
+    });
     await this.refresh();
     return built;
   }
@@ -2359,6 +2464,17 @@ export class WalletSession {
         kind: 'cross', sat: preview.frogSat, txid: preview.built.txid, dir: preview.dir,
         at: new Date().toISOString(),
       });
+      // Record the new state output immediately. If the Hopper was sent to a
+      // different owner, the output is no longer ours and our last pack is
+      // left untouched.
+      if (!preview.newOwner) {
+        const frog = this.frogBySat(preview.frogSat);
+        if (frog) {
+          this._rememberRecovery(frog, {
+            txid: preview.built.txid, vout: 0, value: CARD_VALUE, tipHeight: this.tipHeight,
+          });
+        }
+      }
       // Custody now belongs to the optional new P2TR owner. Stop carrying
       // the sat as an owned candidate when that owner is not this wallet.
       if (preview.newOwner) this.imported.delete(Number(preview.frogSat));
