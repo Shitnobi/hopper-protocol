@@ -512,6 +512,10 @@ function historyRows(w) {
       address: c.address,
       at: c.at,
       mintSat: c.mintSat ?? null,
+      // The reveal that owns this change. Persisted by `_tagChanges` as soon
+      // as the wallet learns the commit/reveal pair, so a restored ledger can
+      // still place the change beside its MINT without another lookup.
+      mintTxid: c.mintTxid ?? null,
       chain: true,
       pending: false,
       confirmed: c.confirmed !== false,
@@ -655,6 +659,15 @@ function historyRows(w) {
   for (const r of rows) {
     if (r.kind === 'mint') addMintSource(r.sat, r.txid, r.commit);
   }
+  // A change row's own txid is the commit, and the reveal it belongs to is
+  // kept as `mintTxid`. That pair is enough to build the cluster even when
+  // the minted sat was lost and the reveal's input was never read back — the
+  // case that used to drop CHANGE out of the MINT group and, with no height
+  // to separate them, sort it above the mint by observation time.
+  for (const r of rows) {
+    if (r.kind !== 'change' || !r.mintTxid) continue;
+    addMintSource(r.mintSat, r.mintTxid, r.txid);
+  }
   const clusterKeyCache = new Map();
   const clusterKey = (index) => {
     const root = findCluster(index);
@@ -714,6 +727,7 @@ function historyRows(w) {
     if (r.kind === 'change') {
       const tagged = satNumber(r.mintSat);
       return (Number.isSafeInteger(tagged) ? mintKeyForSat(tagged) : null)
+        || mintKeyForTx(r.mintTxid)
         || mintKeyForTx(tx);
     }
     return null;
@@ -842,6 +856,7 @@ export function historyDebug(w) {
     height: c.height ?? null,
     at: c.at ?? null,
     mintSat: c.mintSat ?? null,
+    mintTxid: txid(c.mintTxid),
   }));
   const receives = (w.receives || []).map((r) => ({
     txid: txid(r.txid),
@@ -885,13 +900,15 @@ export function historyDebug(w) {
   }, null, 2);
 }
 
-/** A mint reads as: the mint/commit, the change it returned, then the Hopper
- *  arriving in the reveal. SEND still precedes its CHANGE. This is display
- *  order, not confirmation order. */
+/** The feed is newest first: top of the screen is the latest row, bottom is
+ *  the earliest. So inside one transaction the row the wallet learned last
+ *  sits highest: the Hopper arriving, then the change the mint or send
+ *  returned, then the mint/send itself at the bottom of its own block.
+ *  This is display order, not confirmation order. */
 function sameTxRank(r) {
+  if (r.kind === 'receive') return 0;
   if (r.kind === 'change') return 1;
-  if (r.kind === 'receive') return 2;
-  return 0;
+  return 2;
 }
 
 const KIND_LABEL = {

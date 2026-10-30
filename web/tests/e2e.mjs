@@ -690,16 +690,16 @@ if (!/HOPPER ARRIVED/.test(historyText)) errors.push('history: missing the Hoppe
 if (!/\+200,000 sats/.test(historyText)) errors.push('history: missing the initial wallet deposit');
 if (!/MINT/.test(historyText)) errors.push('history: missing the mint action');
 if (!/CHANGE/.test(historyText)) errors.push('history: missing the internal change row');
-if (historyText.indexOf('MINT') > historyText.indexOf('HOPPER ARRIVED')) {
-  errors.push('history: the Hopper arrival is shown before its mint');
+if (historyText.indexOf('MINT') < historyText.indexOf('HOPPER ARRIVED')) {
+  errors.push('history: the mint is shown above its arrival in a newest-first feed');
 }
 if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC mints are still visible');
 const historyKinds = await evaluate(`[...document.querySelectorAll('#app .card-row .kind')]
   .map((el) => el.textContent.trim())`);
 console.log('history order:', historyKinds.slice(0, 6).join(' > '));
-if (historyKinds[0] !== 'MINT'
+if (historyKinds[0] !== 'HOPPER ARRIVED'
   || historyKinds[1] !== 'CHANGE'
-  || historyKinds[2] !== 'HOPPER ARRIVED') {
+  || historyKinds[2] !== 'MINT') {
   errors.push(`history order: ${historyKinds.slice(0, 4).join(' > ')}`);
 }
 

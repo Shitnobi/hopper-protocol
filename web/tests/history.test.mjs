@@ -80,8 +80,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(/\+200,000 sats/.test(after), 'history still shows the initial deposit');
   ok(/CHANGE/.test(after), 'history renders the internal change');
   const order = after.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('the mint is shown before its change and arrival',
-    order.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  eq('the arrival is shown above its change and mint',
+    order.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
   const shortTx = (tx) => `${tx.slice(0, 10)}…${tx.slice(-6)}`;
   const commit = preview.built.commit.txid;
   const reveal = preview.built.reveal.txid;
@@ -113,8 +113,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 {
   // An older local mint action can have no `sat` and no recovered chain-mint
   // row. The arrival still names the reveal and therefore the minted sat;
-  // that evidence must keep MINT, CHANGE and HOPPER ARRIVED together instead
-  // of sorting HOPPER (newer reveal) and CHANGE (older commit) above MINT.
+  // that evidence must keep the three rows in one group, newest at the top.
   store.clear();
   const w = new WalletSession({
     mnemonic: 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong',
@@ -129,8 +128,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   for (const c of w.changes) delete c.mintSat;
   const oldText = plain(history({ w }));
   const oldOrder = oldText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('an old sat-less action still reads mint, change, arrival',
-    oldOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  eq('an old sat-less action still reads arrival, change, mint',
+    oldOrder.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
   const shortOld = (tx) => `${tx.slice(0, 10)}…${tx.slice(-6)}`;
   ok(oldText.includes(`MINT ${shortOld(minted.commit.txid)}`),
     'the repaired MINT row still names the commit');
@@ -144,8 +143,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   w._tagChanges();
   const repairedText = plain(history({ w }));
   const repairedOrder = repairedText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('a repaired commit keeps mint, change, arrival together',
-    repairedOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  eq('a repaired commit keeps arrival, change, mint together',
+    repairedOrder.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
 
   // Worst case: no row stores the minted sat at all. The reveal and commit
   // txids are enough to make one cluster, so the rows cannot drift apart.
@@ -154,7 +153,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const worstText = plain(history({ w }));
   const worstOrder = worstText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('no sat anywhere still groups by reveal and commit txids',
-    worstOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    worstOrder.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
   ok(!/sat 0\b/.test(worstText), 'the no-sat fallback never renders sat 0');
 }
 
@@ -278,7 +277,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
   // Mac-like upgrade: the address scan knows each arrival's block, but the
   // local/ord mint record has no height and the action ledger is absent.
-  // MINT must reclaim that height and sort above its HOPPER ARRIVED row.
+  // MINT must reclaim that height so the group sits in the right block.
   const byMint = new Map(b.chainMints.map((m, i) => [m.txid, i === 0 ? 973267 : 973265]));
   for (const r of b.receives) if (r.frog) r.height = byMint.get(r.txid) ?? null;
   for (const m of b.chainMints) m.height = null;
@@ -287,10 +286,10 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     b.chainMints.map((m) => m.height).sort((x, y) => x - y), [973265, 973267]);
   const ordered = plain(history({ w: b }));
   const order = ordered.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('each restored mint is listed before its change and arrival',
-    order.slice(0, 6), ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
-  ok(ordered.indexOf('MINT') < ordered.indexOf('HOPPER ARRIVED'),
-    'a restored arrival never appears above its mint');
+  eq('each restored mint reads arrival, change, mint',
+    order.slice(0, 6), ['HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT']);
+  ok(ordered.indexOf('MINT') > ordered.indexOf('HOPPER ARRIVED'),
+    'the mint sits below its arrival, where the earliest row belongs');
 
   // The commit block can be older than the reveal and the change txid is the
   // commit, not the reveal. It still belongs inside the same mint group.
@@ -298,22 +297,21 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const commitOlder = plain(history({ w: b }));
   const commitOrder = commitOlder.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('an older commit change stays inside its mint group',
-    commitOrder.slice(0, 6), ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    commitOrder.slice(0, 6), ['HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT']);
   ok(b.changes.every((c) => Number.isSafeInteger(c.mintSat)),
     'restored change stays linked to its minted sat');
 
-  // A restored device can also have no block heights at all. Falling back
-  // to row insertion time used to put the newest-observed change first and
-  // the older mint last (CHANGE, HOPPER ARRIVED, MINT). Grouping by the
-  // minted sat must decide the order even when every height is unknown.
+  // A restored device can also have no block heights at all. Grouping by the
+  // minted sat must still keep the three rows together, newest on top and
+  // the mint at the bottom of its group.
   for (const c of b.changes) { c.height = null; delete c.mintSat; }
   for (const m of b.chainMints) m.height = null;
   for (const r of b.receives) r.height = null;
   const heightless = plain(history({ w: b }));
   const heightlessOrder = heightless.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
-  eq('a height-less restore still reads mint, change, arrival',
+  eq('a height-less restore still reads arrival, change, mint',
     heightlessOrder.slice(0, 6),
-    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    ['HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT']);
 
   // Older receive ledgers can have a frog row without its sat. The frog
   // record still names the reveal, so the arrival must not be pushed above
@@ -324,7 +322,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const noSatOrder = noSat.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('a sat-less old arrival still joins its mint',
     noSatOrder.slice(0, 6),
-    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    ['HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT']);
   ok(!/sat 0\b/.test(noSat), 'a sat-less arrival never renders sat 0');
 
   // Even if the frog record has already moved away, the reveal txid in the
@@ -334,7 +332,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const noFrogOrder = noFrog.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('a sat-less arrival groups by its reveal txid alone',
     noFrogOrder.slice(0, 6),
-    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    ['HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT']);
 
   const debug = JSON.parse(historyDebug(b));
   eq('history debug reports the running build',
@@ -344,8 +342,81 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(!/seed|mnemonic|private/i.test(historyDebug(b)),
     'history debug never includes seed or private material');
   eq('history debug asks history() for the same corrected order',
-    debug.computed.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+    debug.computed.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
   ok(Array.isArray(debug.dom), 'history debug reports the painted DOM order');
+}
+
+{
+  // A restored device that could not read the reveal back (offline, no hex
+  // source) still persisted the commit/reveal pair on the change row when it
+  // did know it. The reveal and the commit name the same mint, so the pair
+  // alone must keep CHANGE inside the MINT group. Without it the change fell
+  // out of the group and floated away from its mint.
+  store.clear();
+  const w = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
+  await w.connect();
+  await w.demoFund(1, 200000);
+  const minted = await w.mint({ seed: 0x9a9a9a9a, name: 'Pair', feeRate: 2 });
+  w.actions = [];
+  for (const m of w.chainMints) m.commit = null;
+  for (const c of w.changes) {
+    delete c.mintSat;
+    c.mintTxid = minted.reveal.txid;
+    c.height = 100;
+  }
+  for (const r of w.receives) if (r.frog) r.height = 101;
+
+  const pairText = plain(history({ w }));
+  const pairOrder = pairText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('a persisted reveal/commit pair keeps the change inside its mint group',
+    pairOrder.slice(0, 3), ['HOPPER ARRIVED', 'CHANGE', 'MINT']);
+
+  const pairDebug = JSON.parse(historyDebug(w));
+  eq('the change is grouped by the minted sat',
+    pairDebug.rows.filter((r) => r.kind !== 'receive' && r.kind !== 'send').map((r) => r.mintKey),
+    [`mint:${minted.sat}`, `mint:${minted.sat}`]);
+  eq('the debug dump keeps the reveal named by the change',
+    pairDebug.changes[0].mintTxid, minted.reveal.txid);
+  ok(pairDebug.changes[0].mintSat == null,
+    'the pair works even when the change lost its minted sat');
+
+  // A SEND and its change are one transaction: seeding mint clusters from
+  // change rows must never split them into two groups.
+  const sent = await w.send(w.keys.receive(5).address, 50000);
+  const sendDebug = JSON.parse(historyDebug(w));
+  const sendRow = sendDebug.rows.find((r) => r.kind === 'send');
+  const sendChange = sendDebug.rows.find((r) => r.kind === 'change' && r.txid === sent.txid);
+  ok(!!sendRow && !!sendChange, 'the send and its change both have a row');
+  eq('a send keeps its change in the same group', sendChange.mintKey, sendRow.mintKey);
+  const changeAt = sendDebug.rows.findIndex((r) => r.kind === 'change' && r.txid === sent.txid);
+  const sendAt = sendDebug.rows.findIndex((r) => r.kind === 'send' && r.txid === sent.txid);
+  ok(changeAt >= 0 && sendAt > changeAt,
+    'the send sits below the change it produced');
+}
+
+{
+  // Nothing links this change to its mint: no commit was ever recovered and
+  // the pair was not persisted. Both rows are in the same block, so the feed
+  // falls back to the moment the wallet observed each row: newest first.
+  const REVEAL = 'f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0';
+  const COMMIT = '0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f';
+  const SAT = 7700000000000001;
+  const bare = {
+    tipHeight: 1000,
+    frogs: [],
+    actions: [],
+    receives: [],
+    changes: [{ txid: COMMIT, amount: 40000, height: 900, at: '2026-10-30T06:00:00.000Z' }],
+    chainMints: [{ txid: REVEAL, sat: SAT, name: 'Loose', height: 900, commit: null, at: '2026-10-30T05:00:00.000Z' }],
+    history: [],
+    mempool: [],
+    pending: [],
+    frogBySat: () => null,
+  };
+  const bareOrder = (plain(history({ w: bare })).match(/\b(MINT|HOPPER ARRIVED|CHANGE|RECEIVE)\b/g) || []);
+  eq('an unlinked change is ordered by observation time in its block',
+    bareOrder.slice(0, 2), ['CHANGE', 'MINT']);
+  ok(!/sat 0\b/.test(plain(history({ w: bare }))), 'a sat-less mint row never renders sat 0');
 }
 
 console.log(`history: ${checks} checks passed`);
