@@ -297,6 +297,32 @@ if (!appFonts.loaded || Object.values(appFonts).some((v) => typeof v === 'string
   errors.push(`app fonts: ${JSON.stringify(appFonts)}`);
 }
 
+// Numerals use the Silkscreen digit face; letters must stay Pixelify.
+await evaluate('document.fonts.ready.then(() => true)');
+const digitFont = await evaluate(`(async () => {
+  await document.fonts.load('13px "Hopper Digits"', '0123456789');
+  await document.fonts.load('700 13px "Hopper Digits"', '0123456789');
+  const ctx = document.createElement('canvas').getContext('2d');
+  const width = (font, text) => { ctx.font = font; return ctx.measureText(text).width; };
+  return {
+    loaded: document.fonts.check('13px "Hopper Digits"', '0123456789'),
+    digits: width('13px "Hopper Digits", "Pixelify Sans"', '52871'),
+    pixelDigits: width('13px "Pixelify Sans"', '52871'),
+    letters: width('13px "Hopper Digits", "Pixelify Sans"', 'HOPPER'),
+    pixelLetters: width('13px "Pixelify Sans"', 'HOPPER'),
+    family: getComputedStyle(document.body).fontFamily,
+    variant: getComputedStyle(document.body).fontVariantNumeric,
+  };
+})()`);
+console.log('digit font:', digitFont);
+if (!digitFont.loaded || digitFont.digits === digitFont.pixelDigits) {
+  errors.push(`digit font did not load: ${JSON.stringify(digitFont)}`);
+}
+if (digitFont.letters !== digitFont.pixelLetters) errors.push(`digit face changed letters: ${JSON.stringify(digitFont)}`);
+if (!/Hopper Digits/.test(digitFont.family) || digitFont.variant !== 'tabular-nums') {
+  errors.push(`digit font stack: ${JSON.stringify(digitFont)}`);
+}
+
 // READ THE RULES is a drawer entry above SETTINGS now; REPLAY THE INTRO
 // stays in Settings.
 await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);

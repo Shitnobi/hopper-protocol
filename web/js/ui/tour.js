@@ -31,7 +31,7 @@ function fitFull(canvas) {
 
 function centered(ctx, text, x, y, size, color) {
   ctx.fillStyle = color;
-  ctx.font = `700 ${size}px "Pixelify Sans", monospace`;
+  ctx.font = `700 ${size}px "Hopper Digits", "Pixelify Sans", monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y);
@@ -103,7 +103,7 @@ function drawIntro(canvas, elapsed) {
   const wordY = h * 0.22;
   paintFrogMark(ctx, left + markSize / 2, wordY, markSize * 1.15, C.accent, C.bg);
   ctx.fillStyle = C.accent;
-  ctx.font = `700 ${wordSize}px "Pixelify Sans", monospace`;
+  ctx.font = `700 ${wordSize}px "Hopper Digits", "Pixelify Sans", monospace`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText('HOPPER', left + markSize + wordSize * 0.3, wordY);

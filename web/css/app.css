@@ -13,6 +13,26 @@
   font-display: swap;
 }
 
+/* Silkscreen's digits are unmistakable at small sizes (5/2/8/7/1), while
+   Pixelify Sans still carries every letter. unicode-range keeps the swap
+   limited to U+0030–U+0039; no other glyph changes face. */
+@font-face {
+  font-family: "Hopper Digits";
+  src: url("../fonts/silkscreen-digits-400.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+0030-0039;
+}
+@font-face {
+  font-family: "Hopper Digits";
+  src: url("../fonts/silkscreen-digits-700.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  unicode-range: U+0030-0039;
+}
+
 :root {
   --bg: #18241a;          /* BG      */
   --card: #223226;        /* CARD    */
@@ -34,7 +54,7 @@
   --good: #5abe6e;
   --tx-in: #5abe6e;
   --line: #3a4f3a;
-  --font: "Pixelify Sans", "Courier New", "DejaVu Sans Mono", monospace;
+  --font: "Hopper Digits", "Pixelify Sans", "Courier New", "DejaVu Sans Mono", monospace;
   --topbar-h: 72px;
   --column: 640px;
   --page: 16px;
@@ -51,6 +71,7 @@ html, body {
   font-size: 13px;
   line-height: 1.5;
   font-synthesis: none;
+  font-variant-numeric: tabular-nums;
   min-height: 100%;
   -webkit-font-smoothing: none;
   text-rendering: optimizeSpeed;

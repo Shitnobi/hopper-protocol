@@ -53,7 +53,7 @@ export function paintQR(canvas, payload) {
     ctx.lineWidth = Math.max(2, Math.round(dpr * 2));
     ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, cw - ctx.lineWidth, cw - ctx.lineWidth);
     ctx.fillStyle = '#8a9a8c';
-    ctx.font = `600 ${Math.max(10, Math.round(cw / 18))}px "Pixelify Sans", monospace`;
+    ctx.font = `600 ${Math.max(10, Math.round(cw / 18))}px "Hopper Digits", "Pixelify Sans", monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('no code', cw / 2, cw / 2);

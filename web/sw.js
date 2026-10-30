@@ -1,10 +1,12 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v6-28';
+const VERSION = 'hopper-v6-29';
 const SHELL = [
   './',
   'index.html',
   'css/app.css',
   'fonts/pixelify-sans-latin.woff2',
+  'fonts/silkscreen-digits-400.woff2',
+  'fonts/silkscreen-digits-700.woff2',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',

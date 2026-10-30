@@ -64,7 +64,7 @@ rust/
 web/
   index.html, manifest, sw.js
   icons/                   pixel HOPPER tab mark + generated PWA icons
-  fonts/                   Pixelify Sans (SIL OFL), the app typeface
+  fonts/                   Pixelify Sans (SIL OFL) for text; Silkscreen (SIL OFL) for digits
   css/app.css              mobile-first dark lily-pad UI
   js/core/                 hex, params, settles, envelopes, inscriptions,
                            v6 leaves, fold replay, art, PNG, mint document
@@ -146,9 +146,11 @@ sat would land in its fee.
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
 palette, pixel text, wooden log buttons, lily-pad floating windows,
-pond water, lane-dashed asphalt, crossing pips and pixel art. It is not a
-screenshot of egui — it is DOM text and events over canvas-painted
-materials, so the wallet stays selectable, accessible and installable.
+pond water, lane-dashed asphalt, crossing pips and pixel art. Numerals use
+Silkscreen's block digits so 5/2/8/7/1 stay distinct at wallet sizes;
+letters remain Pixelify Sans. It is not a screenshot of egui — it is DOM
+text and events over canvas-painted materials, so the wallet stays
+selectable, accessible and installable.
 The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
 boot intro and the eight-page rules walkthrough (swipe left or right, or
