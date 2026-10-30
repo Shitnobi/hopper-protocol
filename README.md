@@ -98,9 +98,9 @@ web/
 - **Wire** `0x07`, magic `FRG`, mint envelope `FRG | 07 | 01 | u32 seed |
   u8 len | name` (≤ 38 UTF-8 bytes), opcode `OP_RETURN`.
 - **Params hash**
-  `7b6179c0ec400d0f83e31e094ef0e8beb93f9d159fa04389eb0945cf5da47d1c`.
-- **Genesis** `973263`; generations are 28,080 blocks: 5 required hops,
-  +1 every 144 blocks, 100 at +13,680, 14,400 blocks at 100, then reset to 5.
+  `d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f`.
+- **Genesis** `974034`; generations are 6,480 blocks: 5 required hops,
+  +1 every 144 blocks, 25 at +2,880, 3,600 blocks at 25, then reset to 5.
 - **Card** 25,000 sats; **anchor output** 1,000 sats; **finality** 6 blocks.
 - **Mint**: commit → reveal. The commit output is P2TR whose single tapleaf
   holds the ~14 KiB live document and the owner key. The reveal spends it,

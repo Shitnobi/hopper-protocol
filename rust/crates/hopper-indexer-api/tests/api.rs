@@ -1252,10 +1252,10 @@ async fn params_endpoint_publishes_the_schedule_and_hash() {
     assert_eq!(body["wire_version"], 7);
     assert_eq!(body["cross_finality"], p.cross_finality);
     assert_eq!(body["generations"]["base"], 5);
-    assert_eq!(body["generations"]["ceiling"], 100);
+    assert_eq!(body["generations"]["ceiling"], 25);
     assert_eq!(body["generations"]["growth_interval"], 144);
-    assert_eq!(body["generations"]["hold"], 14_400);
-    assert_eq!(body["generations"]["generation_len"], 28_080);
+    assert_eq!(body["generations"]["hold"], 3_600);
+    assert_eq!(body["generations"]["generation_len"], 6_480);
     let want: String = hopper_core::params::params_hash(p)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -1268,13 +1268,13 @@ async fn generation_endpoint_publishes_the_sawtooth() {
     let app = router(seeded_indexer());
     let p = &hopper_core::params::PROTOCOL;
     let g = &p.generations;
-    let h = g.genesis + 95 * 144 + 7;
+    let h = g.genesis + 20 * 144 + 7;
     let (status, body): (_, serde_json::Value) =
         get_json(&app, &format!("/v1/generation/{h}")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["generation"], 1);
     assert_eq!(body["start"], g.genesis);
-    assert_eq!(body["required"], 100, "held at the ceiling");
+    assert_eq!(body["required"], 25, "held at the ceiling");
     assert_eq!(body["next_change"]["height"], g.genesis + g.generation_len);
     assert_eq!(body["next_change"]["required"], 5, "the reset is a change");
 

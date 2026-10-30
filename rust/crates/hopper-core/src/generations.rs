@@ -1,7 +1,7 @@
 //! Generations: the road's difficulty as a function of height only.
 //!
 //! Pure integer math, no allocation, no floats, no chain access. The
-//! requirement is a sawtooth over 28,080-block generations (SPEC §1.1);
+//! requirement is a sawtooth over 6,480-block generations (SPEC §1.1);
 //! the target used to settle a hop is frozen when the HOP confirms.
 
 use crate::params::{GenerationParams, PROTOCOL};
@@ -49,11 +49,11 @@ mod tests {
             (0u32, 5u32),
             (143, 5),
             (144, 6),
-            (95 * 144 - 1, 99),
-            (95 * 144, 100),
-            (95 * 144 + 14_399, 100),
-            (28_080, 5),
-            (28_080 + 144, 6),
+            (20 * 144 - 1, 24),
+            (20 * 144, 25),
+            (20 * 144 + 3_599, 25),
+            (6_480, 5),
+            (6_480 + 144, 6),
         ] {
             assert_eq!(required_hops(start + offset), want, "offset {offset}");
         }
@@ -75,8 +75,8 @@ mod tests {
         assert_eq!(next_increment(g.genesis - 1), Some((g.genesis, 5)));
         assert_eq!(next_increment(g.genesis), Some((g.genesis + 144, 6)));
         assert_eq!(
-            next_increment(g.genesis + 95 * 144 + 14_399),
-            Some((g.genesis + 28_080, 5))
+            next_increment(g.genesis + 20 * 144 + 3_599),
+            Some((g.genesis + 6_480, 5))
         );
     }
 }

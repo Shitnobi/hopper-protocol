@@ -40,9 +40,9 @@ eq('params_hash', paramsHashHex(), v.params_hash);
 eq('params_literal', paramsLiteral(), v.params_literal);
 for (const [height, want] of v.required) eq(`required(${height})`, requiredAt(height), want);
 eq('generation(genesis)', generationAt(GENESIS), 1);
-eq('generation(genesis+len)', generationAt(GENESIS + 28080), 2);
-eq('generation_start(2)', generationStart(2), GENESIS + 28080);
-eq('next_increment at ceiling', nextIncrement(GENESIS + 95 * 144 + 14400 - 1), [GENESIS + 28080, 5]);
+eq('generation(genesis+len)', generationAt(GENESIS + 6480), 2);
+eq('generation_start(2)', generationStart(2), GENESIS + 6480);
+eq('next_increment at ceiling', nextIncrement(GENESIS + 20 * 144 + 3600 - 1), [GENESIS + 6480, 5]);
 eq('hop risk', hopDeathBps(), 3333);
 eq('completion(5)', completionBps(5), 1317);
 

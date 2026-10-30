@@ -43,8 +43,16 @@ fn main() {
 
     // required(h) at every boundary-relevant offset from genesis.
     let offsets = [
-        0u32, 1, 143, 144, 95 * 144 - 1, 95 * 144, 95 * 144 + 14_399, 28_080, 28_080 + 144,
-        56_160,
+        0u32,
+        1,
+        143,
+        144,
+        20 * 144 - 1,
+        20 * 144,
+        20 * 144 + 3_599,
+        6_480,
+        6_480 + 144,
+        12_960,
     ];
     let req: Vec<String> = offsets
         .iter()

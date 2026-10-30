@@ -21,7 +21,7 @@ const SAT = 1_622_677_699_379_588;
 const T = 973_400;
 const DISPLAY_HASH_DEAD = `${'00'.repeat(28)}00000001`; // 1 % 3 = 1
 const DISPLAY_HASH_ALIVE = `${'00'.repeat(28)}00000002`; // 2 % 3 = 2
-const PARAMS = { g: 973_263, b: 5, gi: 144, cap: 100, hold: 14_400, gl: 28_080, fin: 6 };
+const PARAMS = { g: 974_034, b: 5, gi: 144, cap: 25, hold: 3_600, gl: 6_480, fin: 6 };
 
 function body(dir, sat = SAT) {
   const b = new Uint8Array(55);

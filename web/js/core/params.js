@@ -13,7 +13,7 @@ export const STATE_MAGIC = 'FRG7CROSS';
 export const V7_CONTENT_TYPE = 'text/html;charset=utf-8';
 export const STATE_CONTENT_TYPE = 'application/octet-stream';
 
-export const MAX_TARGET = 100;
+export const MAX_TARGET = 25;
 export const ANCHOR_OUTPUT_VALUE = 1000n;
 export const CARD_VALUE = 25000n;
 export const DUST_P2WPKH = 546n;
@@ -25,12 +25,12 @@ export const NUMS_XONLY = hexToBytes(
 
 export const PROTOCOL = Object.freeze({
   generations: Object.freeze({
-    genesis: 973263,
+    genesis: 974034,
     base: 5,
     growthInterval: 144,
-    ceiling: 100,
-    hold: 14400,
-    generationLen: 28080,
+    ceiling: 25,
+    hold: 3600,
+    generationLen: 6480,
   }),
   crossFinality: 6,
   cardValue: CARD_VALUE,

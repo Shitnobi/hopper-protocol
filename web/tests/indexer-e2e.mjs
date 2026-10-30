@@ -173,7 +173,7 @@ assert.equal(gen.required, requiredAt(crossBlock.height), '/v1/generation publis
 assert.equal(gen.generation, 1);
 const params = await (await fetch(`${API}/v1/params`)).json();
 assert.equal(params.wire_version, 7);
-assert.equal(params.generations.generation_len, 28080);
+assert.equal(params.generations.generation_len, 6480);
 const road = await (await fetch(`${API}/v1/road`)).json();
 const mine = road.active.find((c) => c.frogger_sat === mint.sat);
 assert.equal(typeof mine.provisional_dead, 'boolean', 'road exposes the sealed verdict');

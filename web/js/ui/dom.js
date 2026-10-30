@@ -55,7 +55,7 @@ export function frogImg(seed, state, className = 'sprite', alt = '') {
 
 /**
  * One dot per hop the Hopper must complete, filled up to its current
- * crossing count. Targets grow from 5 to 100, so the dots scale down and
+ * crossing count. Targets grow from 5 to 25, so the dots scale down and
  * wrap instead of being capped at five. The exact count is always printed
  * beside them, as FROGGER's pips intended.
  */

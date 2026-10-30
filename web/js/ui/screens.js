@@ -10,7 +10,7 @@ import {
   btc, esc, frogImg, pips, sats, seedText, targetOf,
 } from './dom.js';
 import {
-  completionBps, generationAt, hopDeathBps, nextIncrement, paramsHashHex, requiredAt,
+  completionBps, generationAt, hopDeathBps, MAX_TARGET, nextIncrement, paramsHashHex, requiredAt,
 } from '../core/params.js';
 import { canBumpSend } from '../wallet/rbf.js';
 import { stateScripts } from '../wallet/actions.js';
@@ -1075,7 +1075,7 @@ export function mint(app) {
         <div style="font-weight:700">The schedule</div>
         <div class="stat-grid">
           <dt>Next target</dt><dd>${target} hops at H ${sats(tip)}</dd>
-          <dt>Next rise</dt><dd>${next ? `H ${sats(next[0])} → ${next[1]} hops` : 'capped at 100'}</dd>
+          <dt>Next rise</dt><dd>${next ? `H ${sats(next[0])} → ${next[1]} hops` : `capped at ${MAX_TARGET}`}</dd>
           <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% — one of three directions</dd>
           <dt>Finality</dt><dd>6 blocks</dd>
           <dt>Params</dt><dd class="tiny wrap">${esc(paramsHashHex())}</dd>
@@ -1533,7 +1533,7 @@ export const RULES = [
     title: 'THE TOLL',
     art: 'toll',
     lines: [
-      'The road runs in generations of 28,080 blocks: 5 hops at the start of each, one more every 144 blocks up to 100, then 14,400 blocks at 100, and a reset to 5.',
+      'The road runs in generations of 6,480 blocks: 5 hops at the start of each, one more every 144 blocks up to 25, then 3,600 blocks at 25, and a reset to 5.',
       'The generation a Hopper was minted in is its label forever: G1, G2, … Mint later and the road asks more of you.',
     ],
   },

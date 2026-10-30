@@ -10,8 +10,9 @@
 
 use sha2::{Digest, Sha256};
 
-/// Hard upper bound for the road's ceiling (SPEC §1.1).
-pub const MAX_TARGET: u32 = 100;
+/// Hard upper bound for the road's ceiling (SPEC §1.1). It equals the
+/// production ceiling: the road never gets harder than this.
+pub const MAX_TARGET: u32 = 25;
 
 /// The x-only internal key of every frog state output.
 ///
@@ -133,12 +134,12 @@ pub const VERSION_V7: u8 = 0x07;
 /// golden digests must move with it.
 pub const PROTOCOL: ProtocolParams = ProtocolParams {
     generations: GenerationParams {
-        genesis: 973_263,
+        genesis: 974_034,
         base: 5,
         growth_interval: 144,
-        ceiling: 100,
-        hold: 14_400,
-        generation_len: 28_080,
+        ceiling: 25,
+        hold: 3_600,
+        generation_len: 6_480,
     },
     cross_finality: 6,
     card_value: 25_000,
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     fn production_params_are_valid() {
         assert_eq!(validate(&PROTOCOL), Ok(()));
-        assert_eq!(PROTOCOL.generations.expected_len(), 28_080);
+        assert_eq!(PROTOCOL.generations.expected_len(), 6_480);
     }
 
     #[test]
@@ -280,14 +281,14 @@ mod tests {
         assert_eq!(g.required(g.genesis), 5);
         assert_eq!(g.required(g.genesis + 143), 5);
         assert_eq!(g.required(g.genesis + 144), 6);
-        // 95 increments of 144 blocks reach the ceiling.
-        assert_eq!(g.required(g.genesis + 95 * 144 - 1), 99);
-        assert_eq!(g.required(g.genesis + 95 * 144), 100);
+        // 20 increments of 144 blocks reach the ceiling.
+        assert_eq!(g.required(g.genesis + 20 * 144 - 1), 24);
+        assert_eq!(g.required(g.genesis + 20 * 144), 25);
         // The whole hold stays at the ceiling.
-        assert_eq!(g.required(g.genesis + 95 * 144 + 14_399), 100);
+        assert_eq!(g.required(g.genesis + 20 * 144 + 3_599), 25);
         // Then the generation resets to base.
-        assert_eq!(g.required(g.genesis + 28_080), 5);
-        assert_eq!(g.required(g.genesis + 28_080 + 144), 6);
+        assert_eq!(g.required(g.genesis + 6_480), 5);
+        assert_eq!(g.required(g.genesis + 6_480 + 144), 6);
     }
 
     #[test]
@@ -295,10 +296,10 @@ mod tests {
         let g = PROTOCOL.generations;
         assert_eq!(g.generation(0), 1);
         assert_eq!(g.generation(g.genesis), 1);
-        assert_eq!(g.generation(g.genesis + 28_079), 1);
-        assert_eq!(g.generation(g.genesis + 28_080), 2);
+        assert_eq!(g.generation(g.genesis + 6_479), 1);
+        assert_eq!(g.generation(g.genesis + 6_480), 2);
         assert_eq!(g.generation_start(1), g.genesis);
-        assert_eq!(g.generation_start(2), g.genesis + 28_080);
+        assert_eq!(g.generation_start(2), g.genesis + 6_480);
     }
 
     #[test]
@@ -307,11 +308,11 @@ mod tests {
         assert_eq!(g.next_increment(0), Some((g.genesis, 5)));
         assert_eq!(g.next_increment(g.genesis), Some((g.genesis + 144, 6)));
         let start = g.genesis;
-        let last_hold = start + 95 * 144 + 14_400 - 1;
-        assert_eq!(g.next_increment(last_hold), Some((start + 28_080, 5)));
+        let last_hold = start + 20 * 144 + 3_600 - 1;
+        assert_eq!(g.next_increment(last_hold), Some((start + 6_480, 5)));
         // A generation reset really is a change.
-        assert_eq!(g.required(start + 28_079), 100);
-        assert_eq!(g.required(start + 28_080), 5);
+        assert_eq!(g.required(start + 6_479), 25);
+        assert_eq!(g.required(start + 6_480), 5);
     }
 
     #[test]
@@ -340,7 +341,7 @@ mod tests {
         assert_eq!(validate(&p), Err(ParamsError::ZeroStep));
 
         let mut p = PROTOCOL;
-        p.generations.ceiling = 101;
+        p.generations.ceiling = MAX_TARGET + 1;
         assert_eq!(validate(&p), Err(ParamsError::CeilingAboveMaxTarget));
 
         let mut p = PROTOCOL;
@@ -384,4 +385,4 @@ mod tests {
 
 /// Pinned production `params_hash` (hex). Regenerate deliberately with
 /// `cargo run -p hopper-core --example genesis_frame` after a wire change.
-pub const PROTOCOL_HASH_PIN: &str = "7b6179c0ec400d0f83e31e094ef0e8beb93f9d159fa04389eb0945cf5da47d1c";
+pub const PROTOCOL_HASH_PIN: &str = "d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f";

@@ -1,11 +1,11 @@
 {
   "wire_version": 7,
-  "genesis": 973263,
-  "generations": {"base":5,"growth_interval":144,"ceiling":100,"hold":14400,"generation_len":28080},
-  "params_hash": "7b6179c0ec400d0f83e31e094ef0e8beb93f9d159fa04389eb0945cf5da47d1c",
-  "params_literal": "{g:973263,b:5,gi:144,cap:100,hold:14400,gl:28080,fin:6}",
-  "max_target": 100,
-  "required": [[973263, 5],[973264, 5],[973406, 5],[973407, 6],[986942, 99],[986943, 100],[1001342, 100],[1001343, 5],[1001487, 6],[1029423, 5]],
+  "genesis": 974034,
+  "generations": {"base":5,"growth_interval":144,"ceiling":25,"hold":3600,"generation_len":6480},
+  "params_hash": "d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f",
+  "params_literal": "{g:974034,b:5,gi:144,cap:25,hold:3600,gl:6480,fin:6}",
+  "max_target": 25,
+  "required": [[974034, 5],[974035, 5],[974177, 5],[974178, 6],[976913, 24],[976914, 25],[980513, 25],[980514, 5],[980658, 6],[986994, 5]],
   "wraps": [{"hash":"0000000000000000420000000000000000000000000000000000000000000000","wrap":0},{"hash":"5555555500000000420000000000000000000000000000000000000000000000","wrap":1},{"hash":"aaaaaaaa00000000420000000000000000000000000000000000000000000000","wrap":2},{"hash":"ffffffff00000000420000000000000000000000000000000000000000000000","wrap":0},{"hash":"5455555500000000420000000000000000000000000000000000000000000000","wrap":0},{"hash":"a9aaaaaa00000000420000000000000000000000000000000000000000000000","wrap":1},{"hash":"feffffff00000000420000000000000000000000000000000000000000000000","wrap":2},{"hash":"5355555500000000420000000000000000000000000000000000000000000000","wrap":2},{"hash":"feffffff00000000000000000000000000000000000000000000000000000000","wrap":2},{"hash":"ffffffff00000000000000000000000000000000000000000000000000000000","wrap":0},{"hash":"0000008000000000000000000000000000000000000000000000000000000000","wrap":2}],
   "owner": "1111111111111111111111111111111111111111111111111111111111111111",
   "mint_txid": "abababababababababababababababababababababababababababababababab",
@@ -19,7 +19,7 @@
   "parent_tags": ["abababababababababababababababababababababababababababababababab","abababababababababababababababababababababababababababababababab01","ababababababababababababababababababababababababababababababababff","abababababababababababababababababababababababababababababababab0001","ababababababababababababababababababababababababababababababababffff","ababababababababababababababababababababababababababababababababffffffff"],
   "mint_envelopes": [{"seed":2421739770,"name":"Hopkinson","hex":"4652470701fad0589009486f706b696e736f6e"},{"seed":42,"name":"","hex":"46524707012a00000000"}],
   "mint_content_type": "text/html;charset=utf-8",
-  "mint_bodies": [{"seed":2421739770,"sat":1000000000000,"name":"Hopkinson","gen_hint":1,"content_type":"text/html;charset=utf-8","html_len":13431,"digest":"f488d4bcee8c73c7f3aea3b0a3a165758e424b68d3abd618c1ad0ade20525750"},{"seed":24301,"sat":2099999999999,"name":"","gen_hint":1,"content_type":"text/html;charset=utf-8","html_len":13413,"digest":"4344adc47abed2f2b7e1aea61f7b7724c41f1bf7d3dff09224ca3cd032f69306"},{"seed":1,"sat":2,"name":"Ribbit","gen_hint":2,"content_type":"text/html;charset=utf-8","html_len":13413,"digest":"5d3269a08903f3e3a70ed2a8258e5da9ebd5e4d36d7c2440ecddbfadfe93522a"},{"seed":7,"sat":8,"name":"<script>&\"'","gen_hint":3,"content_type":"text/html;charset=utf-8","html_len":13453,"digest":"b0b0a7077e25e1645accbd75f5d581d6a14c24c8a995c49053f32b6c24cd8d4a"}],
+  "mint_bodies": [{"seed":2421739770,"sat":1000000000000,"name":"Hopkinson","gen_hint":1,"content_type":"text/html;charset=utf-8","html_len":13428,"digest":"18c566cc68856b41f4a71ac9bd0b39e57ed9ef25461798d8677ce490d1ee7dca"},{"seed":24301,"sat":2099999999999,"name":"","gen_hint":1,"content_type":"text/html;charset=utf-8","html_len":13410,"digest":"06627a9e396bf69621015009d28f4c6e835291815c2cf7f652a89696e89a157f"},{"seed":1,"sat":2,"name":"Ribbit","gen_hint":2,"content_type":"text/html;charset=utf-8","html_len":13410,"digest":"6d92c2bfe1e9db643c11ac1c57a205debb53a7278c5c90cbb3d42cf567226e98"},{"seed":7,"sat":8,"name":"<script>&\"'","gen_hint":3,"content_type":"text/html;charset=utf-8","html_len":13450,"digest":"3b036d0543f403a11ddccbefdc413eba60446c4f90b4c7d3a88fb5213154285e"}],
   "inscription_script": "0063036f7264010109696d6167652f706e6700026f6b68",
   "mint_name_max": 38
 }

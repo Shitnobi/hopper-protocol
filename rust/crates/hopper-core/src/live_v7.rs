@@ -275,10 +275,10 @@ mod tests {
     #[test]
     fn params_literal_matches_the_compiled_schedule() {
         let p = params_literal();
-        assert!(p.contains("cap:100"));
+        assert!(p.contains("cap:25"));
         assert!(p.contains("gi:144"));
-        assert!(p.contains("hold:14400"));
-        assert!(p.contains("gl:28080"));
+        assert!(p.contains("hold:3600"));
+        assert!(p.contains("gl:6480"));
         assert!(p.contains("fin:6"));
     }
 }
