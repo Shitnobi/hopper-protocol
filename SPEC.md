@@ -40,8 +40,8 @@ Three rules are new in v7 and shape everything below:
   whole block; a Hopper that picked that direction dies (§1.2);
 * custody has three crossing leaves, one per direction, plus a send leaf
   (§3.1);
-* the road's difficulty runs in **generations** of 28,080 blocks: 5 hops at
-  the start, +1 every 144 blocks up to 100, then 14,400 blocks at 100, then
+* the road's difficulty runs in **generations** of 6,480 blocks: 5 hops at
+  the start, +1 every 144 blocks up to 25, then 3,600 blocks at 25, then
   a reset to 5 (§1.1). Each generation stamps its frogs `G1`, `G2`, … and
   the art shows the label, the name and the crossing count (§2.3).
 
@@ -80,10 +80,10 @@ NUMS internal key        50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9
 ```
 base            = 5        crossings required on the first block of a generation
 growth_interval = 144      blocks per extra required crossing
-ceiling         = 100      the hardest the road ever gets
-hold            = 14_400   blocks spent at the ceiling before the reset
-generation_len  = (ceiling - base) * growth_interval + hold = 28_080
-genesis         = 973_263
+ceiling         = 25       the hardest the road ever gets
+hold            = 3_600    blocks spent at the ceiling before the reset
+generation_len  = (ceiling - base) * growth_interval + hold = 6_480
+genesis         = 974_034
 ```
 
 Generation `k` (1-based) starts at `S(k) = genesis + (k - 1) * generation_len`
@@ -97,7 +97,7 @@ required(h)   = min(base + floor((h - S(generation(h))) / growth_interval),
 ```
 
 A generation therefore starts at 5 required crossings, adds one every 144
-blocks, reaches 100 at `S(k) + 13_680`, holds 100 for 14_400 blocks, and
+blocks, reaches 25 at `S(k) + 2_880`, holds 25 for 3_600 blocks, and
 restarts at 5. `generation_len` must equal
 `(ceiling - base) * growth_interval + hold`; the indexer rejects a published
 parameter block where it does not.
@@ -247,7 +247,7 @@ The live band, drawn by the fold, is authoritative:
 ```
 alive :  NAME                 🛣 12
 dead  :  RIP NAME             🛣 12
-home  :  NAME                 🛣 100  HOME
+home  :  NAME                 🛣 25   HOME
 ```
 
 The count is `dist`, the number of completed crossings, and it is shown for
@@ -1027,7 +1027,7 @@ mixed envelope, params mismatch.
 ## 7. Test obligations
 
 1. **Golden vectors** — JS and Rust produce identical `required` across a
-   generation boundary (5, 6, 100 for the whole hold, then 5 again), the
+   generation boundary (5, 6, 25 for the whole hold, then 5 again), the
    wrap `u32LE(H)[0..4] mod 3`, the 55-byte body, the envelope, the parent
    tag, and the mint-body digests for pinned fixtures.
 2. **Wire bytes** — the three 161-byte crossing leaves, the send leaf, the
