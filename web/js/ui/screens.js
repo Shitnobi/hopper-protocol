@@ -866,10 +866,21 @@ export function historyDebug(w) {
     sat: e.payload?.frogger_sat ?? e.payload?.sat ?? null,
     name: e.payload?.name || null,
   }));
+  const kindOrder = (html) => [...String(html).matchAll(/class="kind">([^<]+)/g)]
+    .map((m) => m[1].trim());
+  // `computed` is the order the current data produces through history().
+  // `dom` is the order actually painted in the app. If they differ, the
+  // ledger is right and the History screen is a stale paint.
+  const computed = kindOrder(history({ w }));
+  const dom = typeof document !== 'undefined'
+    ? [...document.querySelectorAll('#app .card-row .tx-top .kind')]
+      .map((el) => String(el.textContent || '').trim())
+    : [];
   return JSON.stringify({
     build: globalThis.HOPPER_BUILD || 'development',
     href: typeof location !== 'undefined' ? location.href : '',
     tip: w.tipHeight ?? null,
+    computed, dom,
     rows, actions, chainMints, changes, receives, frogs, events,
   }, null, 2);
 }

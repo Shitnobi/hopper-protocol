@@ -343,6 +343,9 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     'every debug row reports the key History grouped it by');
   ok(!/seed|mnemonic|private/i.test(historyDebug(b)),
     'history debug never includes seed or private material');
+  eq('history debug asks history() for the same corrected order',
+    debug.computed.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  ok(Array.isArray(debug.dom), 'history debug reports the painted DOM order');
 }
 
 console.log(`history: ${checks} checks passed`);

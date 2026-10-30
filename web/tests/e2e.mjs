@@ -773,7 +773,16 @@ else {
   if (!Array.isArray(debugData.rows) || !debugData.rows.length) errors.push('history debug: no grouped rows');
   if (!debugData.rows?.every((r) => typeof r.mintKey === 'string')) errors.push('history debug: row without group key');
   if (/seed|mnemonic|private/i.test(debugText)) errors.push('history debug: contains private material');
-  console.log('history debug:', JSON.stringify({ build: debugData.build, rows: debugData.rows.length }));
+  if (debugData.computed?.slice(0, 3).join('|') !== 'MINT|CHANGE|HOPPER ARRIVED') {
+    errors.push(`history debug: computed ${debugData.computed?.slice(0, 3).join(' > ')}`);
+  }
+  if (debugData.dom?.slice(0, 3).join('|') !== 'MINT|CHANGE|HOPPER ARRIVED') {
+    errors.push(`history debug: painted ${debugData.dom?.slice(0, 3).join(' > ')}`);
+  }
+  console.log('history debug:', JSON.stringify({
+    build: debugData.build, rows: debugData.rows.length,
+    painted: debugData.dom?.slice(0, 3),
+  }));
 }
 
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);

@@ -7,7 +7,7 @@
 // query. It never touches wallet storage.
 (() => {
   'use strict';
-  const BUILD = 'hopper-v6-43';
+  const BUILD = 'hopper-v6-44';
   const FLAG = `hopper.build-guard.${BUILD}`;
   globalThis.HOPPER_BUILD = BUILD;
   if (!/^https?:$/.test(location.protocol)) return;

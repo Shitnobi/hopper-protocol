@@ -1012,7 +1012,14 @@ const handlers = {
   },
   'close-overlay'() { dismissOverlay(); },
   copy(el) { copyText(el.dataset.text || '', el.dataset.copyLabel || 'copied'); },
-  'copy-history-debug'() { copyText(screens.historyDebug(app.w), 'history data copied'); },
+  'copy-history-debug'() {
+    // Capture the painted order first, then force History to show the same
+    // ledger that was copied. A background repair must never leave stale
+    // cards above the corrected rows.
+    const data = screens.historyDebug(app.w);
+    render();
+    copyText(data, 'history data copied');
+  },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
 
@@ -1354,7 +1361,8 @@ function refreshScanPanel() {
 }
 
 window.addEventListener('hopper:refresh', () => {
-  if (!app.w || app.busy) return;
+  if (!app.w) return;
+  if (app.busy && app.view !== 'history') return;
   if (app.view === 'settings') {
     // Do not re-render the whole settings form while the user is editing
     // a URL; the scan window is the only part that changes on a tick.
@@ -1363,6 +1371,18 @@ window.addEventListener('hopper:refresh', () => {
   }
   if (!['wallet', 'pond', 'road', 'history', 'frog', 'leaders'].includes(app.view)) return;
   render();
+});
+
+
+// A ledger repair can land while History is already on screen. Repaint it
+// on return-to-foreground as well as on the wallet refresh event, so the
+// corrected group is never hidden behind a stale card list.
+function repaintHistory() {
+  if (app.w && !app.busy && app.view === 'history') render();
+}
+window.addEventListener('focus', repaintHistory);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) repaintHistory();
 });
 
 window.addEventListener('hopper:scan', () => {
