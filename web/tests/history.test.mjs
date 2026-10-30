@@ -48,6 +48,12 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(/\+200,000 sats/.test(text), 'history shows the deposit amount');
   ok(/CONFIRMED/.test(text), 'a confirmed deposit is not labelled pending');
   ok(!/PENDING/.test(text), 'history does not invent a pending deposit');
+  const deposit = w.receives[0];
+  ok(html.includes('data-action="copy"'), 'history offers copy controls');
+  ok(html.includes(`data-text="${deposit.txid}"`), 'the shortened txid copies the full txid');
+  ok(html.includes(`data-text="${deposit.address}"`), 'the shortened address copies the full address');
+  ok(html.includes('data-copy-label="txid copied"'), 'the txid copy has its own confirmation');
+  ok(html.includes('data-copy-label="address copied"'), 'the address copy has its own confirmation');
 
   const preview = await w.previewMint({ seed: 0x9058d0fa, name: 'History Hopper', feeRate: 2 });
   eq('a mint preview does not add a receive', w.receives.length, 1);
@@ -209,6 +215,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('a restored device renders both changes', (text.match(/\bCHANGE\b/g) || []).length, 2);
   eq('a restored device renders both deposits', (text.match(/\+200,000 sats/g) || []).length, 2);
   ok(!/\bPip\b|\bBogart\b/.test(text), 'a restored device does not show NPC mints');
+  ok(b.chainMints.every((m) => /^[0-9a-f]{64}$/.test(m.commit || '')),
+    'a restored local mint keeps its commit txid');
 
   // Mac-like upgrade: the address scan knows each arrival's block, but the
   // local/ord mint record has no height and the action ledger is absent.
@@ -225,6 +233,14 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     order.slice(0, 6), ['MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE']);
   ok(ordered.indexOf('MINT') < ordered.indexOf('HOPPER ARRIVED'),
     'a restored arrival never appears above its mint');
+
+  // The commit block can be older than the reveal and the change txid is the
+  // commit, not the reveal. It still belongs inside the same mint group.
+  for (const c of b.changes) c.height = 973260;
+  const commitOlder = plain(history({ w: b }));
+  const commitOrder = commitOlder.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('an older commit change stays inside its mint group',
+    commitOrder.slice(0, 6), ['MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE']);
 }
 
 console.log(`history: ${checks} checks passed`);

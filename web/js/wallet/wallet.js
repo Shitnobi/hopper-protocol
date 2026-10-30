@@ -1343,15 +1343,18 @@ export class WalletSession {
         ?? heightOf(mintUtxo?.status?.block_height ?? mintUtxo?.status?.height);
       const prior = this.chainMints.find((m) => String(m.txid).toLowerCase() === mintTxid);
       const hasAction = (this.actions || []).some((a) => String(a?.txid || '').toLowerCase() === mintTxid);
+      const commit = String(f.commit || '').toLowerCase();
       const row = {
         txid: mintTxid, sat: Number(f.sat), seed: f.seed, name: f.name || '',
         height,
+        commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
         at: new Date().toISOString(),
       };
       if (prior) {
         if (!(Number(prior.height) > 0) && row.height != null) prior.height = row.height;
         if (!prior.name && row.name) prior.name = row.name;
         if (prior.seed == null && row.seed != null) prior.seed = row.seed;
+        if (!prior.commit && row.commit) prior.commit = row.commit;
       } else {
         this.chainMints.unshift(row);
         // On a device without the local action ledger, a new on-chain mint

@@ -694,6 +694,67 @@ if (historyText.indexOf('MINT') > historyText.indexOf('HOPPER ARRIVED')) {
   errors.push('history: the Hopper arrival is shown before its mint');
 }
 if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC mints are still visible');
+const historyKinds = await evaluate(`[...document.querySelectorAll('#app .card-row .kind')]
+  .map((el) => el.textContent.trim())`);
+console.log('history order:', historyKinds.slice(0, 6).join(' > '));
+if (historyKinds[0] !== 'MINT' || historyKinds[1] !== 'HOPPER ARRIVED') {
+  errors.push(`history order: ${historyKinds.slice(0, 3).join(' > ')}`);
+}
+
+// Shortened identifiers copy their full values. The clipboard permission is
+// granted to the local test origin so the assertion reads what the wallet
+// actually wrote, not a mocked return value.
+await call('Browser.grantPermissions', {
+  permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+  origin: new URL(base).origin,
+});
+const copyTargets = await evaluate(`(() => {
+  const tx = document.querySelector('.tx-top [data-action="copy"]');
+  const address = [...document.querySelectorAll('.tx-detail [data-action="copy"]')]
+    .find((b) => /^bcrt1/.test(b.dataset.text || ''));
+  return {
+    txid: tx?.dataset.text || '',
+    txidShown: tx?.textContent || '',
+    txidLabel: tx?.dataset.copyLabel || '',
+    txidTag: tx?.tagName || '',
+    txidType: tx?.getAttribute('type') || '',
+    address: address?.dataset.text || '',
+    addressShown: address?.textContent || '',
+    addressLabel: address?.dataset.copyLabel || '',
+    addressTag: address?.tagName || '',
+    overflow: [...document.querySelectorAll('.card-row')].some((card) => {
+      const edge = card.getBoundingClientRect().right + 3;
+      return [...card.querySelectorAll('.tx-copy')]
+        .some((b) => b.getBoundingClientRect().right > edge);
+    }),
+  };
+})()`);
+if (!/^[0-9a-f]{64}$/.test(copyTargets.txid)) errors.push('history copy: missing full txid');
+if (!/^bcrt1/.test(copyTargets.address)) errors.push('history copy: missing full address');
+if (!/^[0-9a-f]{10}…[0-9a-f]{6}$/.test(copyTargets.txidShown)) errors.push('history copy: txid is not shortened');
+if (!/^bcrt1.+…$/.test(copyTargets.addressShown)) errors.push('history copy: address is not shortened');
+if (copyTargets.txidLabel !== 'txid copied') errors.push('history copy: wrong txid toast label');
+if (copyTargets.addressLabel !== 'address copied') errors.push('history copy: wrong address toast label');
+if (copyTargets.txidTag !== 'BUTTON' || copyTargets.addressTag !== 'BUTTON') {
+  errors.push('history copy: copy controls are not keyboard buttons');
+}
+if (copyTargets.txidType !== 'button') errors.push('history copy: txid button has no type=button');
+if (copyTargets.overflow) errors.push('history copy: a copy control overflows its card');
+await evaluate(`document.querySelector('.tx-top [data-action="copy"]').click()`);
+await sleep(220);
+const txClip = await evaluate('navigator.clipboard.readText()');
+if (txClip !== copyTargets.txid) errors.push(`history copy: txid clipboard ${JSON.stringify(txClip)}`);
+const txToast = await evaluate('document.querySelector("#toasts")?.innerText || ""');
+if (!/txid copied/.test(txToast)) errors.push('history copy: no txid confirmation');
+await evaluate(`[...document.querySelectorAll('.tx-detail [data-action="copy"]')]
+  .find((b) => /^bcrt1/.test(b.dataset.text || '')).click()`);
+await sleep(220);
+const addressClip = await evaluate('navigator.clipboard.readText()');
+if (addressClip !== copyTargets.address) errors.push(`history copy: address clipboard ${JSON.stringify(addressClip)}`);
+const addressToast = await evaluate('document.querySelector("#toasts")?.innerText || ""');
+if (!/address copied/.test(addressToast)) errors.push('history copy: no address confirmation');
+console.log('history copy:', JSON.stringify({ txid: copyTargets.txidShown, address: copyTargets.addressShown }));
+
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelectorAll(".pond-item").length > 0', 15000, 'pond after history check');
 

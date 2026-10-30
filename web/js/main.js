@@ -1011,7 +1011,7 @@ const handlers = {
     });
   },
   'close-overlay'() { dismissOverlay(); },
-  copy(el) { copyText(el.dataset.text || ''); },
+  copy(el) { copyText(el.dataset.text || '', el.dataset.copyLabel || 'copied'); },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
 

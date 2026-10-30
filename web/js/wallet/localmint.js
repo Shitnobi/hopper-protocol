@@ -79,6 +79,7 @@ export function parseLocalMint({ hex, utxo, script = null, mintHeight = null } =
       // inscription that merely contains "V6" cannot pass this check.
       if (!equalBytes(inscription.body, utf8(liveV6Html(envelope.seed, sat)))) continue;
       const height = Number(mintHeight ?? utxo.status?.block_height ?? 0);
+      const commit = String(tx.inputs[0]?.txid || '').toLowerCase();
       return {
         sat,
         seed: envelope.seed >>> 0,
@@ -90,6 +91,7 @@ export function parseLocalMint({ hex, utxo, script = null, mintHeight = null } =
         deaths: 0,
         mint_height: Number.isInteger(height) && height > 0 ? height : 0,
         mint_txid: tx.txid,
+        commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
         mint_index: index,
         inscription_id: `${tx.txid}i${index}`,
         location: { txid: tx.txid, vout },

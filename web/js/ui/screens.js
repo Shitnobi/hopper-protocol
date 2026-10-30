@@ -98,6 +98,13 @@ function truncTxid(txid) {
   return txid.length > 22 ? `${txid.slice(0, 10)}…${txid.slice(-6)}` : txid;
 }
 
+/** A shortened identifier that copies its full value on tap/click. */
+function copyButton(value, shown, label, copyLabel) {
+  const text = String(value || '');
+  if (!text) return esc(shown || '—');
+  return `<button type="button" class="tx-copy" data-action="copy" data-text="${esc(text)}" data-copy-label="${esc(copyLabel)}" title="${esc(label)}" aria-label="${esc(label)} ${esc(shown)}">${esc(shown)}</button>`;
+}
+
 function heading(text) {
   return `<div class="page-head">${text}</div>`;
 }
@@ -554,17 +561,65 @@ function historyRows(w) {
     return true;
   });
 
-  // Group rows by transaction, order the groups, then order inside each
-  // group. A transaction's rows must never be split by a different txid,
-  // even when the restored device has no block height for either row.
+  // A mint has two chain transactions: the commit (which usually carries
+  // the change output) and the reveal (the MINT action and Hopper output).
+  // Group both by the minted sat, not only by txid, so the change cannot
+  // drift above or between the mint and its arrival.
+  const mintTxids = new Map();
+  const addMintTxid = (sat, txid) => {
+    const n = Number(sat);
+    const tx = String(txid || '').toLowerCase();
+    if (!Number.isSafeInteger(n) || !/^[0-9a-f]{64}$/.test(tx)) return;
+    if (!mintTxids.has(n)) mintTxids.set(n, new Set());
+    mintTxids.get(n).add(tx);
+  };
+  for (const a of w.actions || []) {
+    if (String(a?.kind || '').toLowerCase() !== 'mint') continue;
+    addMintTxid(a.sat, a.txid);
+    addMintTxid(a.sat, a.commit);
+  }
+  for (const m of w.chainMints || []) {
+    addMintTxid(m.sat, m.txid);
+    addMintTxid(m.sat, m.commit);
+  }
+  for (const r of unique) {
+    if (r.kind === 'mint') addMintTxid(r.sat, r.txid);
+  }
+  const mintSatByTx = new Map();
+  for (const [sat, txids] of mintTxids) {
+    for (const tx of txids) mintSatByTx.set(tx, sat);
+  }
+  const mintGroupOf = (r) => {
+    const tx = r.txid ? String(r.txid).toLowerCase() : '';
+    if (r.kind === 'mint' && Number.isSafeInteger(Number(r.sat))) {
+      const n = Number(r.sat);
+      if (mintTxids.has(n)) return `mint:${n}`;
+    }
+    if (!tx) return null;
+    if (r.kind === 'receive' && r.frog) {
+      const sat = mintSatByTx.get(tx);
+      return sat == null ? null : `mint:${sat}`;
+    }
+    if (r.kind === 'change') {
+      const sat = mintSatByTx.get(tx);
+      return sat == null ? null : `mint:${sat}`;
+    }
+    return null;
+  };
+
+  // Group rows by transaction/mint, order the groups, then order inside
+  // each group. A transaction's rows must never be split by a different
+  // txid, even when the restored device has no block height for either row.
   const groups = [];
   const byTx = new Map();
   for (const r of unique) {
     const tx = r.txid ? String(r.txid).toLowerCase() : '';
-    let g = tx ? byTx.get(tx) : null;
+    const mintKey = mintGroupOf(r);
+    const key = mintKey || (tx ? `tx:${tx}` : `row:${groups.length}`);
+    let g = byTx.get(key) || null;
     if (!g) {
-      g = { tx, rows: [], height: -1, at: '', mempool: false, order: groups.length };
-      if (tx) byTx.set(tx, g);
+      g = { key, rows: [], height: -1, at: '', mempool: false, order: groups.length };
+      byTx.set(key, g);
       groups.push(g);
     }
     g.rows.push(r);
@@ -639,13 +694,33 @@ function txRow(app, r) {
   const shownHeight = r.groupHeight ?? r.height;
   const label = r.frog ? 'HOPPER ARRIVED' : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
-  if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
+  if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) {
+    detail.push({
+      prefix: 'to ',
+      value: r.address,
+      shown: `${r.address.slice(0, 12)}…`,
+      label: 'Copy address',
+      copyLabel: 'address copied',
+    });
+  }
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
-  if (r.to) detail.push(`to ${truncTxid(r.to)}`);
+  if (r.to) {
+    detail.push({
+      prefix: 'to ',
+      value: r.to,
+      shown: truncTxid(r.to),
+      label: 'Copy address',
+      copyLabel: 'address copied',
+    });
+  }
   if (r.name && r.kind !== 'send') detail.push(String(r.name));
   if (r.fee != null) detail.push(`fee ${sats(r.fee)} sats`);
   if (r.bumps) detail.push(`bumped ×${r.bumps}`);
+  const detailHtml = detail.map((part) => {
+    if (typeof part === 'string') return esc(part);
+    return `${esc(part.prefix || '')}${copyButton(part.value, part.shown, part.label, part.copyLabel)}`;
+  }).join(' · ');
 
   let amount = '';
   if (r.kind === 'send' && r.amount != null) {
@@ -675,9 +750,9 @@ function txRow(app, r) {
         <div class="tx-main">
           <div class="tx-top">
             <span class="kind">${esc(label)}</span>
-            <span class="txid">${esc(truncTxid(r.txid))}</span>
+            <span class="txid">${copyButton(r.txid, truncTxid(r.txid), 'Copy transaction ID', 'txid copied')}</span>
           </div>
-          ${detail.length ? `<div class="tx-detail">${esc(detail.join(' · '))}</div>` : ''}
+          ${detail.length ? `<div class="tx-detail">${detailHtml}</div>` : ''}
           <div class="tx-bottom">
             ${amount}
             <span class="spacer"></span>

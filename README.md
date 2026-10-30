@@ -167,6 +167,12 @@ separate `CHANGE` row, never a fake incoming `RECEIVE`. Rows for one
 transaction stay together and use its best-known block height, with the
 action first: `MINT` before `HOPPER ARRIVED`, `SEND` before `CHANGE`. A
 restored device therefore cannot show an arrival above the mint that made it.
+A mint's change usually comes from its commit transaction while the MINT and
+HOPPER ARRIVED rows come from the reveal, so History groups them by the
+minted sat as well as txid. One mint therefore reads `MINT` → `HOPPER
+ARRIVED` → `CHANGE`, even when the commit confirmed in an earlier block.
+Shortened txids and addresses in History are copy controls: tapping one
+copies the full value, with a `txid copied` or `address copied` confirmation.
 
 Observed receives are persisted in the local ledger, so an initial deposit
 does not disappear when its coin is later spent. On the first run after this
@@ -386,8 +392,8 @@ node tests/game.test.mjs        # mint → prepare → cross → settle → tran
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
-node tests/localmint.test.mjs   # 25 mint-recognition checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 71 checks: deposits, spent-change backfill, restored mint order, wallet scope
+node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
+node tests/history.test.mjs     # 78 checks: deposits, copy targets, mint/commit grouping
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

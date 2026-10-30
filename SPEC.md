@@ -497,7 +497,14 @@ The wallet and indexer both verify this with ordinal range arithmetic.
 * Rows for one txid share its best-known height and sort as a group. The
   authoring action comes first (`MINT` before `HOPPER ARRIVED`, `SEND` before
   `CHANGE`), so an arrival cannot appear above the transaction that produced
-  it on a restored device or after a delayed confirmation.
+  it on a restored device or after a delayed confirmation. A mint's commit
+  change is grouped with the reveal's MINT and HOPPER ARRIVED rows by the
+  minted sat (and by both commit and reveal txids), so one mint stays
+  `MINT` → `HOPPER ARRIVED` → `CHANGE` even though the commit is a different
+  transaction in an earlier block.
+* History shortened txids and addresses are copy buttons. The visible text is
+  abbreviated, but the copied text is the complete txid or address; the
+  confirmation names which value was copied.
 * The first completed refresh after the history-ledger upgrade performs two
   one-time, versioned address-history backfills: receive addresses the wallet
   handed out, and change addresses it has used. The receive pass recovers
