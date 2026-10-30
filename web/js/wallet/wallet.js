@@ -1325,59 +1325,157 @@ export class WalletSession {
     return built;
   }
 
-  async transfer(frog, address) {
+  /** Build a normal send without broadcasting it. The returned object is
+   *  the preview: the exact signed transaction plus its output map. */
+  async previewSend(address, amountSats, { feeRate = null } = {}) {
+    if (!Number.isSafeInteger(amountSats) || amountSats < 546) {
+      throw new Error('amount must be a whole number of at least 546 sats');
+    }
+    await this.refresh();
+    const recipient = decodeAddress(address, this.network);
+    const rate = rateOr(feeRate ?? this.settings.feeRate);
+    const change = this.keys.change(0);
+    const built = buildSend({
+      keys: this.keys, utxos: this._funding(), recipientScript: recipient.script,
+      amount: BigInt(amountSats), feeRate: rate,
+    });
+    const changeOut = built.changeIndex == null ? null : built.tx.outputs[built.changeIndex];
+    return {
+      kind: 'send',
+      built,
+      to: address,
+      amount: BigInt(amountSats),
+      amountNumber: amountSats,
+      feeRate: rate,
+      fee: built.fee,
+      vsize: built.vsize,
+      effectiveFeeRate: Number(built.fee) / Math.max(1, built.vsize),
+      destinationAmount: built.tx.outputs[0].value,
+      changeAddress: changeOut ? change.address : null,
+      changeAmount: changeOut ? changeOut.value : 0n,
+    };
+  }
+
+  /** Build a Hopper transfer without broadcasting it. A transfer is a
+   *  single output: the fee comes out of the Hopper's coin, so there is no
+   *  change address to show. */
+  async previewTransfer(frog, address, { feeRate = null } = {}) {
     await this.refresh();
     frog = this.frogBySat(frog.sat) || frog;
     if (frog.state === 'crossing') throw new Error('the frog is on the road; wait for settlement');
     const utxo = this._frogUtxo(frog);
     if (!utxo) throw new Error('the frog output is not in this wallet');
     const recipient = decodeAddress(address, this.network);
+    const rate = rateOr(feeRate ?? this.settings.feeRate);
     const built = buildTransfer({
-      keys: this.keys, utxo, frog, recipientScript: recipient.script,
-      feeRate: rateOr(this.settings.feeRate),
+      keys: this.keys, utxo, frog, recipientScript: recipient.script, feeRate: rate,
     });
-    await this.backend.broadcast(built.hex);
-    this._recordAction({ kind: 'transfer', sat: frog.sat, txid: built.txid, to: address });
-    this.imported.delete(Number(frog.sat));
+    return {
+      kind: 'transfer',
+      built,
+      frogSat: Number(frog.sat),
+      frogName: frog.name || '',
+      to: address,
+      amount: built.valueToRecipient,
+      amountNumber: Number(built.valueToRecipient),
+      feeRate: rate,
+      fee: built.fee,
+      vsize: built.vsize,
+      effectiveFeeRate: Number(built.fee) / Math.max(1, built.vsize),
+      destinationAmount: built.valueToRecipient,
+      changeAddress: null,
+      changeAmount: 0n,
+    };
+  }
+
+  /** Re-read the wallet and prove that a preview's inputs are still exactly
+   *  spendable. A stale preview must never be broadcast by accident. */
+  async _revalidatePreview(preview) {
     await this.refresh();
-    return built;
+    if (this._stopped) throw new Error('the wallet was locked before the transaction was approved');
+    const inputs = preview?.built?.inputs;
+    if (!Array.isArray(inputs) || !inputs.length) throw new Error('transaction preview has no inputs');
+    for (const input of inputs) {
+      const live = (this.utxos || []).find((u) => u.txid === input.txid && Number(u.vout) === Number(input.vout));
+      if (!live) {
+        throw new Error('preview expired: an input has already been spent; cancel and preview again');
+      }
+      if (Number(live.value) !== Number(input.value)) {
+        throw new Error('preview expired: an input value changed; cancel and preview again');
+      }
+      if (live.script && input.script && !equalBytes(live.script, input.script)) {
+        throw new Error('preview expired: an input script changed; cancel and preview again');
+      }
+      if (preview.kind === 'send'
+          && (live.kind !== 'p2wpkh' || live.exact === false || live.spendable === false
+            || (live.frogs && live.frogs.length))) {
+        throw new Error('preview expired: a funding coin now carries a Hopper; cancel and preview again');
+      }
+    }
+    if (preview.kind === 'transfer') {
+      const frog = this.frogBySat(preview.frogSat);
+      if (!frog) throw new Error('preview expired: the Hopper is no longer in this wallet');
+      if (frog.state === 'crossing') throw new Error('the Hopper is on the road; wait for settlement');
+      const utxo = this._frogUtxo(frog);
+      if (!utxo || !inputs.some((i) => i.txid === utxo.txid && Number(i.vout) === Number(utxo.vout))) {
+        throw new Error('preview expired: the Hopper output changed; cancel and preview again');
+      }
+    }
+  }
+
+  /** Approve a preview: revalidate state, then broadcast exactly once.
+   *  There is no broadcast call anywhere in previewSend/previewTransfer. */
+  async broadcastPreview(preview, { revalidate = true } = {}) {
+    if (!preview?.built?.hex || !preview?.built?.tx) throw new Error('no transaction preview to broadcast');
+    if (revalidate) await this._revalidatePreview(preview);
+    if (preview.kind === 'send') {
+      // Record the full safety envelope before broadcasting. If it cannot be
+      // produced, the send still goes out but is explicitly not bumpable.
+      let rbf = null;
+      try {
+        rbf = buildSendRbfEnvelope({
+          tx: preview.built.tx,
+          hex: preview.built.hex,
+          fee: Number(preview.built.fee),
+          inputs: preview.built.inputs,
+          to: preview.to,
+          amount: preview.amountNumber,
+          network: this.network,
+          changeIndex: preview.built.changeIndex,
+          protectedSats: this._protectedSats(),
+        });
+      } catch (e) {
+        rbf = { eligible: false, reason: e.message || String(e), policy: RBF_POLICY };
+      }
+      await this.backend.broadcast(preview.built.hex);
+      this._recordAction({
+        kind: 'send', txid: preview.built.txid, to: preview.to, amount: String(preview.amountNumber),
+        fee: Number(preview.built.fee), rbf,
+      });
+    } else if (preview.kind === 'transfer') {
+      await this.backend.broadcast(preview.built.hex);
+      this._recordAction({
+        kind: 'transfer', sat: preview.frogSat, txid: preview.built.txid, to: preview.to,
+      });
+      this.imported.delete(Number(preview.frogSat));
+    } else {
+      throw new Error(`unknown transaction preview kind: ${preview.kind}`);
+    }
+    try { await this.refresh(); } catch (e) {
+      console.warn('transaction broadcast, but the refresh failed', e.message || String(e));
+    }
+    return preview.built;
+  }
+
+  /** Direct helpers retained for callers that do not need a UI preview. */
+  async transfer(frog, address) {
+    const preview = await this.previewTransfer(frog, address);
+    return this.broadcastPreview(preview, { revalidate: false });
   }
 
   async send(address, amountSats) {
-    if (!Number.isSafeInteger(amountSats) || amountSats < 546) {
-      throw new Error('amount must be a whole number of at least 546 sats');
-    }
-    await this.refresh();
-    const recipient = decodeAddress(address, this.network);
-    const built = buildSend({
-      keys: this.keys, utxos: this._funding(), recipientScript: recipient.script,
-      amount: BigInt(amountSats), feeRate: rateOr(this.settings.feeRate),
-    });
-    // Record the full safety envelope before broadcasting. If it cannot be
-    // produced, the send still goes out but is explicitly not bumpable.
-    let rbf = null;
-    try {
-      rbf = buildSendRbfEnvelope({
-        tx: built.tx,
-        hex: built.hex,
-        fee: Number(built.fee),
-        inputs: built.inputs,
-        to: address,
-        amount: amountSats,
-        network: this.network,
-        changeIndex: built.changeIndex,
-        protectedSats: this._protectedSats(),
-      });
-    } catch (e) {
-      rbf = { eligible: false, reason: e.message || String(e), policy: RBF_POLICY };
-    }
-    await this.backend.broadcast(built.hex);
-    this._recordAction({
-      kind: 'send', txid: built.txid, to: address, amount: String(amountSats),
-      fee: Number(built.fee), rbf,
-    });
-    await this.refresh();
-    return built;
+    const preview = await this.previewSend(address, amountSats);
+    return this.broadcastPreview(preview, { revalidate: false });
   }
 
   /**

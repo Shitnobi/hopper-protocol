@@ -435,7 +435,11 @@ export function buildTransfer({
     hex: bytesToHex(serializeTx(tx, true)),
     txid: txid(tx),
     fee,
+    vsize: vsize(tx),
     valueToRecipient: tx.outputs[0].value,
+    // Public metadata for a pre-broadcast preview/revalidation. Never expose
+    // the private key held by coin selection.
+    inputs: [{ txid: utxo.txid, vout: utxo.vout, value: utxo.value, script: utxo.script }],
   };
 }
 

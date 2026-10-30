@@ -11,6 +11,9 @@ import {
 } from './dom.js';
 import { requiredAt, deathBps, nextIncrement, paramsHashHex } from '../core/params.js';
 import { canBumpSend } from '../wallet/rbf.js';
+import {
+  FEE_SOURCE, feeRateLabel, feeRecommendations, usableFeeRate,
+} from '../wallet/fees.js';
 import { deriveTraits } from '../core/art.js';
 import {
   C, RARITY_NAMES, frogMarkSvg, pondMarkSvg, rarityColor,
@@ -1182,6 +1185,69 @@ export function receiveBook(app) {
     <div class="lane-dashes" aria-hidden="true"></div>`;
 }
 
+function feeAge(ts) {
+  if (!ts) return 'not fetched';
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (secs < 8) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
+  return `${Math.round(secs / 60)}m ago`;
+}
+
+export function feeSourceText(app) {
+  const q = app?.feeQuote;
+  if (q?.status === 'loading') return `${FEE_SOURCE} · fetching…`;
+  if (q?.status === 'error') return `${FEE_SOURCE} · unavailable`;
+  if (q?.status === 'ready') return `${FEE_SOURCE} · ${feeAge(q.fetchedAt)}`;
+  return `${FEE_SOURCE} · ready on open`;
+}
+
+export function feeNoteText(app) {
+  const q = app?.feeQuote;
+  if (q?.status === 'error') return 'Recommendations could not be fetched. The rate below still works manually.';
+  if (q?.status === 'loading') return 'Fetching fastestFee, halfHourFee and economyFee.';
+  if (q?.status === 'ready') {
+    const below = feeRecommendations(q).some((r) => r.rate != null && r.rate < 1);
+    return below
+      ? 'API values below 1 sat/vB are raised to this wallet\'s 1 sat/vB relay floor. The field stays editable.'
+      : 'Tap a band or type any rate. The field stays editable.';
+  }
+  return 'Fast, Medium and Slow fill the field; you can always type another rate.';
+}
+
+export function feePresets(app, input) {
+  const q = app?.feeQuote;
+  if (q?.status === 'loading') {
+    return '<div class="fee-presets-loading">fetching fastestFee / halfHourFee / economyFee…</div>';
+  }
+  if (q?.status === 'error') {
+    return `<div class="fee-presets-error"><span>mempool.space unavailable</span><button class="copy" data-action="fee-retry">RETRY</button></div>`;
+  }
+  if (q?.status !== 'ready') {
+    return '<div class="fee-presets-loading">open the transaction window to fetch fees…</div>';
+  }
+  return feeRecommendations(q).map((r) => {
+    const value = usableFeeRate(r.rate);
+    return `<button class="fee-choice" data-action="fee-choice" data-target="${esc(input)}" data-rate="${value}" title="mempool.space ${r.key}">
+      <b>${r.label}</b><span>${esc(feeRateLabel(r.rate))}</span><small>${esc(r.hint)}</small>
+    </button>`;
+  }).join('');
+}
+
+export function feePicker(app, { input, value = app.settings.feeRate, label = 'Fee rate' } = {}) {
+  return `
+    <div class="fee-picker" data-fee-picker>
+      <div class="fee-picker-head">
+        <span>${esc(label)}</span>
+        <span class="tiny muted" data-fee-source>${esc(feeSourceText(app))}</span>
+      </div>
+      <div class="fee-presets" data-fee-presets data-fee-for="${esc(input)}">${feePresets(app, input)}</div>
+      <label class="field mt6"><span>Custom rate (sat/vB)</span>
+        <input type="number" min="1" max="1000" step="any" inputmode="decimal" data-input="${esc(input)}" value="${esc(value)}">
+      </label>
+      <div class="hint" data-fee-note>${esc(feeNoteText(app))}</div>
+    </div>`;
+}
+
 export function sendSheet(app) {
   return `
     <div class="row"><h2>SEND</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
@@ -1189,7 +1255,39 @@ export function sendSheet(app) {
     <label class="field"><span>Recipient</span><input type="text" data-input="send-to" placeholder="${esc(app.w.network === 'mainnet' ? 'bc1…' : 'bcrt1… / tb1…')}"></label>
     <label class="field"><span>Amount (sats)</span><input type="number" data-input="send-amount" min="546" value="10000"></label>
     <div class="hint">Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.</div>
-    <div class="mt14">${logBtn('SEND', 'do-send', { edge: 'accent', cls: 'block' })}</div>`;
+    ${feePicker(app, { input: 'send-fee' })}
+    <div class="mt14">${logBtn('PREVIEW TRANSACTION', 'preview-send', { edge: 'accent', cls: 'block' })}</div>`;
+}
+
+export function txPreviewSheet(app, p) {
+  const hopper = p.kind === 'transfer';
+  const change = p.changeAddress
+    ? `<dd class="tiny wrap">${esc(p.changeAddress)}</dd>`
+    : '<dd>none — this transaction has one output</dd>';
+  const changeAmount = p.changeAddress ? `${sats(p.changeAmount)} sats` : '0 sats';
+  return `
+    <div class="row"><h2>REVIEW TRANSACTION</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">${hopper ? 'SEND HOPPER' : 'SEND BITCOIN'} · nothing is broadcast until you approve.</div>
+    <div class="stat-grid mt10">
+      <dt>Destination address</dt><dd class="tiny wrap">${esc(p.to)}</dd>
+      <dt>Destination amount</dt><dd>${sats(p.destinationAmount)} sats</dd>
+      <dt>Change address</dt>${change}
+      <dt>Change amount</dt><dd>${esc(changeAmount)}</dd>
+      <dt>Fee rate</dt><dd>${esc(feeRateLabel(p.feeRate))}</dd>
+      <dt>Actual fee</dt><dd>${sats(p.fee)} sats</dd>
+      <dt>Transaction size</dt><dd>${sats(p.built.vsize || 0)} vB</dd>
+    </div>
+    <div class="warnbox mt10">
+      <b>APPROVING BROADCASTS THIS TRANSACTION.</b><br>
+      The wallet rechecks the inputs first, then broadcasts this exact signed
+      transaction. Cancel leaves the wallet untouched and puts nothing in the mempool.
+    </div>
+    <div class="hint">Actual fee is what this signed transaction pays, not an estimate. Effective rate:
+      ${esc(feeRateLabel(p.effectiveFeeRate))}.</div>
+    <div class="actions mt14">
+      ${logBtn('CANCEL', 'abort-preview', { edge: 'dim', cls: 'small' })}
+      ${logBtn('APPROVE & BROADCAST', 'do-approve-tx', { edge: 'accent' })}
+    </div>`;
 }
 
 export function bumpFeeSheet(app, action) {
@@ -1212,9 +1310,7 @@ export function bumpFeeSheet(app, action) {
       new change output. The higher fee comes only from those added coins, never from an existing
       output or a Hopper card. This guard uses the wallet's current Hopper/indexer view.
     </div>
-    <label class="field mt10"><span>New fee rate (sat/vB)</span>
-      <input type="number" min="1" data-input="bump-fee-rate" value="${suggested}">
-    </label>
+    ${feePicker(app, { input: 'bump-fee-rate', value: suggested, label: 'New fee rate' })}
     <div class="hint">The wallet raises this to at least one sat/vB above the original and enforces BIP125's incremental-relay margin. Only one replacement can win: if the original confirms first, this bump is rejected and the original stays.</div>
     <div class="actions mt14">
       ${logBtn('CANCEL', 'close-overlay', { edge: 'dim', cls: 'small' })}
@@ -1225,14 +1321,15 @@ export function bumpFeeSheet(app, action) {
 export function transferSheet(app, f) {
   return `
     <div class="row"><h2>TRANSFER ${esc(f.name || '')}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">No inscription, no state change. The frog walks to an ordinary address.</div>
+    <div class="sub">No inscription, no state change. The Hopper walks to an ordinary address.</div>
     <div class="stat-grid mt10">
       <dt>Sat</dt><dd>${sats(f.sat)}</dd>
       <dt>State</dt><dd>${esc(String(f.state || '').toUpperCase())}</dd>
     </div>
     <label class="field"><span>Recipient address</span><input type="text" data-input="transfer-to" placeholder="bcrt1…"></label>
     <div class="hint">The recipient can stage it on The Road again with TRAVEL TO ROAD.</div>
-    <div class="mt14">${logBtn('TRANSFER', 'do-transfer', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
+    ${feePicker(app, { input: 'transfer-fee' })}
+    <div class="mt14">${logBtn('PREVIEW TRANSACTION', 'preview-transfer', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
 }
 
 export function crossSheet(app, f) {
@@ -1247,7 +1344,7 @@ export function crossSheet(app, f) {
       <dt>Settlement</dt><dd>T+6 blocks</dd>
     </div>
     <label class="field"><span>New owner P2TR address (optional)</span><input type="text" data-input="cross-owner" placeholder="leave empty to keep in this wallet"></label>
-    <label class="field"><span>Fee rate (sat/vB)</span><input type="number" min="1" data-input="cross-fee" value="${app.settings.feeRate}"></label>
+    ${feePicker(app, { input: 'cross-fee', label: 'Crossing fee rate' })}
     <div class="mt14">${logBtn('CROSS', 'do-cross', { edge: 'accent', cls: 'block', attrs: `data-sat="${f.sat}"` })}</div>`;
 }
 

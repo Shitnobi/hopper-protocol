@@ -437,6 +437,16 @@ The wallet never replaces a HOPPER action. The transaction builder recomputes
 the FIFO sat ranges and refuses a replacement if a known Hopper sat would land
 in its fee.
 
+A browser **SEND** or Hopper **TRANSFER** is previewed before broadcast. The
+preview shows the destination address and amount, change address and amount
+(or "one output" for a transfer), chosen fee rate and actual fee in sats.
+CANCEL performs no broadcast, persists no action and spends nothing.
+Approval re-scans and refuses the preview if any input moved or gained a
+Hopper, then broadcasts the exact previewed bytes. Fee recommendations come
+from mempool.space `/api/v1/fees/precise` (`fastestFee`, `halfHourFee`,
+`economyFee`); the chosen rate remains manually editable, and values below
+the 1 sat/vB wallet relay floor are raised to it.
+
 ### 3.7 Sat assignment invariant
 
 Ordinals move FIFO over inputs in order. Therefore:

@@ -48,4 +48,49 @@ const demoRoad = screens.road({ w: demo, settings: demo.settings, road: [] });
 ok(demoRoad.includes('data-action="mine"') && demoRoad.includes('MINE 1') && demoRoad.includes('MINE 6'),
   'demo road keeps the block-production buttons');
 
-console.log(`ui: ${checks} checks passed`);
+// ---- fee picker and two-step send preview -----------------------------
+const quoteApp = {
+  w: { ...demo, balance: { spendable: 1_000_000 } },
+  settings: { ...demo.settings, feeRate: 2 },
+  feeQuote: {
+    status: 'ready', fastestFee: 2.716, halfHourFee: 1.859, economyFee: 0.2,
+    fetchedAt: Date.now(),
+  },
+};
+const sendHtml = screens.sendSheet(quoteApp);
+ok(sendHtml.includes('PREVIEW TRANSACTION') && !sendHtml.includes('data-action="do-send"'),
+  'send offers PREVIEW TRANSACTION, not a direct SEND');
+ok(sendHtml.includes('data-input="send-fee"'), 'send has an editable fee rate');
+ok(['FAST', 'MEDIUM', 'SLOW'].every((x) => sendHtml.includes(`>${x}<`)), 'send shows Fast/Medium/Slow');
+ok(sendHtml.includes('2.72 sat/vB') && sendHtml.includes('1.86 sat/vB') && sendHtml.includes('0.2 sat/vB'),
+  'send displays fastestFee, halfHourFee and economyFee');
+ok(sendHtml.includes('data-action="fee-choice" data-target="send-fee"'), 'fee choices fill the send field');
+
+const transferHtml = screens.transferSheet(quoteApp, { sat: 7000000, name: 'Hopkinson', state: 'idle' });
+ok(transferHtml.includes('PREVIEW TRANSACTION') && transferHtml.includes('data-action="preview-transfer"'),
+  'Hopper transfer offers PREVIEW TRANSACTION');
+ok(!transferHtml.includes('data-action="do-transfer"') && transferHtml.includes('data-input="transfer-fee"'),
+  'Hopper transfer has no direct broadcast and has an editable fee rate');
+
+const previewHtml = screens.txPreviewSheet(quoteApp, {
+  kind: 'send', to: 'bcrt1qdestination', destinationAmount: 10000n,
+  changeAddress: 'bcrt1qchange', changeAmount: 1234n,
+  feeRate: 2, effectiveFeeRate: 2, fee: 282,
+  built: { vsize: 141 },
+});
+ok(['Destination address', 'Destination amount', 'Change address', 'Change amount', 'Fee rate', 'Actual fee']
+  .every((x) => previewHtml.includes(x)), 'preview names every transaction field');
+ok(previewHtml.includes('10,000 sats') && previewHtml.includes('1,234 sats') && previewHtml.includes('282 sats'),
+  'preview shows destination, change and actual fee amounts');
+ok(previewHtml.includes('data-action="abort-preview"') && previewHtml.includes('data-action="do-approve-tx"'),
+  'preview has cancel and approve actions');
+
+const hopperPreview = screens.txPreviewSheet(quoteApp, {
+  kind: 'transfer', to: 'bcrt1qhopperdest', destinationAmount: 6999718n,
+  changeAddress: null, changeAmount: 0n, feeRate: 2, effectiveFeeRate: 2, fee: 282,
+  built: { vsize: 141 },
+});
+ok(hopperPreview.includes('SEND HOPPER') && hopperPreview.includes('one output'),
+  'Hopper preview explains that a transfer has no change output');
+
+console.log(`ui: ${checks} checks passed (fee/preview)`);

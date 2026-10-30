@@ -173,6 +173,7 @@ console.log('wallet:', balance?.replace(/\n/g, ' | '));
 
 // 1a. RECEIVE is the egui window: BITCOIN | HOPPERS tabs, a warning band,
 // and a scannable QR with real ink (not a placeholder).
+let autoReceive = '';
 await click('sheet-receive');
 await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window');
 {
@@ -228,6 +229,7 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
     note: document.querySelector('.overlay .receive-note')?.textContent.trim(),
   })`);
   console.log('receive auto-rotation:', { from: before.slice(0, 12), to: auto.address.slice(0, 12), tab: auto.tab });
+  autoReceive = auto.address;
   if (!auto.address || auto.address === before) errors.push('receive: paid address did not auto-rotate');
   if (auto.tab !== 'BITCOIN' || !/rotates after it is paid/.test(auto.note)) {
     errors.push(`receive: auto-rotation lost the bitcoin tab ${JSON.stringify(auto)}`);
@@ -247,6 +249,97 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
   await click('close-overlay');
   await sleep(150);
 }
+
+// 1a-bis. A normal send is two steps: PREVIEW TRANSACTION, then approval.
+// Cancel must leave no pending row; approve must broadcast exactly what the
+// preview showed. The fee field is manually set so this test does not depend
+// on mempool.space being reachable.
+await sleep(150);
+// Keep the fee test deterministic while still exercising the real fetch and
+// DOM-refresh path. CORS on mempool.space is verified separately.
+await evaluate(`(() => {
+  const real = window.fetch.bind(window);
+  window.fetch = async (url, opts) => String(url).includes('mempool.space/api/v1/fees/precise')
+    ? new Response(JSON.stringify({ fastestFee: 3.2, halfHourFee: 2.1, economyFee: 0.4 }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })
+    : real(url, opts);
+  return true;
+})()`);
+await click('sheet-send');
+await waitFor('document.querySelector("[data-input=send-fee]")', 5000, 'send fee field');
+await waitFor('document.querySelectorAll(".fee-choice").length === 3', 10000, 'fee recommendations');
+const feeButtons = await evaluate(`({
+  labels: [...document.querySelectorAll('.fee-choice')].map((b) => b.innerText.replace(/\\n/g, ' ')),
+  fastest: document.querySelector('.fee-choice[data-rate="3.2"] b')?.textContent,
+  field: document.querySelector('[data-input=send-fee]')?.value,
+})`);
+console.log('fee choices:', feeButtons);
+if (!feeButtons.labels.some((x) => /FAST/.test(x) && /3.2 sat\/vB/.test(x))
+  || !feeButtons.labels.some((x) => /MEDIUM/.test(x) && /2.1 sat\/vB/.test(x))
+  || !feeButtons.labels.some((x) => /SLOW/.test(x) && /0.4 sat\/vB/.test(x))) {
+  errors.push(`fee choices missing recommendations: ${JSON.stringify(feeButtons)}`);
+}
+await evaluate(`document.querySelector('.fee-choice[data-rate="3.2"]').click()`);
+const chosenFee = await evaluate(`document.querySelector('[data-input=send-fee]')?.value`);
+if (chosenFee !== '3.2') errors.push(`Fast did not fill the fee field: ${JSON.stringify(chosenFee)}`);
+const feeFit = await evaluate(`(() => {
+  const sheet = document.querySelector('.overlay .sheet');
+  const presets = document.querySelector('.fee-presets');
+  return sheet && presets
+    ? { sw: sheet.scrollWidth, cw: sheet.clientWidth, psw: presets.scrollWidth, pcw: presets.clientWidth }
+    : null;
+})()`);
+if (!feeFit || feeFit.sw > feeFit.cw + 1 || feeFit.psw > feeFit.pcw + 1) {
+  errors.push(`fee picker overflows: ${JSON.stringify(feeFit)}`);
+}
+await fill('send-to', autoReceive);
+await fill('send-amount', '12345');
+await fill('send-fee', '2');
+await click('preview-send');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('REVIEW TRANSACTION')`, 15000, 'send preview');
+const sendPreview = await evaluate(`(() => {
+  const t = document.querySelector('.overlay')?.innerText || '';
+  return {
+    text: t,
+    hasCancel: Boolean(document.querySelector('.overlay [data-action=abort-preview]')),
+    hasApprove: Boolean(document.querySelector('.overlay [data-action=do-approve-tx]')),
+    direct: Boolean(document.querySelector('.overlay [data-action=do-send]')),
+  };
+})()`);
+console.log('send preview:', sendPreview.text.replace(/\n/g, ' | ').slice(0, 340));
+if (!sendPreview.text.includes('Destination address') || !sendPreview.text.includes('Destination amount')
+  || !sendPreview.text.includes('Change address') || !sendPreview.text.includes('Change amount')
+  || !sendPreview.text.includes('Fee rate') || !sendPreview.text.includes('Actual fee')
+  || !sendPreview.text.includes('12,345 sats')) {
+  errors.push(`send preview is incomplete: ${JSON.stringify(sendPreview.text.slice(0, 500))}`);
+}
+if (!sendPreview.hasCancel || !sendPreview.hasApprove || sendPreview.direct) {
+  errors.push(`send preview actions: ${JSON.stringify(sendPreview)}`);
+}
+const sendPreviewFit = await evaluate(`(() => {
+  const m = document.querySelector('.overlay .modal');
+  return m ? { sw: m.scrollWidth, cw: m.clientWidth } : null;
+})()`);
+if (!sendPreviewFit || sendPreviewFit.sw > sendPreviewFit.cw + 1) {
+  errors.push(`send preview overflows: ${JSON.stringify(sendPreviewFit)}`);
+}
+await click('abort-preview');
+await waitFor('document.getElementById("overlay").hidden', 5000, 'cancelled preview closed');
+const cancelled = await evaluate(`document.querySelector('#toasts')?.innerText || ''`);
+if (!/transaction cancelled/i.test(cancelled)) errors.push(`cancel toast missing: ${JSON.stringify(cancelled)}`);
+
+await click('sheet-send');
+await waitFor('document.querySelector("[data-input=send-fee]")', 5000, 'send fee field after cancel');
+await fill('send-to', autoReceive);
+await fill('send-amount', '12345');
+await fill('send-fee', '2');
+await click('preview-send');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('Actual fee')`, 15000, 'send preview again');
+await click('do-approve-tx');
+await waitFor(`document.querySelector('#toasts')?.innerText.includes('Sent 12,345 sats')`, 30000, 'sent toast');
+console.log('send approval: broadcast');
+await waitFor('document.getElementById("overlay").hidden', 10000, 'send overlay closed');
 
 // 1b. Every screen must fit the phone width.
 for (const v of ['wallet', 'pond', 'road', 'mint', 'leaders', 'history', 'settings']) {
@@ -551,6 +644,41 @@ console.log('pond actions:', pondActions);
 if (pondActions.labels.join('|') !== 'SEND|TRAVEL TO ROAD' || !pondActions.sameRow || !pondActions.fits) {
   errors.push(`pond travel button: ${JSON.stringify(pondActions)}`);
 }
+
+// Sending a Hopper has the same preview boundary. Cancel here so the game
+// flow below still owns the frog.
+await evaluate(`document.querySelector('.pond-item [data-action=sheet-transfer]').click()`);
+await waitFor('document.querySelector("[data-input=transfer-fee]")', 5000, 'Hopper transfer sheet');
+await fill('transfer-to', autoReceive);
+await fill('transfer-fee', '2');
+await click('preview-transfer');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('SEND HOPPER')`, 15000, 'Hopper transfer preview');
+const hopperPreviewUi = await evaluate(`(() => {
+  const t = document.querySelector('.overlay')?.innerText || '';
+  return {
+    text: t,
+    cancel: Boolean(document.querySelector('.overlay [data-action=abort-preview]')),
+    approve: Boolean(document.querySelector('.overlay [data-action=do-approve-tx]')),
+  };
+})()`);
+console.log('Hopper preview:', hopperPreviewUi.text.replace(/\n/g, ' | ').slice(0, 300));
+if (!hopperPreviewUi.text.includes('Destination address')
+  || !hopperPreviewUi.text.includes('Destination amount')
+  || !hopperPreviewUi.text.includes('Change address')
+  || !hopperPreviewUi.text.includes('Actual fee')
+  || !hopperPreviewUi.text.includes('one output')
+  || !hopperPreviewUi.cancel || !hopperPreviewUi.approve) {
+  errors.push(`Hopper preview is incomplete: ${JSON.stringify(hopperPreviewUi.text.slice(0, 500))}`);
+}
+const hopperPreviewFit = await evaluate(`(() => {
+  const m = document.querySelector('.overlay .modal');
+  return m ? { sw: m.scrollWidth, cw: m.clientWidth } : null;
+})()`);
+if (!hopperPreviewFit || hopperPreviewFit.sw > hopperPreviewFit.cw + 1) {
+  errors.push(`Hopper preview overflows: ${JSON.stringify(hopperPreviewFit)}`);
+}
+await click('abort-preview');
+await waitFor('document.getElementById("overlay").hidden', 5000, 'Hopper preview cancelled');
 
 // The wallet shrinks the pond to a small generic preview. It is one link,
 // not the full grid, and it opens The Pond.

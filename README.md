@@ -143,6 +143,22 @@ are never replaceable and have no bump button. The builder repeats the
 range audit on the final bytes and blocks a replacement if a known Hopper
 sat would land in its fee.
 
+Ordinary **SEND** and sending a Hopper (**TRANSFER**) are two-step in the
+browser UI. The first button is **PREVIEW TRANSACTION**: it builds the exact
+signed transaction without broadcasting it, and the preview names the
+destination address and amount, the change address and amount, the chosen fee
+rate, the actual fee in sats, and the transaction size. **CANCEL** (or ✕,
+Escape and the backdrop) discards it. **APPROVE & BROADCAST** rechecks every
+input against a fresh scan and broadcasts exactly once; a stale preview is
+refused. A transfer has no change output, so its preview says so explicitly.
+
+Transaction fee fields show mempool.space's
+`/api/v1/fees/precise` recommendations: **FAST** (`fastestFee`), **MEDIUM**
+(`halfHourFee`) and **SLOW** (`economyFee`). Tapping one fills the editable
+sat/vB field; typing overrides it. The API is consulted once per window and
+cached for 60 seconds. Recommendations below the wallet's 1 sat/vB relay
+floor remain visible, but filling the field raises them to the floor.
+
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
 palette, pixel text, wooden log buttons, lily-pad floating windows,

@@ -17,6 +17,7 @@ import {
 import { newMnemonic, isValidMnemonic, deriveWallet } from './wallet/keys.js';
 import { decodeAddress } from './wallet/addresses.js';
 import { DemoBackend } from './wallet/backend.js';
+import { FEE_CACHE_MS, fetchFeeQuote } from './wallet/fees.js';
 import { idbGet, KEYS } from './wallet/storage.js';
 
 const app = {
@@ -40,6 +41,8 @@ const app = {
   intro: false,
   rulesWalk: null,
   receiveTab: 'btc',
+  previewTx: null,
+  feeQuote: { status: 'idle', fastestFee: null, halfHourFee: null, economyFee: null, fetchedAt: 0, error: '' },
   frogRefusal: null,
   navChosen: false,
   seenFirstFrog: false,
@@ -599,6 +602,62 @@ function openFrog(sat) {
   navigate('frog');
 }
 
+// ---------------------------------------------------------------------------
+// fee recommendations
+// ---------------------------------------------------------------------------
+
+let feeRequest = null;
+
+function refreshFeePickers() {
+  for (const host of document.querySelectorAll('[data-fee-presets]')) {
+    const input = host.dataset.feeFor || '';
+    host.innerHTML = screens.feePresets(app, input);
+    const picker = host.closest('[data-fee-picker]');
+    const source = picker?.querySelector('[data-fee-source]');
+    if (source) source.textContent = screens.feeSourceText(app);
+    const note = picker?.querySelector('[data-fee-note]');
+    if (note) note.textContent = screens.feeNoteText(app);
+  }
+}
+
+async function loadFeeQuote({ force = false } = {}) {
+  const q = app.feeQuote;
+  if (!force && q?.status === 'ready' && Date.now() - Number(q.fetchedAt || 0) < FEE_CACHE_MS) return q;
+  if (feeRequest) return feeRequest;
+  app.feeQuote = { ...q, status: 'loading', error: '' };
+  refreshFeePickers();
+  feeRequest = fetchFeeQuote()
+    .then((quote) => {
+      app.feeQuote = { status: 'ready', ...quote };
+      refreshFeePickers();
+      return app.feeQuote;
+    })
+    .catch((e) => {
+      app.feeQuote = { ...app.feeQuote, status: 'error', error: e.message || String(e) };
+      refreshFeePickers();
+      throw e;
+    })
+    .finally(() => { feeRequest = null; });
+  return feeRequest;
+}
+
+function ensureFeeQuote() {
+  if (app.feeQuote?.status === 'loading') return;
+  if (app.feeQuote?.status === 'ready'
+      && Date.now() - Number(app.feeQuote.fetchedAt || 0) < FEE_CACHE_MS) return;
+  loadFeeQuote().catch(() => { /* the manual fee field remains usable */ });
+}
+
+function readFeeRate(input) {
+  const raw = Number(document.querySelector(`[data-input="${input}"]`)?.value);
+  return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.min(1000, raw)) : app.w.settings.feeRate;
+}
+
+function dismissOverlay() {
+  app.previewTx = null;
+  closeOverlay();
+}
+
 const handlers = {
   nav(el) { navigate(el.dataset.view); },
   drawer() {
@@ -859,20 +918,93 @@ const handlers = {
     openOverlay(screens.qrSheet(app, address), { lily: 'home' });
   },
   'receive-book'() { openOverlay(screens.receiveBook(app), { lily: 'home' }); },
-  'sheet-send'() { openOverlay(screens.sendSheet(app), { type: 'sheet' }); },
+  'sheet-send'() {
+    openOverlay(screens.sendSheet(app), { type: 'sheet' });
+    ensureFeeQuote();
+  },
   'bump-fee'(el) {
     const action = app.w?.actions?.find((a) => a.txid === el.dataset.txid && a.kind === 'send');
-    if (action) openOverlay(screens.bumpFeeSheet(app, action), { lily: 'accent' });
+    if (action) {
+      openOverlay(screens.bumpFeeSheet(app, action), { lily: 'accent' });
+      ensureFeeQuote();
+    }
   },
   'sheet-transfer'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
-    if (f) openOverlay(screens.transferSheet(app, f));
+    if (f) {
+      openOverlay(screens.transferSheet(app, f));
+      ensureFeeQuote();
+    }
   },
   'sheet-cross'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
-    if (f) openOverlay(screens.crossSheet(app, f));
+    if (f) {
+      openOverlay(screens.crossSheet(app, f));
+      ensureFeeQuote();
+    }
   },
-  'close-overlay'() { closeOverlay(); },
+  'fee-choice'(el) {
+    const target = el.dataset.target;
+    const rate = Number(el.dataset.rate);
+    const input = document.querySelector(`[data-input="${target}"]`);
+    if (!input || !Number.isFinite(rate) || rate <= 0) return;
+    input.value = String(rate);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    for (const b of document.querySelectorAll(`[data-action="fee-choice"][data-target="${target}"]`)) {
+      b.classList.toggle('on', b === el);
+    }
+  },
+  'fee-retry'() {
+    if (feeRequest) return;
+    loadFeeQuote({ force: true }).catch((e) => toast(e.message || String(e), 'err'));
+  },
+  'preview-send'() {
+    if (app.busy) return;
+    const to = (document.querySelector('[data-input=send-to]')?.value || '').trim();
+    const amount = Number(document.querySelector('[data-input=send-amount]')?.value || 0);
+    const feeRate = readFeeRate('send-fee');
+    if (!to) { toast('Enter a recipient address first', 'err'); return; }
+    run('building the transaction preview', async () => {
+      const preview = await app.w.previewSend(to, amount, { feeRate });
+      app.previewTx = preview;
+      openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
+    });
+  },
+  'preview-transfer'(el) {
+    if (app.busy) return;
+    const f = app.w.frogBySat(el.dataset.sat);
+    if (!f) return;
+    const to = (document.querySelector('[data-input=transfer-to]')?.value || '').trim();
+    const feeRate = readFeeRate('transfer-fee');
+    if (!to) { toast('Enter a recipient address first', 'err'); return; }
+    run('building the Hopper transfer preview', async () => {
+      const preview = await app.w.previewTransfer(f, to, { feeRate });
+      app.previewTx = preview;
+      openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
+    });
+  },
+  'abort-preview'() {
+    dismissOverlay();
+    toast('transaction cancelled', 'ok');
+  },
+  'do-approve-tx'() {
+    if (app.busy) return;
+    const preview = app.previewTx;
+    if (!preview) { dismissOverlay(); return; }
+    run('checking and broadcasting', async () => {
+      const built = await app.w.broadcastPreview(preview);
+      app.previewTx = null;
+      closeOverlay();
+      if (preview.kind === 'transfer') {
+        toast(`Hopper sent to ${shortHash(preview.to, 6)}`, 'ok');
+        navigate('pond');
+      } else {
+        toast(`Sent ${sats(preview.amountNumber)} sats in ${shortHash(built.txid, 6)}`, 'ok');
+      }
+    });
+  },
+  'close-overlay'() { dismissOverlay(); },
   copy(el) { copyText(el.dataset.text || ''); },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
@@ -960,26 +1092,6 @@ const handlers = {
       sound.sfx('cross');
       toast(`Crossing confirmed at H ${sats(app.w.tipHeight)} — settles in 6 blocks`, 'ok');
       navigate('road');
-    });
-  },
-  'do-transfer'(el) {
-    const f = app.w.frogBySat(el.dataset.sat);
-    if (!f) return;
-    const addr = (document.querySelector('[data-input=transfer-to]')?.value || '').trim();
-    run('transferring the frog', async () => {
-      const built = await app.w.transfer(f, addr);
-      closeOverlay();
-      toast(`Transferred to ${shortHash(addr, 6)}`, 'ok');
-      navigate('pond');
-    });
-  },
-  'do-send'() {
-    const to = (document.querySelector('[data-input=send-to]')?.value || '').trim();
-    const amount = Number(document.querySelector('[data-input=send-amount]')?.value || 0);
-    run('sending sats', async () => {
-      const built = await app.w.send(to, amount);
-      closeOverlay();
-      toast(`Sent ${sats(amount)} sats in ${shortHash(built.txid, 6)}`, 'ok');
     });
   },
   'do-bump'(el) {
@@ -1158,6 +1270,13 @@ document.addEventListener('input', (ev) => {
     app.settings.volume = volume;
     sound.setVolume(volume);
   }
+  const picker = ev.target.closest?.('[data-fee-picker]');
+  if (picker) {
+    const rate = Number(value);
+    for (const b of picker.querySelectorAll('[data-action="fee-choice"]')) {
+      b.classList.toggle('on', Number(b.dataset.rate) === rate);
+    }
+  }
 });
 
 document.addEventListener('change', (ev) => {
@@ -1197,8 +1316,8 @@ document.addEventListener('change', (ev) => {
 });
 
 document.getElementById('overlay')?.addEventListener('click', (ev) => {
-  if (ev.target.id === 'overlay' && ev.target.dataset.dismissable !== '0') closeOverlay();
-  if (ev.target.closest('[data-action=close-overlay]')) closeOverlay();
+  if (ev.target.id === 'overlay' && ev.target.dataset.dismissable !== '0') dismissOverlay();
+  if (ev.target.closest('[data-action=close-overlay]')) dismissOverlay();
 });
 document.getElementById('drawer-backdrop')?.addEventListener('click', () => { closeDrawer(); render(); });
 
@@ -1211,7 +1330,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   });
 }
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape') { closeOverlay(); closeDrawer(); render(); }
+  if (ev.key === 'Escape') { dismissOverlay(); closeDrawer(); render(); }
   if (ev.key === 'Enter' && app.screen === 'lock') {
     const el = document.querySelector('[data-action=unlock]');
     if (el) el.click();
