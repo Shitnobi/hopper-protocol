@@ -163,7 +163,10 @@ appear alongside the mint; the indexer's global mint feed is filtered so
 unrelated NPC mints are not shown. A MINT row is also reconstructed from the
 owned mint output when the local action ledger is absent, so restoring the
 same seed on another browser shows the same mint. Internal change is a
-separate `CHANGE` row, never a fake incoming `RECEIVE`.
+separate `CHANGE` row, never a fake incoming `RECEIVE`. Rows for one
+transaction stay together and use its best-known block height, with the
+action first: `MINT` before `HOPPER ARRIVED`, `SEND` before `CHANGE`. A
+restored device therefore cannot show an arrival above the mint that made it.
 
 Observed receives are persisted in the local ledger, so an initial deposit
 does not disappear when its coin is later spent. On the first run after this
@@ -384,7 +387,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 25 mint-recognition checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 67 checks: deposits, spent-change backfill, restored mints, wallet scope
+node tests/history.test.mjs     # 71 checks: deposits, spent-change backfill, restored mint order, wallet scope
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

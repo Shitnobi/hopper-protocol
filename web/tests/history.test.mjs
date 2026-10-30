@@ -73,6 +73,9 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(/\+1,000 sats/.test(after), 'history shows the Hopper arrival amount');
   ok(/\+200,000 sats/.test(after), 'history still shows the initial deposit');
   ok(/CHANGE/.test(after), 'history renders the internal change');
+  const order = after.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('the mint is shown before the arrival it produced',
+    order.slice(0, 3), ['MINT', 'HOPPER ARRIVED', 'CHANGE']);
   const mintRows = (after.match(/\bMINT\b/g) || []).length;
   eq('the global NPC mint feed is filtered out', mintRows, 1);
   ok(!/\bPip\b/.test(after), 'an NPC name from the global event feed is absent');
@@ -206,6 +209,22 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('a restored device renders both changes', (text.match(/\bCHANGE\b/g) || []).length, 2);
   eq('a restored device renders both deposits', (text.match(/\+200,000 sats/g) || []).length, 2);
   ok(!/\bPip\b|\bBogart\b/.test(text), 'a restored device does not show NPC mints');
+
+  // Mac-like upgrade: the address scan knows each arrival's block, but the
+  // local/ord mint record has no height and the action ledger is absent.
+  // MINT must reclaim that height and sort above its HOPPER ARRIVED row.
+  const byMint = new Map(b.chainMints.map((m, i) => [m.txid, i === 0 ? 973267 : 973265]));
+  for (const r of b.receives) if (r.frog) r.height = byMint.get(r.txid) ?? null;
+  for (const m of b.chainMints) m.height = null;
+  b._recordChainMints();
+  eq('a height-less restored mint reuses the arrival height',
+    b.chainMints.map((m) => m.height).sort((x, y) => x - y), [973265, 973267]);
+  const ordered = plain(history({ w: b }));
+  const order = ordered.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('each restored mint is listed before its arrival and change',
+    order.slice(0, 6), ['MINT', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'HOPPER ARRIVED', 'CHANGE']);
+  ok(ordered.indexOf('MINT') < ordered.indexOf('HOPPER ARRIVED'),
+    'a restored arrival never appears above its mint');
 }
 
 console.log(`history: ${checks} checks passed`);

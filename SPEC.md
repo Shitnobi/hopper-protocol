@@ -494,6 +494,10 @@ The wallet and indexer both verify this with ordinal range arithmetic.
   chain-derived mint row. A restored seed therefore shows the same MINT and
   HOPPER ARRIVED rows without a local action ledger. A Hopper received from a
   peer is not at its mint outpoint and does not create a MINT row.
+* Rows for one txid share its best-known height and sort as a group. The
+  authoring action comes first (`MINT` before `HOPPER ARRIVED`, `SEND` before
+  `CHANGE`), so an arrival cannot appear above the transaction that produced
+  it on a restored device or after a delayed confirmation.
 * The first completed refresh after the history-ledger upgrade performs two
   one-time, versioned address-history backfills: receive addresses the wallet
   handed out, and change addresses it has used. The receive pass recovers

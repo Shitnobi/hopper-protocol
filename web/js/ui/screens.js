@@ -522,28 +522,83 @@ function historyRows(w) {
       fee: null, bumps: 0, bumpable: false, outcome: null,
     });
   }
+  // A transaction can leave more than one row: MINT beside HOPPER ARRIVED,
+  // SEND beside CHANGE, or a restore without a local action height. Sort by
+  // the transaction's best-known height so those rows stay adjacent, then
+  // put the authoring row before its consequences. Without this, a receipt
+  // observed in a later block can appear above the mint that produced it.
+  const groupHeight = new Map();
+  for (const r of rows) {
+    if (!r.txid || r.mempool) continue;
+    const h = Number(r.height);
+    if (!Number.isInteger(h) || h <= 0) continue;
+    const k = String(r.txid).toLowerCase();
+    if (!groupHeight.has(k) || h > groupHeight.get(k)) groupHeight.set(k, h);
+  }
+  for (const r of rows) {
+    r.groupHeight = r.txid
+      ? groupHeight.get(String(r.txid).toLowerCase()) ?? null
+      : null;
+  }
+
   const seen = new Set();
-  return rows
-    .filter((r) => {
-      // Receives are one row per transaction even when a frog output and
-      // ordinary change were both observed. A mint is still allowed to have
-      // its own MINT row beside the Hopper-arrival row.
-      const k = r.kind === 'receive'
-        ? `receive:${r.txid || ''}`
-        : `${r.kind}:${r.txid || ''}:${r.sat ?? ''}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    })
-    .sort((a, b) => {
-      const ap = a.mempool ? 1 : 0;
-      const bp = b.mempool ? 1 : 0;
-      if (ap !== bp) return bp - ap;
-      const ah = a.height ?? -1;
-      const bh = b.height ?? -1;
-      if (ah !== bh) return bh - ah;
+  const unique = rows.filter((r) => {
+    // Receives are one row per transaction even when a frog output and
+    // ordinary change were both observed. A mint is still allowed to have
+    // its own MINT row beside the Hopper-arrival row.
+    const k = r.kind === 'receive'
+      ? `receive:${r.txid || ''}`
+      : `${r.kind}:${r.txid || ''}:${r.sat ?? ''}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  // Group rows by transaction, order the groups, then order inside each
+  // group. A transaction's rows must never be split by a different txid,
+  // even when the restored device has no block height for either row.
+  const groups = [];
+  const byTx = new Map();
+  for (const r of unique) {
+    const tx = r.txid ? String(r.txid).toLowerCase() : '';
+    let g = tx ? byTx.get(tx) : null;
+    if (!g) {
+      g = { tx, rows: [], height: -1, at: '', mempool: false, order: groups.length };
+      if (tx) byTx.set(tx, g);
+      groups.push(g);
+    }
+    g.rows.push(r);
+    if (r.mempool) g.mempool = true;
+    const h = Number(r.groupHeight ?? r.height);
+    if (Number.isInteger(h) && h > g.height) g.height = h;
+    const at = String(r.at || '');
+    if (at > g.at) g.at = at;
+  }
+  groups.sort((a, b) => {
+    const ap = a.mempool ? 1 : 0;
+    const bp = b.mempool ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    if (a.height !== b.height) return b.height - a.height;
+    if (a.at !== b.at) return b.at.localeCompare(a.at);
+    return a.order - b.order;
+  });
+  return groups.flatMap((g) => {
+    if (g.rows.length < 2) return g.rows;
+    return g.rows.slice().sort((a, b) => {
+      const ar = sameTxRank(a);
+      const br = sameTxRank(b);
+      if (ar !== br) return ar - br;
       return String(b.at || '').localeCompare(String(a.at || ''));
     });
+  });
+}
+
+/** Within one transaction: the action/mint first, then its Hopper output,
+ *  then internal change. This is display order, not chain order. */
+function sameTxRank(r) {
+  if (r.kind === 'change') return 2;
+  if (r.kind === 'receive') return 1;
+  return 0;
 }
 
 const KIND_LABEL = {
@@ -581,6 +636,7 @@ function txRow(app, r) {
   }
 
   const inMempool = !!(r.mempool || r.pending);
+  const shownHeight = r.groupHeight ?? r.height;
   const label = r.frog ? 'HOPPER ARRIVED' : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
   if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
@@ -606,8 +662,8 @@ function txRow(app, r) {
 
   const state = inMempool
     ? chip('IN MEMPOOL', 'accent')
-    : r.height != null
-      ? `<span class="tiny muted">⬛ ${sats(r.height)}</span>`
+    : shownHeight != null
+      ? `<span class="tiny muted">⬛ ${sats(shownHeight)}</span>`
       : r.confirmed
         ? chip('CONFIRMED', 'dim')
         : chip('PENDING', 'accent');

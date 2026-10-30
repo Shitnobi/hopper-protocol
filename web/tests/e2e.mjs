@@ -690,6 +690,9 @@ if (!/HOPPER ARRIVED/.test(historyText)) errors.push('history: missing the Hoppe
 if (!/\+200,000 sats/.test(historyText)) errors.push('history: missing the initial wallet deposit');
 if (!/MINT/.test(historyText)) errors.push('history: missing the mint action');
 if (!/CHANGE/.test(historyText)) errors.push('history: missing the internal change row');
+if (historyText.indexOf('MINT') > historyText.indexOf('HOPPER ARRIVED')) {
+  errors.push('history: the Hopper arrival is shown before its mint');
+}
 if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC mints are still visible');
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelectorAll(".pond-item").length > 0', 15000, 'pond after history check');

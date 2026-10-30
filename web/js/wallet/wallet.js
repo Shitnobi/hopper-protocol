@@ -1326,21 +1326,30 @@ export class WalletSession {
         && String(f.location.txid).toLowerCase() === mintTxid
         && Number(f.location.vout) === Number(f.mint_index ?? 0);
       if (!atMint && f.local !== true) continue;
-      if (atMint) {
-        const utxo = (this.utxos || []).find((u) => String(u.txid).toLowerCase() === mintTxid
-          && Number(u.vout) === Number(f.mint_index ?? 0));
-        if (!utxo || utxo.address !== ordAddress) continue;
-      }
+      const mintUtxo = (this.utxos || []).find((u) => String(u.txid).toLowerCase() === mintTxid
+        && Number(u.vout) === Number(f.mint_index ?? 0));
+      if (atMint && (!mintUtxo || mintUtxo.address !== ordAddress)) continue;
+      // Indexers normally carry mint_height, but local/ord records and old
+      // ledgers may not. Reuse the height already learned from the Hopper
+      // arrival or its UTXO so restored devices sort MINT beside, not below,
+      // HOPPER ARRIVED.
+      const heightOf = (v) => {
+        const n = Number(v);
+        return Number.isInteger(n) && n > 0 ? n : null;
+      };
+      const height = heightOf(f.mint_height)
+        ?? heightOf((this.receives || []).find((r) => r?.frog
+          && String(r.txid || '').toLowerCase() === mintTxid)?.height)
+        ?? heightOf(mintUtxo?.status?.block_height ?? mintUtxo?.status?.height);
       const prior = this.chainMints.find((m) => String(m.txid).toLowerCase() === mintTxid);
       const hasAction = (this.actions || []).some((a) => String(a?.txid || '').toLowerCase() === mintTxid);
       const row = {
         txid: mintTxid, sat: Number(f.sat), seed: f.seed, name: f.name || '',
-        height: Number.isInteger(Number(f.mint_height)) && Number(f.mint_height) > 0
-          ? Number(f.mint_height) : null,
+        height,
         at: new Date().toISOString(),
       };
       if (prior) {
-        if (prior.height == null && row.height != null) prior.height = row.height;
+        if (!(Number(prior.height) > 0) && row.height != null) prior.height = row.height;
         if (!prior.name && row.name) prior.name = row.name;
         if (prior.seed == null && row.seed != null) prior.seed = row.seed;
       } else {
