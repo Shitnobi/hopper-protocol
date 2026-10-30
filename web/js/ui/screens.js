@@ -394,7 +394,7 @@ export function history(app) {
   const rows = historyRows(app.w).slice(0, 80);
   return `
     ${heading('📜 History')}
-    <div class="sub">Every wallet transaction — sends, receives, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
+    <div class="sub">Every wallet transaction — sends, receives, change, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => txRow(app, r)).join('') : '<div class="sub">No transactions yet — they appear here as you use the wallet.</div>'}
     </div>`;
@@ -442,6 +442,27 @@ function historyRows(w) {
       outcome: null,
     });
   }
+  for (const c of w.changes || []) {
+    if (!c?.txid) continue;
+    rows.push({
+      kind: 'change',
+      height: c.height ?? null,
+      txid: c.txid,
+      sat: null,
+      seed: undefined,
+      name: undefined,
+      amount: c.amount,
+      address: c.address,
+      at: c.at,
+      chain: true,
+      pending: false,
+      confirmed: c.confirmed !== false,
+      fee: null,
+      bumps: 0,
+      bumpable: false,
+      outcome: null,
+    });
+  }
   for (const a of w.actions || []) {
     const isPending = pending.has(a.txid);
     rows.push({
@@ -460,6 +481,31 @@ function historyRows(w) {
       fee: a.fee,
       bumps: Number(a.bumps || 0),
       bumpable: canBumpSend(a, isPending),
+    });
+  }
+  // A mint seen on-chain is independent of this browser's local action
+  // ledger. The MINT row must survive a seed restore and appear beside the
+  // HOPPER ARRIVED row. Rows already supplied by an event/action win the
+  // dedupe below.
+  for (const m of w.chainMints || []) {
+    if (!m?.txid) continue;
+    rows.push({
+      kind: 'mint',
+      height: m.height ?? null,
+      txid: m.txid,
+      sat: m.sat ?? null,
+      seed: m.seed,
+      name: m.name,
+      amount: undefined,
+      at: m.at,
+      chain: true,
+      synthetic: true,
+      pending: false,
+      confirmed: true,
+      fee: null,
+      bumps: 0,
+      bumpable: false,
+      outcome: null,
     });
   }
   // Unconfirmed outputs were already in the address answers; no extra
@@ -503,7 +549,7 @@ function historyRows(w) {
 const KIND_LABEL = {
   mint: 'MINT', prepare: 'TRAVEL TO ROAD', cross: 'CROSS', settle: 'SETTLE',
   transfer: 'TRANSFER', send: 'SEND', receive: 'RECEIVE', faucet: 'RECEIVE',
-  chain: 'CHAIN',
+  change: 'CHANGE', chain: 'CHAIN',
   // Only an indexer event from a transaction built elsewhere. The wallet
   // has no burn action and never constructs one.
   burn: 'FEE SWEEP',
@@ -537,7 +583,7 @@ function txRow(app, r) {
   const inMempool = !!(r.mempool || r.pending);
   const label = r.frog ? 'HOPPER ARRIVED' : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
-  if ((r.mempool || r.kind === 'receive') && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
+  if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
   if (r.to) detail.push(`to ${truncTxid(r.to)}`);
@@ -548,6 +594,8 @@ function txRow(app, r) {
   let amount = '';
   if (r.kind === 'send' && r.amount != null) {
     amount = `<span class="tx-amt out">-${sats(r.amount)} sats</span>`;
+  } else if (r.kind === 'change' && Number(r.amount) > 0) {
+    amount = `<span class="tx-amt dim">${sats(r.amount)} sats</span>`;
   } else if (Number(r.amount) > 0) {
     amount = `<span class="tx-amt in">+${sats(r.amount)} sats</span>`;
   } else if (r.kind === 'settle' && String(r.outcome || '').toLowerCase() === 'dead') {

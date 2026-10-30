@@ -1169,6 +1169,10 @@ const handlers = {
       app.w.imported.clear();
       app.w.actions = [];
       app.w.receives = [];
+      app.w.receivesVersion = 0;
+      app.w.changes = [];
+      app.w.changesVersion = 0;
+      app.w.chainMints = [];
       app.w.mempool = [];
       app.w.pending = [];
       app.w.history = [];

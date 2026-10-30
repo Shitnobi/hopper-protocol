@@ -484,17 +484,23 @@ The wallet and indexer both verify this with ordinal range arithmetic.
   outpoint.
 * History is wallet-scoped, not a raw indexer feed. It merges local actions,
   events whose Hopper sat belongs to this wallet, settled outputs observed
-  on its watched scripts, and mempool rows. A confirmed ordinary deposit or
-  a Hopper output is retained as a `receive` row in the ledger, so it stays
-  visible after the coin is spent. Events for unrelated public/NPC Hoppers
-  are filtered out.
-* The first completed refresh after the receive-ledger upgrade performs a
-  one-time backfill for receive addresses the wallet already handed out.
-  Address history is read for those addresses and outputs paying the wallet
-  are recorded, which recovers deposits whose coins were spent before the
-  receive ledger existed. Outgoing action/commit txids are skipped so a
-  mint or SEND change is not mislabeled as a deposit. The pass is versioned
-  in the ledger; it does not repeat on later refreshes.
+  on its watched scripts, internal change, and mempool rows. A confirmed
+  ordinary deposit or a Hopper output is retained as a `receive` row, so it
+  stays visible after the coin is spent. Change from our own transactions is
+  retained separately as a `CHANGE` row; it is never presented as an incoming
+  `RECEIVE`. Events for unrelated public/NPC Hoppers are filtered out.
+* A MINT row does not depend only on the browser that broadcast it. When the
+  owned mint output is still at its mint outpoint, the wallet persists a
+  chain-derived mint row. A restored seed therefore shows the same MINT and
+  HOPPER ARRIVED rows without a local action ledger. A Hopper received from a
+  peer is not at its mint outpoint and does not create a MINT row.
+* The first completed refresh after the history-ledger upgrade performs two
+  one-time, versioned address-history backfills: receive addresses the wallet
+  handed out, and change addresses it has used. The receive pass recovers
+  deposits whose coins were spent before the receive ledger existed and skips
+  outgoing action/commit txids. The change pass recovers spent internal change
+  and migrates older ledgers that had stored it as a `RECEIVE`. RESCAN clears
+  both markers so recovery can be forced.
 
 ---
 

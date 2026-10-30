@@ -1,7 +1,8 @@
 // History is the wallet's complete ledger view, not just local actions.
-// Ordinary deposits and a Hopper output must appear alongside the action
-// row, confirmed deposits must not stay "PENDING", and the global indexer
-// event feed must not paint every NPC mint as this wallet's transaction.
+// Ordinary deposits, internal change and a Hopper output must appear
+// alongside the action row, confirmed rows must not stay "PENDING", and a
+// restored browser must see the same mints without the local action ledger.
+// The global indexer feed must not paint NPC mints as this wallet's history.
 import assert from 'node:assert/strict';
 
 const store = new Map();
@@ -14,6 +15,7 @@ globalThis.localStorage = {
 
 const { WalletSession, DEFAULT_SETTINGS } = await import('../js/wallet/wallet.js');
 const { history } = await import('../js/ui/screens.js');
+const { KEYS } = await import('../js/wallet/storage.js');
 
 let checks = 0;
 const ok = (cond, message) => { checks += 1; assert.ok(cond, message); };
@@ -54,6 +56,9 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   await w.broadcastPreview(preview);
   eq('the mint creates the Hopper arrival row', w.receives.filter((r) => r.frog).length, 1);
   eq('the mint change is not recorded as a receive', w.receives.filter((r) => !r.frog).length, 1);
+  eq('the mint change has its own ledger row', w.changes.length, 1);
+  ok(w.changes[0].amount > 0, 'the mint change keeps its value');
+  eq('the mint change is at the change branch', w.changes[0].address, w.keys.change(0).address);
   const arrived = w.receives.find((r) => r.frog);
   eq('the arrival amount is the frog output', arrived.amount, 1000);
   eq('the arrival carries the Hopper sat', arrived.sat, preview.sat);
@@ -67,6 +72,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(/HOPPER ARRIVED/.test(after), 'history renders the Hopper arrival');
   ok(/\+1,000 sats/.test(after), 'history shows the Hopper arrival amount');
   ok(/\+200,000 sats/.test(after), 'history still shows the initial deposit');
+  ok(/CHANGE/.test(after), 'history renders the internal change');
   const mintRows = (after.match(/\bMINT\b/g) || []).length;
   eq('the global NPC mint feed is filtered out', mintRows, 1);
   ok(!/\bPip\b/.test(after), 'an NPC name from the global event feed is absent');
@@ -78,9 +84,11 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
   const w2 = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
   eq('receives are loaded from the ledger', w2.receives.length, before);
+  eq('changes are loaded from the ledger', w2.changes.length, 1);
   await w2.connect();
   await w2.refresh({ force: true });
   eq('a second session does not duplicate receives', w2.receives.length, before);
+  eq('a second session does not duplicate change', w2.changes.length, 1);
 }
 
 {
@@ -92,13 +100,15 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   await w.demoFund(2, 200000);
   eq('the upgrade fixture starts with the two deposits', w.receives.length, 2);
   eq('the upgrade fixture keeps both deposit addresses', new Set(w.receives.map((r) => r.address)).size, 1);
-  await w.mint({ seed: 0x11111111, name: 'First', feeRate: 2 });
-  await w.mint({ seed: 0x22222222, name: 'Second', feeRate: 2 });
+  const firstMint = await w.mint({ seed: 0x11111111, name: 'First', feeRate: 2 });
+  const secondMint = await w.mint({ seed: 0x22222222, name: 'Second', feeRate: 2 });
   eq('both original deposit coins were spent', w.utxos.filter((u) => u.value === 200000).length, 0);
 
   // Simulate the ledger written by the version before receives existed.
   w.receives = [];
   w.receivesVersion = 0;
+  w.changes = [];
+  w.changesVersion = 0;
   w._saveLedger();
   let historyCalls = 0;
   const originalHistory = w.backend.addressHistory.bind(w.backend);
@@ -112,7 +122,12 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('the recovered deposits are confirmed', recovered.every((r) => r.confirmed), true);
   eq('the upgrade pass queried the used receive addresses', historyCalls >= 1, true);
   eq('the upgrade marker is persisted', w.receivesVersion, 2);
+  eq('change history recovers both mint changes', w.changes.length, 2);
+  ok(w.changes.every((r) => r.confirmed), 'recovered change is confirmed');
+  ok(w.changes.some((r) => r.txid === firstMint.commit.txid), 'the first mint change is recovered');
+  ok(w.changes.some((r) => r.txid === secondMint.commit.txid), 'the second mint change is recovered');
   const upgradeText = plain(history({ w }));
+  eq('history renders both mint changes', (upgradeText.match(/\bCHANGE\b/g) || []).length, 2);
   eq('history renders both original deposits', (upgradeText.match(/\+200,000 sats/g) || []).length, 2);
   ok(/CONFIRMED/.test(upgradeText), 'recovered deposits are confirmed');
 
@@ -147,6 +162,50 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('the fallback height is kept', w.receives[0].height, 77);
   eq('the fallback row is confirmed', w.receives[0].confirmed, true);
   eq('the fallback marks the upgrade complete', w.receivesVersion, 2);
+}
+
+{
+  // Device B has the same seed and the same chain, but no local action
+  // ledger and no HOPPER indexer. It must still reconstruct both mints,
+  // both change outputs, both deposits and both Hopper arrivals.
+  store.clear();
+  const a = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
+  await a.connect();
+  await a.demoFund(2, 200000);
+  const mintOne = await a.mint({ seed: 0x33333333, name: 'One', feeRate: 2 });
+  await a.mint({ seed: 0x44444444, name: 'Two', feeRate: 2 });
+  const chain = store.get(KEYS.mock);
+  ok(!!chain, 'the demo chain has a snapshot');
+
+  store.clear();
+  store.set(KEYS.mock, chain);
+  const b = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
+  await b.connect();
+  // Simulate the older ledger that called this internal change a RECEIVE.
+  b.receives.push({
+    txid: mintOne.commit.txid, amount: Number(mintOne.commit.changeValue),
+    address: b.keys.change(0).address, height: null, frog: false,
+    confirmed: true, at: new Date().toISOString(),
+  });
+  b.backend.events = async () => ({ events: [] });
+  b.backend.froggers = async () => ({ total: 0, items: [] });
+  b.backend.frogger = async () => null;
+  await b.refresh({ force: true });
+
+  eq('a restored device has no local actions', b.actions.length, 0);
+  eq('both mints are recovered from chain evidence', b.chainMints.length, 2);
+  eq('both change outputs are recovered', b.changes.length, 2);
+  eq('both deposits are recovered', b.receives.filter((r) => !r.frog).length, 2);
+  eq('both Hopper arrivals are recovered', b.receives.filter((r) => r.frog).length, 2);
+  eq('no change output is mislabeled as a receive',
+    b.receives.filter((r) => !r.frog && r.address === b.keys.change(0).address).length, 0);
+
+  const text = plain(history({ w: b }));
+  eq('a restored device renders both mints', (text.match(/\bMINT\b/g) || []).length, 2);
+  eq('a restored device renders both arrivals', (text.match(/HOPPER ARRIVED/g) || []).length, 2);
+  eq('a restored device renders both changes', (text.match(/\bCHANGE\b/g) || []).length, 2);
+  eq('a restored device renders both deposits', (text.match(/\+200,000 sats/g) || []).length, 2);
+  ok(!/\bPip\b|\bBogart\b/.test(text), 'a restored device does not show NPC mints');
 }
 
 console.log(`history: ${checks} checks passed`);

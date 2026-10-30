@@ -689,6 +689,7 @@ console.log('history:', historyText.replace(/\n/g, ' | ').slice(0, 500));
 if (!/HOPPER ARRIVED/.test(historyText)) errors.push('history: missing the Hopper arrival');
 if (!/\+200,000 sats/.test(historyText)) errors.push('history: missing the initial wallet deposit');
 if (!/MINT/.test(historyText)) errors.push('history: missing the mint action');
+if (!/CHANGE/.test(historyText)) errors.push('history: missing the internal change row');
 if (/\bPip\b|\bBogart\b/.test(historyText)) errors.push('history: global NPC mints are still visible');
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelectorAll(".pond-item").length > 0', 15000, 'pond after history check');

@@ -157,14 +157,21 @@ reveal that spends it. A transfer has no change output, so its preview says
 so explicitly.
 
 History is wallet-scoped. It merges local actions, indexer events for this
-wallet's Hoppers, settled outputs observed on our addresses, and faded
-mempool rows. That is how an initial deposit and a Hopper arrival appear
-alongside the mint; the indexer's global mint feed is filtered so unrelated
-NPC mints are not shown. Observed receives are persisted in the local ledger,
-so an initial deposit does not disappear when its coin is later spent. On the
-first run after this ledger upgrade, a one-time address-history pass recovers
-older deposits whose coins were already spent; it asks only receive addresses
-the wallet previously handed out and records the outputs that paid it.
+wallet's Hoppers, settled outputs observed on our addresses, internal change,
+and faded mempool rows. That is how an initial deposit and a Hopper arrival
+appear alongside the mint; the indexer's global mint feed is filtered so
+unrelated NPC mints are not shown. A MINT row is also reconstructed from the
+owned mint output when the local action ledger is absent, so restoring the
+same seed on another browser shows the same mint. Internal change is a
+separate `CHANGE` row, never a fake incoming `RECEIVE`.
+
+Observed receives are persisted in the local ledger, so an initial deposit
+does not disappear when its coin is later spent. On the first run after this
+ledger upgrade, a one-time address-history pass recovers older deposits whose
+coins were already spent; a companion pass recovers change outputs at the
+change addresses the wallet has used, including change spent by a later mint.
+Both passes record confirmed outputs, are versioned in the ledger, and do not
+repeat. RESCAN resets both markers if a user needs to force recovery.
 
 Transaction fee fields show mempool.space's
 `/api/v1/fees/precise` recommendations: **FAST** (`fastestFee`), **MEDIUM**
@@ -377,7 +384,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 25 mint-recognition checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 44 checks: deposits, spent-deposit backfill, wallet-scoped events
+node tests/history.test.mjs     # 67 checks: deposits, spent-change backfill, restored mints, wallet scope
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

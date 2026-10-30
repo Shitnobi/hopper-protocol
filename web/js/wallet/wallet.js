@@ -227,6 +227,10 @@ export class WalletSession {
     this.receives = [];
     this.receivesVersion = 0;
     this._receiveBackfillFailedAt = 0;
+    this.changes = [];
+    this.changesVersion = 0;
+    this._changeBackfillFailedAt = 0;
+    this.chainMints = [];
     this.mempool = [];
     this.pending = [];
     this.imported = new Set();
@@ -276,6 +280,12 @@ export class WalletSession {
     this.receives = Array.isArray(l.receives)
       ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
     this.receivesVersion = Number(l.receivesVersion) || 0;
+    this.changes = Array.isArray(l.changes)
+      ? l.changes.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
+    this.changesVersion = Number(l.changesVersion) || 0;
+    this.chainMints = Array.isArray(l.chainMints)
+      ? l.chainMints.filter((m) => m && /^[0-9a-f]{64}$/i.test(String(m.txid)))
+      : [];
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.history = l.history || [];
     this.mempool = Array.isArray(l.mempool)
@@ -314,6 +324,9 @@ export class WalletSession {
       actions: this.actions.slice(-300),
       receives: this.receives.slice(-300),
       receivesVersion: this.receivesVersion || 0,
+      changes: this.changes.slice(-300),
+      changesVersion: this.changesVersion || 0,
+      chainMints: this.chainMints.slice(-300),
       pending: this.pending.slice(-24),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
@@ -926,9 +939,15 @@ export class WalletSession {
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
     this.used = used;
     this._recordObservedReceives(this.utxos);
+    this._recordObservedChanges(this.utxos);
+    this._recordChainMints();
     const recovered = await this._backfillReceives(coldHistory);
     if (recovered) {
       notes.push(`${recovered} earlier receive${recovered === 1 ? '' : 's'} recovered from address history`);
+    }
+    const changeRecovered = await this._backfillChanges(coldHistory);
+    if (changeRecovered) {
+      notes.push(`${changeRecovered} earlier change output${changeRecovered === 1 ? '' : 's'} recovered from address history`);
     }
 
     const priorTotal = this.balance.total;
@@ -1008,9 +1027,11 @@ export class WalletSession {
     if (this.scan.rescan) return false;
     this._rescanCancel = false;
     // A rescan is also the user's escape hatch if an older ledger has
-    // deposits missing from History. Ask receive history once more.
+    // deposits or change missing from History. Ask address history again.
     this.receivesVersion = 0;
     this._receiveBackfillFailedAt = 0;
+    this.changesVersion = 0;
+    this._changeBackfillFailedAt = 0;
     this.scan.rescan = { asked: 0, hits: 0 };
     this.scan.note = 'rescanning from the chain — this walks every address in the gap';
     this.fullScanTip = null;
@@ -1042,6 +1063,8 @@ export class WalletSession {
     this.scan.note = `gap limit extended by ${add}: ${before} → ${this.gapLimit()}`;
     this.receivesVersion = 0;
     this._receiveBackfillFailedAt = 0;
+    this.changesVersion = 0;
+    this._changeBackfillFailedAt = 0;
     this.fullScanTip = null;
     this.cold = true;
     this.forceWatch = true;
@@ -1190,6 +1213,234 @@ export class WalletSession {
       existing.set(key, incoming);
     }
     if (this.receives.length > 300) this.receives = this.receives.slice(-300);
+  }
+
+  /** Change addresses this wallet has actually used. All current builders
+   *  use change index 0, but the ledger follows `lastUsed`/hot/UTXOs so a
+   *  future index does not silently lose its history. */
+  _changeAddressEntries() {
+    let max = Number(this.lastUsed?.[1]);
+    if (!Number.isSafeInteger(max) || max < 0) max = -1;
+    for (const pair of this.hot || []) {
+      if (Array.isArray(pair) && Number(pair[0]) === 1 && Number.isSafeInteger(Number(pair[1]))) {
+        max = Math.max(max, Number(pair[1]));
+      }
+    }
+    for (const u of this.utxos || []) {
+      if (u?.keyRef?.branch === 1 && Number.isSafeInteger(Number(u.keyRef.index))) {
+        max = Math.max(max, Number(u.keyRef.index));
+      }
+    }
+    const activity = (this.actions || []).length
+      || (this.receives || []).some((r) => r && !r.frog)
+      || (this.changes || []).length;
+    if (activity) max = Math.max(max, 0);
+    if (max < 0) return [];
+    max = Math.min(80, max);
+    const entries = [];
+    for (let i = 0; i <= max; i += 1) {
+      try {
+        const key = this.keys.change(i);
+        entries.push({ address: key.address, script: key.script, index: i });
+      } catch { /* keep the addresses that did derive */ }
+    }
+    return entries;
+  }
+
+  _mergeChange(row) {
+    if (!Array.isArray(this.changes)) this.changes = [];
+    const txid = String(row?.txid || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(txid)) return null;
+    const prior = this.changes.find((r) => String(r?.txid || '').toLowerCase() === txid);
+    if (prior) {
+      prior.amount = Math.max(Number(prior.amount) || 0, Number(row.amount) || 0);
+      if (prior.height == null && row.height != null) prior.height = row.height;
+      if (prior.address == null && row.address != null) prior.address = row.address;
+      prior.confirmed = prior.confirmed === true || row.confirmed === true;
+      return prior;
+    }
+    const next = {
+      txid, amount: Number(row.amount) || 0, address: row.address || null,
+      height: row.height ?? null, confirmed: row.confirmed === true,
+      at: row.at || new Date().toISOString(),
+    };
+    this.changes.push(next);
+    return next;
+  }
+
+  /** Older builds recorded an own-change output as an ordinary RECEIVE.
+   *  Move those rows into the CHANGE ledger instead of presenting internal
+   *  change as outside income. This is local-state migration only. */
+  _migrateChangeReceives(entries) {
+    const addresses = new Set((entries || []).map((e) => e.address));
+    if (!addresses.size || !Array.isArray(this.receives)) return 0;
+    let moved = 0;
+    this.receives = this.receives.filter((r) => {
+      if (!r || r.frog || !addresses.has(r.address)) return true;
+      this._mergeChange(r);
+      moved += 1;
+      return false;
+    });
+    return moved;
+  }
+
+  /** Record settled change outputs from the current watch pass. Change is
+   *  not a receive: it is money returning from a transaction this wallet
+   *  built, so it gets its own ledger row and label. */
+  _recordObservedChanges(utxos) {
+    const entries = this._changeAddressEntries();
+    this._migrateChangeReceives(entries);
+    const groups = new Map();
+    for (const u of utxos || []) {
+      if (!u?.txid || u.unconfirmed || u.keyRef?.branch !== 1) continue;
+      const txid = String(u.txid).toLowerCase();
+      const height = Number.isInteger(Number(u.status?.block_height))
+        ? Number(u.status.block_height)
+        : Number.isInteger(Number(u.status?.height)) && Number(u.status.height) > 0
+          ? Number(u.status.height) : null;
+      const row = groups.get(txid) || {
+        txid, amount: 0, address: u.address || null, height,
+        confirmed: true, at: new Date().toISOString(),
+      };
+      row.amount += Number(u.value) || 0;
+      if (row.height == null && height != null) row.height = height;
+      if (!row.address && u.address) row.address = u.address;
+      groups.set(txid, row);
+    }
+    for (const row of groups.values()) this._mergeChange(row);
+    if (this.changes.length > 300) this.changes = this.changes.slice(-300);
+  }
+
+  /** A mint whose reveal output is still the owned ord output is provably
+   *  ours, even on a device that has no local action ledger. Persist that
+   *  chain fact so a restored browser still shows MINT beside the arrival.
+   *  A Hopper received by transfer is not at its mint outpoint and is not
+   *  recorded here. */
+  _recordChainMints() {
+    if (!Array.isArray(this.chainMints)) this.chainMints = [];
+    const ordAddress = this.keys.frogAddress();
+    for (const f of this.frogs || []) {
+      const mintTxid = String(f?.mint_txid || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(mintTxid)) continue;
+      const atMint = !!f.location
+        && String(f.location.txid).toLowerCase() === mintTxid
+        && Number(f.location.vout) === Number(f.mint_index ?? 0);
+      if (!atMint && f.local !== true) continue;
+      if (atMint) {
+        const utxo = (this.utxos || []).find((u) => String(u.txid).toLowerCase() === mintTxid
+          && Number(u.vout) === Number(f.mint_index ?? 0));
+        if (!utxo || utxo.address !== ordAddress) continue;
+      }
+      const prior = this.chainMints.find((m) => String(m.txid).toLowerCase() === mintTxid);
+      const hasAction = (this.actions || []).some((a) => String(a?.txid || '').toLowerCase() === mintTxid);
+      const row = {
+        txid: mintTxid, sat: Number(f.sat), seed: f.seed, name: f.name || '',
+        height: Number.isInteger(Number(f.mint_height)) && Number(f.mint_height) > 0
+          ? Number(f.mint_height) : null,
+        at: new Date().toISOString(),
+      };
+      if (prior) {
+        if (prior.height == null && row.height != null) prior.height = row.height;
+        if (!prior.name && row.name) prior.name = row.name;
+        if (prior.seed == null && row.seed != null) prior.seed = row.seed;
+      } else {
+        this.chainMints.unshift(row);
+        // On a device without the local action ledger, a new on-chain mint
+        // can also mean a change output that was spent before this browser
+        // saw it. Recheck used change history once, then let the version
+        // marker stop the queries again. The minting device already records
+        // its own change from the watch pass.
+        if (!hasAction) {
+          this.changesVersion = 0;
+          this._changeBackfillFailedAt = 0;
+        }
+      }
+    }
+    if (this.chainMints.length > 300) this.chainMints = this.chainMints.slice(0, 300);
+  }
+
+  /** One-time recovery for change outputs whose coins were already spent
+   *  before this browser saw them. It asks only the change addresses the
+   *  wallet has used, then records every output paying those scripts. This
+   *  is what makes a restored wallet show the same internal change as the
+   *  device that built the transactions. */
+  async _backfillChanges(known = null) {
+    const entries = this._changeAddressEntries();
+    this._migrateChangeReceives(entries);
+    if (this.changesVersion >= 1) return 0;
+    if (Date.now() - (this._changeBackfillFailedAt || 0) < 60_000) return 0;
+    if (!entries.length) {
+      this.changesVersion = 1;
+      return 0;
+    }
+    const found = new Map();
+    let failed = false;
+    let sawUnconfirmed = false;
+    let asked = 0;
+    for (const entry of entries) {
+      let hist;
+      if (known && known.has(entry.address)) {
+        hist = known.get(entry.address);
+      } else {
+        if (asked && this.publicSource) await sleep(200);
+        asked += 1;
+        try {
+          hist = await this.backend.addressHistory(entry.address, entry.script);
+        } catch {
+          failed = true;
+          continue;
+        }
+      }
+      for (const h of Array.isArray(hist) ? hist : []) {
+        const txid = String(h?.txid || '').toLowerCase();
+        if (!txid) continue;
+        let outputs = Array.isArray(h.outputs) ? h.outputs : null;
+        let height = Number.isInteger(Number(h.height)) && Number(h.height) > 0
+          ? Number(h.height) : null;
+        let confirmed = h.confirmed === true || h.status?.confirmed === true || height != null;
+        if (!outputs) {
+          const tx = await this._getTx(txid);
+          if (!tx) { failed = true; continue; }
+          outputs = tx.outputs || [];
+          const th = tx.status?.height ?? tx.status?.block_height;
+          if (height == null && Number.isInteger(Number(th)) && Number(th) > 0) {
+            height = Number(th);
+          }
+          confirmed = confirmed || tx.status?.confirmed === true || height != null;
+        }
+        const want = bytesToHex(entry.script).toLowerCase();
+        let amount = 0;
+        for (const o of outputs || []) {
+          const hex = typeof o?.script === 'string'
+            ? o.script.toLowerCase()
+            : o?.script ? bytesToHex(o.script).toLowerCase() : '';
+          if (hex === want) amount += Number(o.value) || 0;
+        }
+        if (!amount) continue;
+        if (!confirmed) { sawUnconfirmed = true; continue; }
+        const prior = found.get(txid);
+        if (prior) {
+          prior.amount += amount;
+          if (prior.height == null && height != null) prior.height = height;
+        } else {
+          found.set(txid, {
+            txid, amount, address: entry.address, height, confirmed: true,
+          });
+        }
+      }
+    }
+    let added = 0;
+    for (const row of found.values()) {
+      const prior = (this.changes || []).find(
+        (r) => String(r?.txid || '').toLowerCase() === row.txid,
+      );
+      this._mergeChange(row);
+      if (!prior) added += 1;
+    }
+    if (this.changes.length > 300) this.changes = this.changes.slice(-300);
+    if (failed) this._changeBackfillFailedAt = Date.now();
+    else if (!sawUnconfirmed) this.changesVersion = 1;
+    return added;
   }
 
   /** Receive addresses this wallet has ever handed out. `used` is only
