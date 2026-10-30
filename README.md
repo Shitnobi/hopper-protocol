@@ -323,7 +323,11 @@ curl -sN localhost:9770/v1/events/stream
   extra request is made to find them. A frog is owned when its sat is in a
   coin whose script this wallet can spend; the indexer is never trusted for
   ownership. Live deep scan is **off by default**; demo mode always scans so
-  the simulator has something to show.
+  the simulator has something to show. A HOPPER mint reveal carries its
+  canonical v6 body in the taproot witness, so the wallet recognizes a mint
+  paid to its ordinals address **without an indexer or ord**. A frog that
+  was transferred in later has no new inscription body on its output; that
+  discovery still needs a HOPPER indexer (or ord ranges plus one).
 - **Demo vs live**: new wallets start in **live** mode; `DemoBackend`
   implements the same interface as `EsploraClient`/`ElectrumClient` +
   `IndexerClient` and is opt-in from Settings. Apply URLs in Settings.
@@ -358,6 +362,7 @@ node tests/game.test.mjs        # mint → prepare → cross → settle → tran
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
+node tests/localmint.test.mjs   # mint recognition from the reveal witness without an indexer
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer

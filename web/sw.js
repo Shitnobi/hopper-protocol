@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v6-31';
+const VERSION = 'hopper-v6-32';
 const SHELL = [
   './',
   'index.html',
@@ -43,6 +43,7 @@ const SHELL = [
   'js/wallet/addresses.js',
   'js/wallet/backend.js',
   'js/wallet/keys.js',
+  'js/wallet/localmint.js',
   'js/wallet/mint-client.js',
   'js/wallet/mint-worker.js',
   'js/wallet/storage.js',

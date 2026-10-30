@@ -918,7 +918,7 @@ export function settings(app) {
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
       <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet.</div>
-      <div class="hint">An empty Indexer means no HOPPER indexer: coins and sat ranges still work through ord, but frogs, the road and the leaderboard need one. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
+      <div class="hint">An empty Indexer means no HOPPER indexer. A mint paid to this wallet's ordinals address is recovered from its reveal witness; a frog transferred in later, the road and the leaderboard still need an indexer. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
     </div>
 
     <div class="window" data-lily="home">

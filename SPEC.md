@@ -625,6 +625,15 @@ Discovery comes from the indexer (`/v1/froggers`, `/v1/frogger/{sat}`,
 be spent; an unattributable coin still counts in the balance and is shown as
 unspendable.
 
+A mint reveal is also self-describing: its tapscript witness contains the
+canonical v6 body, and output 0 pays the wallet's ordinals address. A wallet
+MAY recover an idle mint record from that witness when neither an indexer
+nor ord answers, verifying the seed, sat and full body before trusting it.
+This recovers mints paid directly to the wallet's ordinals address. It does
+not recover a frog transferred in later, whose new output carries no mint
+body; that discovery requires the indexer (or a working ord range view and
+a record source).
+
 ### 5.3 Screens
 
 `Wallet` · `History` · `The Pond` · `The Road` · `Mint` · `Leaderboard` ·

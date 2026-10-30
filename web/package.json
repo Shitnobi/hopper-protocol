@@ -5,7 +5,7 @@
   "type": "module",
   "description": "HOPPER v6 browser wallet, game client and PWA",
   "scripts": {
-    "test": "node tests/core.test.mjs && node tests/game.test.mjs && node tests/media.test.mjs && node tests/scan.test.mjs && node tests/ord.test.mjs && node tests/ui.test.mjs && node tests/fees.test.mjs && node tests/preview.test.mjs && node tests/rbf.test.mjs",
+    "test": "node tests/core.test.mjs && node tests/game.test.mjs && node tests/media.test.mjs && node tests/scan.test.mjs && node tests/ord.test.mjs && node tests/ui.test.mjs && node tests/fees.test.mjs && node tests/preview.test.mjs && node tests/localmint.test.mjs && node tests/rbf.test.mjs",
     "test:core": "node tests/core.test.mjs",
     "test:game": "node tests/game.test.mjs",
     "test:indexer": "node tests/indexer-e2e.mjs",
@@ -17,6 +17,7 @@
     "test:ui": "node tests/ui.test.mjs",
     "test:rbf": "node tests/rbf.test.mjs",
     "test:fees": "node tests/fees.test.mjs",
-    "test:preview": "node tests/preview.test.mjs"
+    "test:preview": "node tests/preview.test.mjs",
+    "test:localmint": "node tests/localmint.test.mjs"
   }
 }

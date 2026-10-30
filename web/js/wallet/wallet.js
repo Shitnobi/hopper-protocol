@@ -13,6 +13,7 @@ import { deriveWallet } from './keys.js';
 import {
   DemoBackend, LiveBackend, effectiveEsploraUrl, effectiveOrdUrl,
 } from './backend.js';
+import { parseLocalMint } from './localmint.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
@@ -251,6 +252,7 @@ export class WalletSession {
     this._blockUnsub = null;
     this._visHandler = null;
     this._txCache = new Map();
+    this._localMintCache = new Map();
     this._loadLedger();
   }
 
@@ -835,6 +837,19 @@ export class WalletSession {
       } catch { /* live indexer may be absent */ }
     }
 
+    // A mint reveals its own inscription in the taproot witness. Recover
+    // that record even when no HOPPER indexer is configured (the public
+    // defaults have none) and ord's range endpoint is unavailable.
+    const localMints = await this._localMintRecords(utxos, records);
+    for (const record of localMints) {
+      if (records.has(record.sat)) continue;
+      records.set(record.sat, record);
+      candidates.add(record.sat);
+    }
+    if (localMints.length) {
+      notes.push(`${localMints.length} Hopper mint${localMints.length === 1 ? '' : 's'} recognized from the ord address`);
+    }
+
     let recordFailed = false;
     const missing = [...candidates].filter((sat) => !records.has(sat));
     const fetched = await mapLimit(missing, 4, async (sat) => {
@@ -992,6 +1007,48 @@ export class WalletSession {
     this.dispatch('scan', this.scanState());
     await this.refresh({ force: true });
     return this.gapLimit();
+  }
+
+  /** Recover HOPPER mints paid to our ordinals address from their reveal
+   *  witnesses. Positive answers are cached by outpoint; the chain remains
+   *  the source, and a spent reveal simply disappears from `utxos`. */
+  async _localMintRecords(utxos, records) {
+    if (!this.backend?.getTxHex) return [];
+    const known = new Set();
+    for (const record of records.values()) {
+      const location = record?.location;
+      if (location?.txid) known.add(`${String(location.txid).toLowerCase()}:${Number(location.vout)}`);
+    }
+    const ordAddress = this.keys.frogAddress();
+    const ordScript = p2trScript(this.keys.ord.outputXonly);
+    const candidatesForMint = utxos.filter((u) => u.kind === 'frog'
+      && u.address === ordAddress
+      && !known.has(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
+    const found = [];
+    await mapLimit(candidatesForMint, 2, async (u) => {
+      const key = `${String(u.txid).toLowerCase()}:${Number(u.vout)}`;
+      const height = u.status?.block_height ?? u.status?.height ?? null;
+      let record = null;
+      if (this._localMintCache.has(key)) {
+        // `false` means this immutable outpoint is not a mint reveal. A
+        // missing entry means the network did not answer; try again.
+        record = this._localMintCache.get(key) || null;
+        if (!record) return;
+        if (!record.mint_height && Number.isInteger(Number(height)) && Number(height) > 0) {
+          record = { ...record, mint_height: Number(height) };
+          this._localMintCache.set(key, record);
+        }
+      } else {
+        let hex = null;
+        try { hex = await this.backend.getTxHex(u.txid); } catch { return; }
+        if (!hex) return;
+        record = parseLocalMint({ hex, utxo: u, script: ordScript, mintHeight: height });
+        this._localMintCache.set(key, record || false);
+        if (!record) return;
+      }
+      if (!records.has(record.sat) && !found.some((r) => r.sat === record.sat)) found.push(record);
+    });
+    return found;
   }
 
   async _ownsFrog(record, utxos) {
