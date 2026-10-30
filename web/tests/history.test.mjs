@@ -82,6 +82,16 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const order = after.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('the mint is shown before its change and arrival',
     order.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  const shortTx = (tx) => `${tx.slice(0, 10)}…${tx.slice(-6)}`;
+  const commit = preview.built.commit.txid;
+  const reveal = preview.built.reveal.txid;
+  ok(after.includes(`MINT ${shortTx(commit)}`),
+    'the MINT row carries the commit txid');
+  ok(after.includes(`CHANGE ${shortTx(commit)}`),
+    'the change row follows the same commit');
+  ok(after.includes(`HOPPER ARRIVED ${shortTx(reveal)}`),
+    'the arrival carries the reveal txid');
+  ok(!/sat 0\b/.test(after), 'a row without a sat is not shown as sat 0');
   const mintRows = (after.match(/\bMINT\b/g) || []).length;
   eq('the global NPC mint feed is filtered out', mintRows, 1);
   ok(!/\bPip\b/.test(after), 'an NPC name from the global event feed is absent');
@@ -266,6 +276,16 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const noSatOrder = noSat.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('a sat-less old arrival still joins its mint',
     noSatOrder.slice(0, 6),
+    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  ok(!/sat 0\b/.test(noSat), 'a sat-less arrival never renders sat 0');
+
+  // Even if the frog record has already moved away, the reveal txid in the
+  // mint ledger is enough to attach the old arrival to its mint.
+  b.frogs = [];
+  const noFrog = plain(history({ w: b }));
+  const noFrogOrder = noFrog.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('a sat-less arrival groups by its reveal txid alone',
+    noFrogOrder.slice(0, 6),
     ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
 }
 
