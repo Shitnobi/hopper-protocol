@@ -111,6 +111,44 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 }
 
 {
+  // An older local mint action can have no `sat` and no recovered chain-mint
+  // row. The arrival still names the reveal and therefore the minted sat;
+  // that evidence must keep MINT, CHANGE and HOPPER ARRIVED together instead
+  // of sorting HOPPER (newer reveal) and CHANGE (older commit) above MINT.
+  store.clear();
+  const w = new WalletSession({
+    mnemonic: 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong',
+    network: 'regtest', settings: { ...settings },
+  });
+  await w.connect();
+  await w.demoFund(1, 200000);
+  const minted = await w.mint({ seed: 0x55555555, name: 'Old', feeRate: 2 });
+  w.chainMints = [];
+  w.actions[0].sat = null;
+  w.actions[0].height = null;
+  for (const c of w.changes) delete c.mintSat;
+  const oldText = plain(history({ w }));
+  const oldOrder = oldText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('an old sat-less action still reads mint, change, arrival',
+    oldOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  const shortOld = (tx) => `${tx.slice(0, 10)}…${tx.slice(-6)}`;
+  ok(oldText.includes(`MINT ${shortOld(minted.commit.txid)}`),
+    'the repaired MINT row still names the commit');
+
+  // The oldest action ledgers did not store the commit at all. Read it back
+  // from input 0 of the reveal, then the commit's change joins the mint.
+  w.actions[0].commit = null;
+  const repaired = await w._repairMintCommits();
+  eq('the missing commit is read from the reveal', repaired, 1);
+  eq('the repaired action names the commit', w.actions[0].commit, minted.commit.txid);
+  w._tagChanges();
+  const repairedText = plain(history({ w }));
+  const repairedOrder = repairedText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('a repaired commit keeps mint, change, arrival together',
+    repairedOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+}
+
+{
   // Upgrade path: a wallet whose deposits predate the receive ledger. Both
   // deposit coins have already been spent by two mints, so only address
   // history can recover them.

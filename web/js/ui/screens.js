@@ -417,21 +417,52 @@ function historyRows(w) {
   // arrival can still join the mint that produced it.
   const frogByTx = new Map();
   const frogBySat = new Map();
+  // A sat learned anywhere is evidence for every row naming the same tx.
+  // This is what repairs older action rows whose `sat` was never stored:
+  // the arrival still knows the minted sat and the action names its txids.
+  const txSat = new Map();
+  const noteSat = (sat, ...txids) => {
+    const n = satNumber(sat);
+    if (!Number.isSafeInteger(n)) return;
+    for (const v of txids) {
+      const tx = String(v || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(tx) && !txSat.has(tx)) txSat.set(tx, n);
+    }
+  };
+  const mintSatFor = (sat, ...txids) => {
+    const n = satNumber(sat);
+    if (Number.isSafeInteger(n)) return n;
+    for (const v of txids) {
+      const tx = String(v || '').toLowerCase();
+      const known = txSat.get(tx);
+      if (Number.isSafeInteger(known)) return known;
+    }
+    return null;
+  };
   for (const f of w.frogs || []) {
-    const sat = Number(f?.sat);
+    const sat = satNumber(f?.sat);
     if (!Number.isSafeInteger(sat)) continue;
     if (!frogBySat.has(sat)) frogBySat.set(sat, f);
     for (const v of [f?.mint_txid, f?.location?.txid, f?.txid]) {
       const tx = String(v || '').toLowerCase();
       if (/^[0-9a-f]{64}$/.test(tx) && !frogByTx.has(tx)) frogByTx.set(tx, sat);
     }
+    noteSat(sat, f?.mint_txid, f?.location?.txid, f?.txid);
   }
+  for (const a of w.actions || []) {
+    if (String(a?.kind || '').toLowerCase() === 'mint') noteSat(a.sat, a.txid, a.commit);
+  }
+  for (const m of w.chainMints || []) noteSat(m.sat, m.txid, m.commit);
+  for (const r of w.receives || []) noteSat(r.sat, r.txid);
   for (const e of w.history || []) {
+    const n = satNumber(e.payload?.frogger_sat ?? e.payload?.sat);
+    const sat = mintSatFor(n, e.txid);
+    if (Number.isSafeInteger(sat)) noteSat(sat, e.txid);
     rows.push({
       kind: String(e.kind || e.action || 'chain').toLowerCase(),
       height: e.height ?? null,
       txid: e.txid || null,
-      sat: e.payload?.frogger_sat ?? e.payload?.sat ?? null,
+      sat,
       seed: e.payload?.seed,
       name: e.payload?.name,
       outcome: e.payload?.outcome ?? null,
@@ -495,7 +526,8 @@ function historyRows(w) {
       kind: String(a.kind || 'action').toLowerCase(),
       height: a.height ?? null,
       txid: a.txid || null,
-      sat: a.sat ?? null,
+      sat: String(a.kind || '').toLowerCase() === 'mint'
+        ? mintSatFor(a.sat, a.txid, a.commit) : (a.sat ?? null),
       seed: a.seed,
       name: a.name,
       amount: a.amount,
@@ -520,7 +552,7 @@ function historyRows(w) {
       kind: 'mint',
       height: m.height ?? null,
       txid: m.txid,
-      sat: m.sat ?? null,
+      sat: mintSatFor(m.sat, m.txid, m.commit),
       seed: m.seed,
       name: m.name,
       amount: undefined,
@@ -572,13 +604,16 @@ function historyRows(w) {
     if (/^[0-9a-f]{64}$/.test(c)) m.commit = c;
   };
   for (const a of w.actions || []) {
-    if (String(a?.kind || '').toLowerCase() === 'mint') addMint(a.sat, a.txid, a.commit);
+    if (String(a?.kind || '').toLowerCase() !== 'mint') continue;
+    addMint(mintSatFor(a.sat, a.txid, a.commit), a.txid, a.commit);
   }
-  for (const m of w.chainMints || []) addMint(m.sat, m.txid, m.commit);
+  for (const m of w.chainMints || []) {
+    addMint(mintSatFor(m.sat, m.txid, m.commit), m.txid, m.commit);
+  }
   for (const r of rows) {
     if (r.kind !== 'mint') continue;
     addMint(r.sat, r.txid, r.commit);
-    const meta = mintMeta.get(Number(r.sat));
+    const meta = mintMeta.get(satNumber(r.sat));
     if (meta?.commit) r.commit = meta.commit;
   }
   const mintSatByTx = new Map();
@@ -588,7 +623,7 @@ function historyRows(w) {
   const mintGroupOf = (r) => {
     const tx = r.txid ? String(r.txid).toLowerCase() : '';
     let n = satNumber(r.sat);
-    if (!Number.isSafeInteger(n)) n = mintSatByTx.get(tx) ?? frogByTx.get(tx) ?? NaN;
+    if (!Number.isSafeInteger(n)) n = mintSatByTx.get(tx) ?? txSat.get(tx) ?? frogByTx.get(tx) ?? NaN;
     if (r.kind === 'mint' && Number.isSafeInteger(n) && mintMeta.has(n)) return `mint:${n}`;
     if (r.kind === 'receive' && r.frog && Number.isSafeInteger(n) && mintMeta.has(n)) {
       // Only the transaction that actually created this Hopper belongs to
@@ -601,9 +636,9 @@ function historyRows(w) {
       if (atMint || !origin) return `mint:${n}`;
     }
     if (r.kind === 'change') {
-      const tagged = Number(r.mintSat);
+      const tagged = satNumber(r.mintSat);
       if (Number.isSafeInteger(tagged) && mintMeta.has(tagged)) return `mint:${tagged}`;
-      const sat = mintSatByTx.get(tx);
+      const sat = mintSatByTx.get(tx) ?? txSat.get(tx);
       if (sat != null) return `mint:${sat}`;
     }
     return null;

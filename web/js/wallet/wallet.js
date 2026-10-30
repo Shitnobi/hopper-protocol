@@ -14,6 +14,7 @@ import {
   DemoBackend, LiveBackend, effectiveEsploraUrl, effectiveOrdUrl,
 } from './backend.js';
 import { parseLocalMint } from './localmint.js';
+import { parseTx } from './txparse.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
 import {
@@ -941,6 +942,7 @@ export class WalletSession {
     this._recordObservedReceives(this.utxos);
     this._recordObservedChanges(this.utxos);
     this._recordChainMints();
+    await this._repairMintCommits();
     this._tagChanges();
     const recovered = await this._backfillReceives(coldHistory);
     if (recovered) {
@@ -1260,8 +1262,9 @@ export class WalletSession {
       const reveal = String(a.txid || '').toLowerCase();
       const commit = String(a.commit || '').toLowerCase();
       if (tx !== reveal && tx !== commit) continue;
+      const sat = Number(a.sat);
       return {
-        sat: Number(a.sat),
+        sat: Number.isSafeInteger(sat) ? sat : null,
         mintTxid: /^[0-9a-f]{64}$/.test(reveal) ? reveal : null,
         commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
       };
@@ -1270,8 +1273,9 @@ export class WalletSession {
       const reveal = String(m?.txid || '').toLowerCase();
       const commit = String(m?.commit || '').toLowerCase();
       if (tx !== reveal && tx !== commit) continue;
+      const sat = Number(m.sat);
       return {
-        sat: Number(m.sat),
+        sat: Number.isSafeInteger(sat) ? sat : null,
         mintTxid: /^[0-9a-f]{64}$/.test(reveal) ? reveal : null,
         commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
       };
@@ -1363,6 +1367,35 @@ export class WalletSession {
     }
     for (const row of groups.values()) this._mergeChange(row);
     if (this.changes.length > 300) this.changes = this.changes.slice(-300);
+  }
+
+  /** Older mint actions did not always persist the commit txid. The reveal
+   *  names it as input 0, which is what links the commit's change output to
+   *  the mint. Repair this once per transaction so restored ledgers do not
+   *  render MINT and CHANGE in separate groups. */
+  async _repairMintCommits() {
+    if (typeof this.backend?.getTxHex !== 'function') return 0;
+    const outputs = [
+      ...(this.actions || []).filter((a) => String(a?.kind || '').toLowerCase() === 'mint'),
+      ...(this.chainMints || []),
+    ];
+    let repaired = 0;
+    for (const row of outputs) {
+      const reveal = String(row?.txid || '').toLowerCase();
+      const commit = String(row?.commit || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(reveal) || /^[0-9a-f]{64}$/.test(commit)) continue;
+      let hex = null;
+      try { hex = await this.backend.getTxHex(reveal); } catch { continue; }
+      if (!hex) continue;
+      let tx = null;
+      try { tx = parseTx(hex); } catch { continue; }
+      const found = String(tx?.inputs?.[0]?.txid || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(found)) continue;
+      row.commit = found;
+      repaired += 1;
+    }
+    if (repaired) this._saveLedger();
+    return repaired;
   }
 
   /** A mint whose reveal output is still the owned ord output is provably

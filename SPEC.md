@@ -502,7 +502,10 @@ The wallet and indexer both verify this with ordinal range arithmetic.
   ARRIVED row by the minted sat (and by both commit and reveal txids). The
   MINT row carries the commit txid and its change comes next, so one mint
   stays `MINT` → `CHANGE` → `HOPPER ARRIVED` even when heights are unknown
-  or the commit confirmed in an earlier block.
+  or the commit confirmed in an earlier block. Older actions with no stored
+  sat recover it from the arrival's frog/reveal record; a missing commit is
+  read once from input 0 of the reveal and persisted, so its change output
+  joins the same group. A missing sat is never treated as sat 0.
 * History shortened txids and addresses are copy buttons. The visible text is
   abbreviated, but the copied text is the complete txid or address; the
   confirmation names which value was copied.
