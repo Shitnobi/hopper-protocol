@@ -410,6 +410,22 @@ export function history(app) {
 function historyRows(w) {
   const rows = [];
   const pending = new Set((w.pending || []).map((p) => p.txid).filter(Boolean));
+  // `Number(null)` is 0; a missing sat must never become sat 0.
+  const satNumber = (v) => (v == null || v === '' ? NaN : Number(v));
+  // A restored arrival can predate the `sat` field on the receive ledger.
+  // Recover it from the frog record by mint or current-location txid so the
+  // arrival can still join the mint that produced it.
+  const frogByTx = new Map();
+  const frogBySat = new Map();
+  for (const f of w.frogs || []) {
+    const sat = Number(f?.sat);
+    if (!Number.isSafeInteger(sat)) continue;
+    if (!frogBySat.has(sat)) frogBySat.set(sat, f);
+    for (const v of [f?.mint_txid, f?.location?.txid, f?.txid]) {
+      const tx = String(v || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(tx) && !frogByTx.has(tx)) frogByTx.set(tx, sat);
+    }
+  }
   for (const e of w.history || []) {
     rows.push({
       kind: String(e.kind || e.action || 'chain').toLowerCase(),
@@ -429,11 +445,13 @@ function historyRows(w) {
   }
   for (const r of w.receives || []) {
     if (!r?.txid) continue;
+    const tx = String(r.txid).toLowerCase();
+    const knownSat = satNumber(r.sat);
     rows.push({
       kind: 'receive',
       height: r.height ?? null,
       txid: r.txid,
-      sat: r.sat ?? null,
+      sat: Number.isSafeInteger(knownSat) ? knownSat : (frogByTx.get(tx) ?? null),
       seed: r.seed,
       name: r.name,
       amount: r.amount,
@@ -539,7 +557,7 @@ function historyRows(w) {
   // comes from the commit and the arrival from the reveal.
   const mintMeta = new Map();
   const addMint = (sat, txid, commit = null) => {
-    const n = Number(sat);
+    const n = satNumber(sat);
     if (!Number.isSafeInteger(n)) return;
     let m = mintMeta.get(n);
     if (!m) {
@@ -569,14 +587,18 @@ function historyRows(w) {
   }
   const mintGroupOf = (r) => {
     const tx = r.txid ? String(r.txid).toLowerCase() : '';
-    const n = Number(r.sat);
+    let n = satNumber(r.sat);
+    if (!Number.isSafeInteger(n)) n = mintSatByTx.get(tx) ?? frogByTx.get(tx) ?? NaN;
     if (r.kind === 'mint' && Number.isSafeInteger(n) && mintMeta.has(n)) return `mint:${n}`;
     if (r.kind === 'receive' && r.frog && Number.isSafeInteger(n) && mintMeta.has(n)) {
       // Only the transaction that actually created this Hopper belongs to
       // its mint. A later transfer-in of the same sat must stay separate.
-      const f = (w.frogs || []).find((x) => Number(x?.sat) === n);
-      const atMint = f && String(f.mint_txid || '').toLowerCase() === tx;
-      if (atMint || mintMeta.get(n).txids.has(tx)) return `mint:${n}`;
+      // If an older ledger has no frog record, the known mint sat is still
+      // better evidence than a missing link.
+      const f = frogBySat.get(n);
+      const origin = String(f?.mint_txid || '').toLowerCase();
+      const atMint = (origin && origin === tx) || mintMeta.get(n).txids.has(tx);
+      if (atMint || !origin) return `mint:${n}`;
     }
     if (r.kind === 'change') {
       const tagged = Number(r.mintSat);

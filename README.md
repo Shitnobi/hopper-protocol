@@ -395,7 +395,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 80 checks: deposits, copy targets, mint/change/arrival grouping
+node tests/history.test.mjs     # 81 checks: deposits, copy targets, mint/change/arrival grouping
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

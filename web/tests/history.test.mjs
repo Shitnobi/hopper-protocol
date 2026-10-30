@@ -256,6 +256,17 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('a height-less restore still reads mint, change, arrival',
     heightlessOrder.slice(0, 6),
     ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+
+  // Older receive ledgers can have a frog row without its sat. The frog
+  // record still names the reveal, so the arrival must not be pushed above
+  // the mint just because that field is missing.
+  for (const r of b.receives) if (r.frog) { r.sat = null; r.height = 973267; }
+  for (const m of b.chainMints) m.height = null;
+  const noSat = plain(history({ w: b }));
+  const noSatOrder = noSat.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('a sat-less old arrival still joins its mint',
+    noSatOrder.slice(0, 6),
+    ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
 }
 
 console.log(`history: ${checks} checks passed`);
