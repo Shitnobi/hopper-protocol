@@ -14,7 +14,7 @@ globalThis.localStorage = {
 };
 
 const { WalletSession, DEFAULT_SETTINGS } = await import('../js/wallet/wallet.js');
-const { history } = await import('../js/ui/screens.js');
+const { history, historyDebug } = await import('../js/ui/screens.js');
 const { KEYS } = await import('../js/wallet/storage.js');
 
 let checks = 0;
@@ -335,6 +335,14 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('a sat-less arrival groups by its reveal txid alone',
     noFrogOrder.slice(0, 6),
     ['MINT', 'CHANGE', 'HOPPER ARRIVED', 'MINT', 'CHANGE', 'HOPPER ARRIVED']);
+
+  const debug = JSON.parse(historyDebug(b));
+  eq('history debug reports the running build',
+    debug.build, globalThis.HOPPER_BUILD || 'development');
+  ok(debug.rows.length > 0 && debug.rows.every((r) => typeof r.mintKey === 'string'),
+    'every debug row reports the key History grouped it by');
+  ok(!/seed|mnemonic|private/i.test(historyDebug(b)),
+    'history debug never includes seed or private material');
 }
 
 console.log(`history: ${checks} checks passed`);

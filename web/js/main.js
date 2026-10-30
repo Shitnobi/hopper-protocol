@@ -1012,6 +1012,7 @@ const handlers = {
   },
   'close-overlay'() { dismissOverlay(); },
   copy(el) { copyText(el.dataset.text || '', el.dataset.copyLabel || 'copied'); },
+  'copy-history-debug'() { copyText(screens.historyDebug(app.w), 'history data copied'); },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
 

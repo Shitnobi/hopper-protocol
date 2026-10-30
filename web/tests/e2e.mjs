@@ -757,6 +757,25 @@ const addressToast = await evaluate('document.querySelector("#toasts")?.innerTex
 if (!/address copied/.test(addressToast)) errors.push('history copy: no address confirmation');
 console.log('history copy:', JSON.stringify({ txid: copyTargets.txidShown, address: copyTargets.addressShown }));
 
+// The diagnostic copies the public grouping inputs, never the seed. It is
+// the evidence needed when a mint still refuses to keep its three rows
+// together on a device we cannot inspect directly.
+const hasDebug = await evaluate(`!!document.querySelector('[data-action=copy-history-debug]')`);
+if (!hasDebug) errors.push('history debug: button missing');
+await evaluate(`document.querySelector('[data-action=copy-history-debug]').click()`);
+await sleep(260);
+const debugText = await evaluate('navigator.clipboard.readText()');
+let debugData = null;
+try { debugData = JSON.parse(debugText); } catch (_) { /* reported below */ }
+if (!debugData) errors.push('history debug: clipboard is not JSON');
+else {
+  if (!debugData.build) errors.push('history debug: no build');
+  if (!Array.isArray(debugData.rows) || !debugData.rows.length) errors.push('history debug: no grouped rows');
+  if (!debugData.rows?.every((r) => typeof r.mintKey === 'string')) errors.push('history debug: row without group key');
+  if (/seed|mnemonic|private/i.test(debugText)) errors.push('history debug: contains private material');
+  console.log('history debug:', JSON.stringify({ build: debugData.build, rows: debugData.rows.length }));
+}
+
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelectorAll(".pond-item").length > 0', 15000, 'pond after history check');
 

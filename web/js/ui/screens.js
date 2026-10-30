@@ -402,6 +402,7 @@ export function history(app) {
   return `
     ${heading('📜 History')}
     <div class="sub">Every wallet transaction — sends, receives, change, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
+    <div class="actions mt10">${logBtn('COPY HISTORY DATA', 'copy-history-debug', { edge: 'dim', cls: 'small' })}</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => txRow(app, r)).join('') : '<div class="sub">No transactions yet — they appear here as you use the wallet.</div>'}
     </div>`;
@@ -759,6 +760,7 @@ function historyRows(w) {
     const tx = r.txid ? String(r.txid).toLowerCase() : '';
     const mintKey = mintGroupOf(r);
     const key = mintKey || (tx ? `tx:${tx}` : `row:${groups.length}`);
+    r.mintKey = key;
     let g = byTx.get(key) || null;
     if (!g) {
       g = { key, rows: [], height: -1, at: '', mempool: false, order: groups.length };
@@ -789,6 +791,87 @@ function historyRows(w) {
       return String(b.at || '').localeCompare(String(a.at || ''));
     });
   });
+}
+
+/**
+ * A copyable snapshot of the history inputs and the keys History actually
+ * grouped by. No seed, mnemonic, or private material is included: only the
+ * public transaction/address metadata needed to explain a bad ordering.
+ */
+export function historyDebug(w) {
+  const txid = (v) => {
+    const tx = String(v || '').toLowerCase();
+    return /^[0-9a-f]{64}$/.test(tx) ? tx : null;
+  };
+  const rows = historyRows(w).map((r) => ({
+    kind: r.kind,
+    txid: txid(r.txid),
+    shown: r.kind === 'mint' && r.commit ? txid(r.commit) : txid(r.txid),
+    commit: txid(r.commit),
+    sat: r.sat ?? null,
+    height: r.height ?? null,
+    groupHeight: r.groupHeight ?? null,
+    mintKey: r.mintKey || null,
+    frog: !!r.frog,
+    amount: r.amount ?? null,
+    at: r.at ?? null,
+    name: r.name || null,
+  }));
+  const actions = (w.actions || []).map((a) => ({
+    kind: a.kind || null,
+    txid: txid(a.txid),
+    commit: txid(a.commit),
+    sat: a.sat ?? null,
+    height: a.height ?? null,
+    at: a.at ?? null,
+    amount: a.amount ?? null,
+    fee: a.fee ?? null,
+    name: a.name || null,
+  }));
+  const chainMints = (w.chainMints || []).map((m) => ({
+    txid: txid(m.txid),
+    commit: txid(m.commit),
+    sat: m.sat ?? null,
+    height: m.height ?? null,
+    at: m.at ?? null,
+    name: m.name || null,
+  }));
+  const changes = (w.changes || []).map((c) => ({
+    txid: txid(c.txid),
+    amount: c.amount ?? null,
+    height: c.height ?? null,
+    at: c.at ?? null,
+    mintSat: c.mintSat ?? null,
+  }));
+  const receives = (w.receives || []).map((r) => ({
+    txid: txid(r.txid),
+    sat: r.sat ?? null,
+    amount: r.amount ?? null,
+    height: r.height ?? null,
+    at: r.at ?? null,
+    frog: !!r.frog,
+    name: r.name || null,
+  }));
+  const frogs = (w.frogs || []).map((f) => ({
+    sat: f.sat ?? null,
+    mint_txid: txid(f.mint_txid),
+    location: txid(f.location?.txid),
+    mint_height: f.mint_height ?? f.height ?? null,
+    name: f.name || null,
+  }));
+  const events = (w.history || []).map((e) => ({
+    kind: e.kind || e.action || null,
+    txid: txid(e.txid),
+    height: e.height ?? null,
+    sat: e.payload?.frogger_sat ?? e.payload?.sat ?? null,
+    name: e.payload?.name || null,
+  }));
+  return JSON.stringify({
+    build: globalThis.HOPPER_BUILD || 'development',
+    href: typeof location !== 'undefined' ? location.href : '',
+    tip: w.tipHeight ?? null,
+    rows, actions, chainMints, changes, receives, frogs, events,
+  }, null, 2);
 }
 
 /** A mint reads as: the mint/commit, the change it returned, then the Hopper
