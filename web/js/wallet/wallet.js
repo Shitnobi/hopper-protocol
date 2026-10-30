@@ -225,6 +225,8 @@ export class WalletSession {
     this.history = [];
     this.actions = [];
     this.receives = [];
+    this.receivesVersion = 0;
+    this._receiveBackfillFailedAt = 0;
     this.mempool = [];
     this.pending = [];
     this.imported = new Set();
@@ -273,6 +275,7 @@ export class WalletSession {
     this.actions = l.actions || [];
     this.receives = Array.isArray(l.receives)
       ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
+    this.receivesVersion = Number(l.receivesVersion) || 0;
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.history = l.history || [];
     this.mempool = Array.isArray(l.mempool)
@@ -310,6 +313,7 @@ export class WalletSession {
       network: this.network,
       actions: this.actions.slice(-300),
       receives: this.receives.slice(-300),
+      receivesVersion: this.receivesVersion || 0,
       pending: this.pending.slice(-24),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
@@ -640,6 +644,7 @@ export class WalletSession {
     let receiveFound = false;
     let asked = 0;
     let hits = 0;
+    const coldHistory = new Map();
 
     // 0. COLD GAP WALK. Only boot, RESCAN and EXTEND reach this. Small
     //    concurrent waves (SCAN_WAVE) keep the user from staring at a
@@ -683,6 +688,7 @@ export class WalletSession {
               readFailed = answer.error?.message || String(answer.error);
               break;
             }
+            coldHistory.set(wave[i].address, answer.history);
             if (answer.history.length === 0) {
               consecutiveEmpty += 1;
             } else {
@@ -918,8 +924,12 @@ export class WalletSession {
     for (const u of utxos) unique.set(`${u.txid}:${u.vout}`, u);
     this.utxos = [...unique.values()].sort((a, b) => b.value - a.value);
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
-    this._recordObservedReceives(this.utxos);
     this.used = used;
+    this._recordObservedReceives(this.utxos);
+    const recovered = await this._backfillReceives(coldHistory);
+    if (recovered) {
+      notes.push(`${recovered} earlier receive${recovered === 1 ? '' : 's'} recovered from address history`);
+    }
 
     const priorTotal = this.balance.total;
     this._computeBalance();
@@ -997,6 +1007,10 @@ export class WalletSession {
     }
     if (this.scan.rescan) return false;
     this._rescanCancel = false;
+    // A rescan is also the user's escape hatch if an older ledger has
+    // deposits missing from History. Ask receive history once more.
+    this.receivesVersion = 0;
+    this._receiveBackfillFailedAt = 0;
     this.scan.rescan = { asked: 0, hits: 0 };
     this.scan.note = 'rescanning from the chain — this walks every address in the gap';
     this.fullScanTip = null;
@@ -1026,6 +1040,8 @@ export class WalletSession {
     this.settings.gap = GAP_LIMIT + this.settings.gapExtra;
     saveSettings(this.settings);
     this.scan.note = `gap limit extended by ${add}: ${before} → ${this.gapLimit()}`;
+    this.receivesVersion = 0;
+    this._receiveBackfillFailedAt = 0;
     this.fullScanTip = null;
     this.cold = true;
     this.forceWatch = true;
@@ -1174,6 +1190,134 @@ export class WalletSession {
       existing.set(key, incoming);
     }
     if (this.receives.length > 300) this.receives = this.receives.slice(-300);
+  }
+
+  /** Receive addresses this wallet has ever handed out. `used` is only
+   *  written for branch 0, and receiveHistory is branch 0 by construction,
+   *  so neither can pull in a change address. */
+  _receiveBackfillEntries() {
+    const hints = new Set([
+      ...(this.receiveHistory || []),
+      ...Object.keys(this.used || {}),
+    ]);
+    const entries = [];
+    for (const address of hints) {
+      try {
+        const decoded = decodeAddress(address, this.network);
+        if (decoded.type !== 'p2wpkh') continue;
+        entries.push({ address, script: decoded.script });
+      } catch { /* an old address from another network cannot be queried here */ }
+    }
+    return entries;
+  }
+
+  /** One-time recovery of receives that predate the local receive ledger.
+   *  A deposit whose coin was already spent leaves no UTXO, but the address
+   *  that received it remains in `used`/`receiveHistory`. Ask only those
+   *  receive addresses for their transaction history, and record outputs
+   *  that paid us. This is deliberately versioned: after one successful
+   *  pass the wallet does not touch those addresses again. */
+  async _backfillReceives(known = null) {
+    if (this.receivesVersion >= 2) return 0;
+    if (Date.now() - (this._receiveBackfillFailedAt || 0) < 60_000) return 0;
+    const entries = this._receiveBackfillEntries();
+    if (!entries.length) {
+      this.receivesVersion = 2;
+      return 0;
+    }
+    const actionTxids = new Set();
+    const commitTxids = new Set();
+    for (const a of this.actions || []) {
+      if (a?.txid) actionTxids.add(String(a.txid).toLowerCase());
+      if (a?.commit) commitTxids.add(String(a.commit).toLowerCase());
+    }
+    const found = new Map();
+    let failed = false;
+    let sawUnconfirmed = false;
+    let asked = 0;
+    for (const entry of entries) {
+      let hist;
+      if (known && known.has(entry.address)) {
+        hist = known.get(entry.address);
+      } else {
+        if (asked && this.publicSource) await sleep(200);
+        asked += 1;
+        try {
+          hist = await this.backend.addressHistory(entry.address, entry.script);
+        } catch {
+          failed = true;
+          continue;
+        }
+      }
+      for (const h of Array.isArray(hist) ? hist : []) {
+        const txid = String(h?.txid || '').toLowerCase();
+        if (!txid) continue;
+        // An outgoing transaction's change is not a receive. Its commit
+        // output is not one either. This keeps mint/SEND change out of
+        // history while still recovering ordinary deposits.
+        if (actionTxids.has(txid) || commitTxids.has(txid)) continue;
+        let outputs = Array.isArray(h.outputs) ? h.outputs : null;
+        let height = Number.isInteger(Number(h.height)) && Number(h.height) > 0
+          ? Number(h.height) : null;
+        let confirmed = h.confirmed === true || h.status?.confirmed === true || height != null;
+        if (!outputs) {
+          const tx = await this._getTx(txid);
+          if (!tx) { failed = true; continue; }
+          outputs = tx.outputs || [];
+          const th = tx.status?.height ?? tx.status?.block_height;
+          if (height == null && Number.isInteger(Number(th)) && Number(th) > 0) {
+            height = Number(th);
+          }
+          confirmed = confirmed || tx.status?.confirmed === true || height != null;
+        }
+        const want = bytesToHex(entry.script).toLowerCase();
+        let amount = 0;
+        for (const o of outputs) {
+          const hex = typeof o?.script === 'string'
+            ? o.script.toLowerCase()
+            : o?.script ? bytesToHex(o.script).toLowerCase() : '';
+          if (hex !== want) continue;
+          amount += Number(o.value) || 0;
+        }
+        if (!amount) continue;
+        if (!confirmed) { sawUnconfirmed = true; continue; }
+        const prior = found.get(txid);
+        if (prior) {
+          prior.amount += amount;
+          if (prior.height == null && height != null) prior.height = height;
+        } else {
+          found.set(txid, {
+            txid, amount, address: entry.address, height, confirmed: true,
+          });
+        }
+      }
+    }
+    let added = 0;
+    for (const row of found.values()) {
+      const prior = (this.receives || []).find(
+        (r) => String(r?.txid || '').toLowerCase() === row.txid,
+      );
+      // A Hopper arrival already represents this transaction. Do not add an
+      // ordinary receive row beside it.
+      if (prior?.frog) continue;
+      if (prior) {
+        prior.amount = Math.max(Number(prior.amount) || 0, row.amount);
+        if (prior.height == null && row.height != null) prior.height = row.height;
+        prior.confirmed = true;
+        if (prior.address == null) prior.address = row.address;
+        continue;
+      }
+      this.receives.push({
+        txid: row.txid, amount: row.amount, address: row.address,
+        height: row.height, frog: false, sat: null, name: null, seed: null,
+        confirmed: true, at: new Date().toISOString(),
+      });
+      added += 1;
+    }
+    if (this.receives.length > 300) this.receives = this.receives.slice(-300);
+    if (failed) this._receiveBackfillFailedAt = Date.now();
+    else if (!sawUnconfirmed) this.receivesVersion = 2;
+    return added;
   }
 
   async _ownsFrog(record, utxos) {

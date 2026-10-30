@@ -23,6 +23,7 @@ const eq = (what, got, want) => {
 };
 
 const MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const UPGRADE_MNEMONIC = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
 const settings = { ...DEFAULT_SETTINGS, mode: 'demo', feeRate: 2 };
 const wallet = async () => {
   const w = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
@@ -52,6 +53,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
   await w.broadcastPreview(preview);
   eq('the mint creates the Hopper arrival row', w.receives.filter((r) => r.frog).length, 1);
+  eq('the mint change is not recorded as a receive', w.receives.filter((r) => !r.frog).length, 1);
   const arrived = w.receives.find((r) => r.frog);
   eq('the arrival amount is the frog output', arrived.amount, 1000);
   eq('the arrival carries the Hopper sat', arrived.sat, preview.sat);
@@ -79,6 +81,72 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   await w2.connect();
   await w2.refresh({ force: true });
   eq('a second session does not duplicate receives', w2.receives.length, before);
+}
+
+{
+  // Upgrade path: a wallet whose deposits predate the receive ledger. Both
+  // deposit coins have already been spent by two mints, so only address
+  // history can recover them.
+  const w = new WalletSession({ mnemonic: UPGRADE_MNEMONIC, network: 'regtest', settings: { ...settings } });
+  await w.connect();
+  await w.demoFund(2, 200000);
+  eq('the upgrade fixture starts with the two deposits', w.receives.length, 2);
+  eq('the upgrade fixture keeps both deposit addresses', new Set(w.receives.map((r) => r.address)).size, 1);
+  await w.mint({ seed: 0x11111111, name: 'First', feeRate: 2 });
+  await w.mint({ seed: 0x22222222, name: 'Second', feeRate: 2 });
+  eq('both original deposit coins were spent', w.utxos.filter((u) => u.value === 200000).length, 0);
+
+  // Simulate the ledger written by the version before receives existed.
+  w.receives = [];
+  w.receivesVersion = 0;
+  w._saveLedger();
+  let historyCalls = 0;
+  const originalHistory = w.backend.addressHistory.bind(w.backend);
+  w.backend.addressHistory = async (...args) => {
+    historyCalls += 1;
+    return originalHistory(...args);
+  };
+  await w.refresh({ force: true });
+  const recovered = w.receives.filter((r) => !r.frog && r.amount === 200000);
+  eq('address history recovers both spent deposits', recovered.length, 2);
+  eq('the recovered deposits are confirmed', recovered.every((r) => r.confirmed), true);
+  eq('the upgrade pass queried the used receive addresses', historyCalls >= 1, true);
+  eq('the upgrade marker is persisted', w.receivesVersion, 2);
+  const upgradeText = plain(history({ w }));
+  eq('history renders both original deposits', (upgradeText.match(/\+200,000 sats/g) || []).length, 2);
+  ok(/CONFIRMED/.test(upgradeText), 'recovered deposits are confirmed');
+
+  historyCalls = 0;
+  await w.refresh({ force: true });
+  eq('the backfill does not run twice', historyCalls, 0);
+  eq('the recovered deposits do not duplicate', w.receives.filter((r) => !r.frog && r.amount === 200000).length, 2);
+}
+
+{
+  // Electrum-style address history carries only txids. The fallback reads
+  // the transaction and matches the receive script before recording it.
+  const w = new WalletSession({ mnemonic: UPGRADE_MNEMONIC, network: 'regtest', settings: { ...settings } });
+  await w.connect();
+  const receive = w.keys.receive(0);
+  const txid = 'feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface';
+  w.receives = [];
+  w.receivesVersion = 0;
+  w._receiveBackfillFailedAt = 0;
+  w.used = { [receive.address]: true };
+  w.receiveHistory = [receive.address];
+  w.actions = [];
+  w.backend.addressHistory = async () => [{ txid, height: 77 }];
+  w.backend.getTx = async () => ({
+    txid,
+    outputs: [{ value: 54321, script: receive.script }],
+    status: { confirmed: true, height: 77 },
+  });
+  const added = await w._backfillReceives();
+  eq('minimal address history falls back to the transaction', added, 1);
+  eq('the fallback amount is the output paying us', w.receives[0].amount, 54321);
+  eq('the fallback height is kept', w.receives[0].height, 77);
+  eq('the fallback row is confirmed', w.receives[0].confirmed, true);
+  eq('the fallback marks the upgrade complete', w.receivesVersion, 2);
 }
 
 console.log(`history: ${checks} checks passed`);

@@ -87,9 +87,31 @@ export class MockChain {
     if (address) this.seenAddresses.add(address);
   }
 
-  /** Chain history shape for the demo: membership is all the wallet's
-   *  gap walk needs. */
+  /** Chain history shape for the demo. The wallet's gap walk only needs
+   *  membership, while its receive backfill uses the output detail to
+   *  reconstruct deposits whose coins were later spent. */
   addressHistory(address) {
+    const rows = [];
+    for (const tx of this.txs || []) {
+      let outputs = tx.outputs;
+      if (!outputs && tx.hex) {
+        try {
+          outputs = parseTx(tx.hex).outputs.map((o) => ({
+            value: Number(o.value), script: bytesToHex(o.script),
+            address: scriptToAddress(o.script, this.network),
+          }));
+        } catch { outputs = null; }
+      }
+      if (!Array.isArray(outputs)) continue;
+      const mine = outputs.filter((o) => o.address === address);
+      if (!mine.length) continue;
+      rows.push({
+        txid: tx.txid, height: tx.height ?? null,
+        confirmed: tx.action === 'faucet' || tx.height != null,
+        outputs: mine,
+      });
+    }
+    if (rows.length) return rows;
     return this.seenAddresses.has(address) ? [{ txid: null, height: null }] : [];
   }
 
@@ -114,7 +136,10 @@ export class MockChain {
       const start = FAUCET_BASE + n * 1_000_000;
       const txid = bytesToHex(reverseBytes(sha256(new TextEncoder().encode(`faucet:${this.salt}:${n}`))));
       this.addCoin({ txid, vout: 0, value, script, ranges: [[start, start + value - 1]] });
-      this.txs.push({ txid, height: null, action: 'faucet', detail: { value } });
+      this.txs.push({
+        txid, height: null, action: 'faucet', detail: { value },
+        outputs: [{ value, script: bytesToHex(script), address: scriptToAddress(script, this.network) }],
+      });
       out.push({ txid, vout: 0, value, ranges: [[start, start + value - 1]] });
     }
     this.persist();
@@ -251,6 +276,10 @@ export class MockChain {
 
     this.txs.push({
       txid: tx.txid, height, action: isCross ? 'cross' : mintMsg ? 'mint' : 'transfer', hex: tx.hex,
+      outputs: tx.outputs.map((o) => ({
+        value: Number(o.value), script: bytesToHex(o.script),
+        address: scriptToAddress(o.script, this.network),
+      })),
     });
   }
 

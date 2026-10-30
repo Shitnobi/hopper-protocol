@@ -74,9 +74,18 @@ export class EsploraClient {
    */
   async addressHistory(address) {
     const txs = await this.addressTxs(address);
+    // Include the outputs and status already present in this answer. The
+    // wallet uses them for its one-time receive backfill, so a spent
+    // deposit can be reconstructed without a /tx request per transaction.
     return (Array.isArray(txs) ? txs : []).map((tx) => ({
       txid: tx.txid,
       height: tx.status?.block_height ?? null,
+      status: tx.status || {},
+      outputs: (tx.vout || []).map((o) => ({
+        value: Number(o.value),
+        script: hexToBytes(o.scriptpubkey),
+        address: o.scriptpubkey_address || null,
+      })),
     }));
   }
 

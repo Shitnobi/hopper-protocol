@@ -488,6 +488,13 @@ The wallet and indexer both verify this with ordinal range arithmetic.
   a Hopper output is retained as a `receive` row in the ledger, so it stays
   visible after the coin is spent. Events for unrelated public/NPC Hoppers
   are filtered out.
+* The first completed refresh after the receive-ledger upgrade performs a
+  one-time backfill for receive addresses the wallet already handed out.
+  Address history is read for those addresses and outputs paying the wallet
+  are recorded, which recovers deposits whose coins were spent before the
+  receive ledger existed. Outgoing action/commit txids are skipped so a
+  mint or SEND change is not mislabeled as a deposit. The pass is versioned
+  in the ledger; it does not repeat on later refreshes.
 
 ---
 
