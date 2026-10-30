@@ -175,7 +175,8 @@ ARRIVED`. All three are grouped by the minted sat as well as txid, so the
 order holds even when heights are missing or the commit confirmed earlier.
 Older action rows without a stored sat recover it from the arrival; if they
 also lack the commit txid, it is read back once from input 0 of the reveal so
-the commit's change stays in the same mint group.
+the commit's change stays in the same mint group. Even with no sat anywhere,
+the reveal and commit txids form one cluster, so those rows cannot drift apart.
 Shortened txids and addresses in History are copy controls: tapping one
 copies the full value, with a `txid copied` or `address copied` confirmation.
 
@@ -398,7 +399,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 92 checks: deposits, copy targets, mint/change/arrival grouping
+node tests/history.test.mjs     # 94 checks: deposits, copy targets, mint/change/arrival grouping
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

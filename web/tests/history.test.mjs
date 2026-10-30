@@ -146,6 +146,16 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const repairedOrder = repairedText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
   eq('a repaired commit keeps mint, change, arrival together',
     repairedOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+
+  // Worst case: no row stores the minted sat at all. The reveal and commit
+  // txids are enough to make one cluster, so the rows cannot drift apart.
+  for (const r of w.receives) if (r.frog) r.sat = null;
+  for (const f of w.frogs) f.sat = null;
+  const worstText = plain(history({ w }));
+  const worstOrder = worstText.match(/\b(MINT|HOPPER ARRIVED|CHANGE)\b/g) || [];
+  eq('no sat anywhere still groups by reveal and commit txids',
+    worstOrder.slice(0, 3), ['MINT', 'CHANGE', 'HOPPER ARRIVED']);
+  ok(!/sat 0\b/.test(worstText), 'the no-sat fallback never renders sat 0');
 }
 
 {

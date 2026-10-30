@@ -1326,6 +1326,13 @@ document.getElementById('drawer-backdrop')?.addEventListener('click', () => { cl
 // The shell is static; a service worker makes the demo (and the UI over a
 // flaky link) work offline. Live chain calls are always network-only.
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  let reloadedForWorker = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloadedForWorker) return;
+    reloadedForWorker = true;
+    location.reload();
+  });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
       .catch((e) => console.warn('service worker', e.message));

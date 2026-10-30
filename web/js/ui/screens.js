@@ -584,62 +584,136 @@ function historyRows(w) {
   }
   // A transaction can leave more than one row: MINT beside CHANGE and
   // HOPPER ARRIVED, SEND beside CHANGE, or a restore without a local action
-  // height. First collect the commit and reveal txids for each minted sat.
-  // Both transactions belong to one mint even though the change usually
-  // comes from the commit and the arrival from the reveal.
-  const mintMeta = new Map();
-  const addMint = (sat, txid, commit = null) => {
+  // height. Build mint clusters from every clue we have (sat, reveal txid,
+  // commit txid) rather than requiring one field to be present. A cluster
+  // does not depend on a sat at all: a reveal names the mint and its input 0
+  // names the commit that carries the change.
+  const clusterParent = [];
+  const clusterNodes = [];
+  const clusterByTx = new Map();
+  const clusterBySat = new Map();
+  const findCluster = (i) => {
+    let root = i;
+    while (clusterParent[root] !== root) root = clusterParent[root];
+    while (clusterParent[i] !== i) { const next = clusterParent[i]; clusterParent[i] = root; i = next; }
+    return root;
+  };
+  const unionCluster = (a, b) => {
+    const ra = findCluster(a);
+    const rb = findCluster(b);
+    if (ra === rb) return ra;
+    clusterParent[rb] = ra;
+    const A = clusterNodes[ra];
+    const B = clusterNodes[rb];
+    for (const tx of B.txs) A.txs.add(tx);
+    if (!Number.isSafeInteger(A.sat)) A.sat = B.sat;
+    if (!A.commit) A.commit = B.commit;
+    return ra;
+  };
+  const addMintSource = (sat, reveal, commit = null) => {
     const n = satNumber(sat);
-    if (!Number.isSafeInteger(n)) return;
-    let m = mintMeta.get(n);
-    if (!m) {
-      m = { txids: new Set(), commit: null };
-      mintMeta.set(n, m);
+    const txs = [reveal, commit]
+      .map((v) => String(v || '').toLowerCase())
+      .filter((tx) => /^[0-9a-f]{64}$/.test(tx));
+    const hits = new Set();
+    if (Number.isSafeInteger(n) && clusterBySat.has(n)) hits.add(findCluster(clusterBySat.get(n)));
+    for (const tx of txs) if (clusterByTx.has(tx)) hits.add(findCluster(clusterByTx.get(tx)));
+    let root;
+    if (!hits.size) {
+      root = clusterNodes.length;
+      clusterParent.push(root);
+      clusterNodes.push({ sat: null, txs: new Set(), commit: null });
+    } else {
+      const [first, ...rest] = [...hits];
+      root = first;
+      for (const other of rest) root = unionCluster(root, other);
+      root = findCluster(root);
     }
-    for (const v of [txid, commit]) {
-      const tx = String(v || '').toLowerCase();
-      if (/^[0-9a-f]{64}$/.test(tx)) m.txids.add(tx);
+    const node = clusterNodes[root];
+    if (Number.isSafeInteger(n)) {
+      node.sat = n;
+      clusterBySat.set(n, root);
+    }
+    for (const tx of txs) {
+      node.txs.add(tx);
+      clusterByTx.set(tx, root);
     }
     const c = String(commit || '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(c)) m.commit = c;
+    if (/^[0-9a-f]{64}$/.test(c) && !node.commit) node.commit = c;
+    return root;
   };
-  for (const a of w.actions || []) {
-    if (String(a?.kind || '').toLowerCase() !== 'mint') continue;
-    addMint(mintSatFor(a.sat, a.txid, a.commit), a.txid, a.commit);
+  for (const f of w.frogs || []) {
+    addMintSource(f?.sat, f?.mint_txid || f?.location?.txid, f?.commit);
   }
-  for (const m of w.chainMints || []) {
-    addMint(mintSatFor(m.sat, m.txid, m.commit), m.txid, m.commit);
+  for (const a of w.actions || []) {
+    if (String(a?.kind || '').toLowerCase() === 'mint') {
+      addMintSource(a.sat, a.txid, a.commit);
+    }
+  }
+  for (const m of w.chainMints || []) addMintSource(m.sat, m.txid, m.commit);
+  for (const r of rows) {
+    if (r.kind === 'mint') addMintSource(r.sat, r.txid, r.commit);
+  }
+  const clusterKeyCache = new Map();
+  const clusterKey = (index) => {
+    const root = findCluster(index);
+    if (!clusterKeyCache.has(root)) {
+      const node = clusterNodes[root];
+      const key = Number.isSafeInteger(node.sat)
+        ? `mint:${node.sat}`
+        : `mintTx:${[...node.txs][0] || root}`;
+      clusterKeyCache.set(root, key);
+    }
+    return clusterKeyCache.get(root);
+  };
+  const mintKeyForTx = (txid) => {
+    const tx = String(txid || '').toLowerCase();
+    const hit = clusterByTx.get(tx);
+    return hit == null ? null : clusterKey(hit);
+  };
+  const mintKeyForSat = (sat) => {
+    const n = satNumber(sat);
+    if (!Number.isSafeInteger(n)) return null;
+    const hit = clusterBySat.get(n);
+    return hit == null ? null : clusterKey(hit);
+  };
+  const commitByTx = new Map();
+  for (const [tx, index] of clusterByTx) {
+    const commit = clusterNodes[findCluster(index)].commit;
+    if (commit) commitByTx.set(tx, commit);
   }
   for (const r of rows) {
     if (r.kind !== 'mint') continue;
-    addMint(r.sat, r.txid, r.commit);
-    const meta = mintMeta.get(satNumber(r.sat));
-    if (meta?.commit) r.commit = meta.commit;
+    const byReveal = r.txid ? commitByTx.get(String(r.txid).toLowerCase()) : null;
+    const byCommit = r.commit ? commitByTx.get(String(r.commit).toLowerCase()) : null;
+    if (!r.commit && (byReveal || byCommit)) r.commit = byReveal || byCommit;
   }
-  const mintSatByTx = new Map();
-  for (const [sat, meta] of mintMeta) {
-    for (const tx of meta.txids) mintSatByTx.set(tx, sat);
-  }
+
   const mintGroupOf = (r) => {
     const tx = r.txid ? String(r.txid).toLowerCase() : '';
-    let n = satNumber(r.sat);
-    if (!Number.isSafeInteger(n)) n = mintSatByTx.get(tx) ?? txSat.get(tx) ?? frogByTx.get(tx) ?? NaN;
-    if (r.kind === 'mint' && Number.isSafeInteger(n) && mintMeta.has(n)) return `mint:${n}`;
-    if (r.kind === 'receive' && r.frog && Number.isSafeInteger(n) && mintMeta.has(n)) {
-      // Only the transaction that actually created this Hopper belongs to
-      // its mint. A later transfer-in of the same sat must stay separate.
-      // If an older ledger has no frog record, the known mint sat is still
-      // better evidence than a missing link.
+    const n = satNumber(r.sat);
+    if (r.kind === 'mint') {
+      return mintKeyForTx(tx)
+        || mintKeyForTx(r.commit)
+        || mintKeyForSat(n)
+        || (Number.isSafeInteger(n) ? `mint:${n}` : null);
+    }
+    if (r.kind === 'receive' && r.frog) {
+      // A later transfer-in of the same sat must stay separate; the reveal
+      // txid is the reliable marker of the original arrival. If the frog
+      // record names this transaction as its mint, fall back to the sat.
+      const direct = mintKeyForTx(tx);
+      if (direct) return direct;
       const f = frogBySat.get(n);
       const origin = String(f?.mint_txid || '').toLowerCase();
-      const atMint = (origin && origin === tx) || mintMeta.get(n).txids.has(tx);
-      if (atMint || !origin) return `mint:${n}`;
+      if (origin && origin === tx) return mintKeyForSat(n);
+      if (!f && Number.isSafeInteger(n)) return mintKeyForSat(n);
+      return null;
     }
     if (r.kind === 'change') {
       const tagged = satNumber(r.mintSat);
-      if (Number.isSafeInteger(tagged) && mintMeta.has(tagged)) return `mint:${tagged}`;
-      const sat = mintSatByTx.get(tx) ?? txSat.get(tx);
-      if (sat != null) return `mint:${sat}`;
+      return (Number.isSafeInteger(tagged) ? mintKeyForSat(tagged) : null)
+        || mintKeyForTx(tx);
     }
     return null;
   };
@@ -1168,6 +1242,7 @@ export function settings(app) {
   const book = s.addressBook || [];
   return `
     ${heading('⚙ Settings')}
+    <div class="hint">BUILD ${esc(globalThis.HOPPER_BUILD || 'development')}</div>
     <div class="window" data-lily="accent">
       <div style="font-weight:700">CHAIN</div>
       <div class="sub">${esc(w.network)} · ${esc(s.mode)}</div>
