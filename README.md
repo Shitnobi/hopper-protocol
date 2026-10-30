@@ -128,6 +128,21 @@ of the card. The indexer still recognizes a fee-swept anchor from a
 transaction built elsewhere, so an externally lost Hopper can be shown
 honestly instead of disappearing.
 
+An unconfirmed ordinary **SEND** can be bumped from History with RBF.
+That path is deliberately narrower than a generic replace-by-fee wallet:
+it only accepts a plain BIP84 send, re-reads the original bytes from the
+backend, and refuses if any original input is now a Hopper/card, contains
+a known Hopper sat, or cannot be proved to be a plain range-known coin.
+The replacement keeps **every original output at the same script and the
+same value**, appends one or more confirmed plain BIP84 funding coins and
+one new change output, and pays a strictly higher absolute fee and feerate
+(BIP125, plus a 1 sat/vB incremental-relay margin). The extra fee therefore
+comes only from the added coins, never from shaving an existing change or
+any output that could carry an ordinal. MINT, PREPARE, CROSS and TRANSFER
+are never replaceable and have no bump button. The builder repeats the
+range audit on the final bytes and blocks a replacement if a known Hopper
+sat would land in its fee.
+
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
 palette, pixel text, wooden log buttons, lily-pad floating windows,
@@ -324,6 +339,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
+node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
 
@@ -393,7 +409,7 @@ mainnet value on it without review.
   of state outputs is bounded to 300 public frogs and can be expensive on a
   large pond; it is off by default and can be enabled in Settings if you
   need to recover custody outputs from a fresh device.
-- No RBF/CPFP, hardware wallet, multisig, or coinbase maturity handling.
+- RBF is limited to ordinary plain sends; no CPFP, hardware wallet, multisig, or coinbase maturity handling.
 - Snapshot/event retention and ZMQ ingest are operator concerns; see the
   module docs and `rust/crates/hopper-indexer/src/NOTES.md`.
 

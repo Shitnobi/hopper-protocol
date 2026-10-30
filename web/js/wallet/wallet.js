@@ -19,6 +19,9 @@ import {
   anchorOffsetOf, buildCross, buildMint, buildPrepare, buildSend,
   buildTransfer, stateScripts,
 } from './actions.js';
+import {
+  RBF_POLICY, buildReplacement, buildSendRbfEnvelope, safeBumpFunding,
+} from './rbf.js';
 
 // The FROGGER scan policy, ported to the browser wallet.
 //
@@ -1171,6 +1174,42 @@ export class WalletSession {
     this._saveLedger();
   }
 
+  /** Every outpoint the wallet currently knows to carry a Hopper/card. */
+  _protectedOutpoints() {
+    const set = new Set();
+    for (const f of this.frogs || []) {
+      if (f?.location?.txid) set.add(`${String(f.location.txid).toLowerCase()}:${Number(f.location.vout)}`);
+    }
+    for (const u of this.utxos || []) {
+      if (u.kind !== 'p2wpkh' || (u.frogs && u.frogs.length) || u.spendable === false) {
+        set.add(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`);
+      }
+    }
+    return set;
+  }
+
+  /** All known Hopper sats. A send's inputs and the bump's fee ranges are
+   *  checked against this again at bump time, so a later discovery cannot
+   *  slip through metadata recorded before the frog appeared. */
+  _protectedSats() {
+    const set = new Set();
+    for (const f of this.frogs || []) if (Number.isSafeInteger(Number(f.sat))) set.add(Number(f.sat));
+    for (const sat of this.imported || []) if (Number.isSafeInteger(Number(sat))) set.add(Number(sat));
+    return set;
+  }
+
+  /** Confirmed, plain BIP84 coins that may top up a replacement. The
+   *  builder rechecks every one; this only narrows the list. */
+  _rbfFunding() {
+    return (this.utxos || []).filter((u) => {
+      if (u.kind !== 'p2wpkh' || u.exact !== true || u.spendable === false) return false;
+      if (u.frogs && u.frogs.length) return false;
+      if (!u.keyRef) return false;
+      const st = u.status || {};
+      return st.confirmed === true || Number(st.height) > 0 || Number(st.block_height) > 0;
+    });
+  }
+
   async mint({ seed, name = '', feeRate = null, revealFeeRate = null, onBroadcast = null }) {
     await this.refresh();
     const rate = rateOr(feeRate ?? this.settings.feeRate);
@@ -1286,9 +1325,152 @@ export class WalletSession {
       keys: this.keys, utxos: this._funding(), recipientScript: recipient.script,
       amount: BigInt(amountSats), feeRate: rateOr(this.settings.feeRate),
     });
+    // Record the full safety envelope before broadcasting. If it cannot be
+    // produced, the send still goes out but is explicitly not bumpable.
+    let rbf = null;
+    try {
+      rbf = buildSendRbfEnvelope({
+        tx: built.tx,
+        hex: built.hex,
+        fee: Number(built.fee),
+        inputs: built.inputs,
+        to: address,
+        amount: amountSats,
+        network: this.network,
+        changeIndex: built.changeIndex,
+        protectedSats: this._protectedSats(),
+      });
+    } catch (e) {
+      rbf = { eligible: false, reason: e.message || String(e), policy: RBF_POLICY };
+    }
     await this.backend.broadcast(built.hex);
-    this._recordAction({ kind: 'send', txid: built.txid, to: address, amount: String(amountSats) });
+    this._recordAction({
+      kind: 'send', txid: built.txid, to: address, amount: String(amountSats),
+      fee: Number(built.fee), rbf,
+    });
     await this.refresh();
+    return built;
+  }
+
+  /**
+   * Replace one of our unconfirmed plain sends under BIP125.
+   *
+   * Safety properties, all rechecked here rather than trusted from the UI:
+   *  - only a persisted plain-send action with an eligible envelope;
+   *  - the original is still unconfirmed and the node returns exactly the
+   *    bytes we recorded;
+   *  - no original input is now a frog/card or contains a known Hopper sat;
+   *  - the replacement keeps every original output byte-for-byte and adds
+   *    confirmed plain funding plus one new change output;
+   *  - it pays a strictly higher absolute fee and feerate, including the
+   *    +1 sat/vB incremental-relay margin.
+   *
+   * No game transaction is ever replaceable.
+   */
+  async bumpFee(txid, { feeRate = null } = {}) {
+    if (!txid) throw new Error('no transaction to bump');
+    await this.refresh();
+    const action = (this.actions || []).find((a) => a.txid === txid && a.kind === 'send');
+    if (!action) throw new Error('only an unconfirmed plain send can be bumped');
+    if (action.rbf?.eligible !== true) {
+      throw new Error(`RBF is not available: ${action.rbf?.reason || 'this send has no safety record'}`);
+    }
+    if (!(this.pending || []).some((p) => p.txid === txid)) {
+      throw new Error('that transaction is not pending any more');
+    }
+    if ((this.history || []).some((e) => e.txid === txid)) {
+      throw new Error('that transaction is already confirmed');
+    }
+    let live;
+    try { live = await this.backend.getTx(txid); } catch {
+      throw new Error('the original transaction is no longer in the mempool');
+    }
+    if (!live) throw new Error('the original transaction is no longer in the mempool');
+    const st = live.status || {};
+    if (st.confirmed === true || Number(st.block_height) > 0 || Number(st.height) > 0) {
+      throw new Error('that transaction is already confirmed');
+    }
+    if (typeof this.backend.getTxHex !== 'function') {
+      throw new Error('this backend cannot prove the original bytes; refusing to bump');
+    }
+    let liveHex;
+    try { liveHex = await this.backend.getTxHex(txid); } catch {
+      throw new Error('the backend would not return the original bytes; refusing to bump');
+    }
+    if (!liveHex || String(liveHex).trim().toLowerCase() !== String(action.rbf.hex).toLowerCase()) {
+      throw new Error('the backend bytes do not match the recorded transaction; refusing to bump');
+    }
+
+    const protectedOutpoints = this._protectedOutpoints();
+    const protectedSats = this._protectedSats();
+    const change = this.keys.change(0);
+    const candidates = safeBumpFunding(this._rbfFunding(), {
+      keys: this.keys,
+      original: {
+        txid,
+        inputs: action.rbf.inputs.map((i) => ({ txid: i.txid, vout: i.vout })),
+        outputs: action.rbf.outputs.map((o, vout) => ({ vout })),
+      },
+      protectedOutpoints,
+      protectedSats,
+    }).sort((a, b) => Number(a.snapshot.value) - Number(b.snapshot.value));
+
+    const picked = [];
+    let built = null;
+    let last = null;
+    for (const candidate of candidates) {
+      picked.push(candidate);
+      try {
+        built = buildReplacement({
+          action,
+          keys: this.keys,
+          addedInputs: picked.map((p) => ({
+            txid: p.snapshot.txid,
+            vout: p.snapshot.vout,
+            value: p.snapshot.value,
+            script: hexToBytes(p.snapshot.scriptHex),
+            key: p.key,
+            keyRef: p.snapshot.keyRef,
+            ranges: p.snapshot.ranges,
+            frogs: p.snapshot.frogs,
+            kind: 'p2wpkh',
+            exact: true,
+            spendable: true,
+            status: { confirmed: true },
+          })),
+          feeRate: rateOr(feeRate ?? this.settings.feeRate),
+          changeScript: change.script,
+          protectedOutpoints,
+          protectedSats,
+        });
+        break;
+      } catch (e) {
+        if (e.code !== 'RBF_INSUFFICIENT_FUNDING') throw e;
+        last = e;
+      }
+      if (picked.length >= 8) break;
+    }
+    if (!built) {
+      throw new Error(last?.message || 'no confirmed plain funding coin is available for a fee bump');
+    }
+
+    await this.backend.broadcast(built.hex);
+    const oldTxid = action.txid;
+    action.txid = built.txid;
+    action.rbf = built.rbf;
+    action.fee = Number(built.fee);
+    action.vsize = built.vsize;
+    action.bumps = Number(action.bumps || 0) + 1;
+    action.replaced = [...(action.replaced || []), oldTxid];
+    action.bumpedAt = new Date().toISOString();
+    this.pending = (this.pending || []).filter((p) => p.txid !== oldTxid);
+    this.pending.unshift({ txid: built.txid, sinceTip: this.tipHeight, at: Date.now() });
+    this.pending = this.pending.slice(0, 24);
+    this.forceWatch = true;
+    this._saveLedger();
+    try { await this.refresh(); } catch (e) {
+      console.warn('fee bump broadcast, but the refresh failed', e.message || String(e));
+    }
     return built;
   }
 

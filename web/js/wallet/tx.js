@@ -10,6 +10,12 @@ import { compactSize, leafHash as tapLeafHash, tagged } from './keys.js';
 export const SIGHASH_DEFAULT = 0x00;
 export const SIGHASH_ALL = 0x01;
 
+// BIP125 opt-in: strictly below 0xfffffffe. 0xfffffffd is also
+// Sequence::ENABLE_RBF_NO_LOCKTIME in rust-bitcoin, which ord uses for its
+// own transactions. Only ordinary HOPPER sends use it today; the game
+// transactions stay non-replaceable on purpose.
+export const RBF_SEQUENCE = 0xfffffffd;
+
 export function varint(n) {
   return compactSize(n);
 }
@@ -73,11 +79,11 @@ export function makeTx({ version = 2, locktime = 0, inputs = [], outputs = [] })
   return { version, locktime, inputs, outputs };
 }
 
-export function inputFromUtxo(utxo) {
+export function inputFromUtxo(utxo, sequence = 0xffffffff) {
   return {
     txid: reverseBytes(hexToBytesSafe(utxo.txid)),
     vout: utxo.vout,
-    sequence: 0xffffffff,
+    sequence,
     scriptSig: new Uint8Array(),
     witness: [],
   };

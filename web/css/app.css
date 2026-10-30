@@ -483,6 +483,8 @@ p { margin: .45em 0; }
   border: 2px dashed var(--tx-in);
 }
 .tx-row { display: flex; gap: 8px; align-items: flex-start; }
+.tx-actions { display: flex; gap: 6px; margin-top: 8px; }
+.tx-actions .btn { flex: 0 0 auto; }
 .tx-icon { flex: 0 0 32px; display: grid; place-items: center; padding-top: 2px; }
 .tx-icon img { width: 32px; height: 32px; }
 .tx-icon .coin { width: 24px; height: 24px; border-radius: 50%; }

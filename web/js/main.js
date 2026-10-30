@@ -860,6 +860,10 @@ const handlers = {
   },
   'receive-book'() { openOverlay(screens.receiveBook(app), { lily: 'home' }); },
   'sheet-send'() { openOverlay(screens.sendSheet(app), { type: 'sheet' }); },
+  'bump-fee'(el) {
+    const action = app.w?.actions?.find((a) => a.txid === el.dataset.txid && a.kind === 'send');
+    if (action) openOverlay(screens.bumpFeeSheet(app, action), { lily: 'accent' });
+  },
   'sheet-transfer'(el) {
     const f = app.w.frogBySat(el.dataset.sat);
     if (f) openOverlay(screens.transferSheet(app, f));
@@ -976,6 +980,16 @@ const handlers = {
       const built = await app.w.send(to, amount);
       closeOverlay();
       toast(`Sent ${sats(amount)} sats in ${shortHash(built.txid, 6)}`, 'ok');
+    });
+  },
+  'do-bump'(el) {
+    const txid = el.dataset.txid;
+    const feeRate = Number(document.querySelector('[data-input=bump-fee-rate]')?.value || 0);
+    run('replacing the transaction', async () => {
+      const built = await app.w.bumpFee(txid, { feeRate });
+      closeOverlay();
+      toast(`Bumped to ${sats(built.fee)} sats in ${shortHash(built.txid, 6)}`, 'ok');
+      navigate('history');
     });
   },
   'apply-backend'() {

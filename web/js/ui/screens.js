@@ -10,6 +10,7 @@ import {
   btc, esc, frogImg, pips, sats, seedText, targetOf,
 } from './dom.js';
 import { requiredAt, deathBps, nextIncrement, paramsHashHex } from '../core/params.js';
+import { canBumpSend } from '../wallet/rbf.js';
 import { deriveTraits } from '../core/art.js';
 import {
   C, RARITY_NAMES, frogMarkSvg, pondMarkSvg, rarityColor,
@@ -398,6 +399,7 @@ export function history(app) {
 
 function historyRows(w) {
   const rows = [];
+  const pending = new Set((w.pending || []).map((p) => p.txid).filter(Boolean));
   for (const e of w.history || []) {
     rows.push({
       kind: String(e.kind || e.action || 'chain').toLowerCase(),
@@ -409,9 +411,14 @@ function historyRows(w) {
       outcome: e.payload?.outcome ?? null,
       at: null,
       chain: true,
+      pending: false,
+      fee: null,
+      bumps: 0,
+      bumpable: false,
     });
   }
   for (const a of w.actions || []) {
+    const isPending = pending.has(a.txid);
     rows.push({
       kind: String(a.kind || 'action').toLowerCase(),
       height: a.height ?? null,
@@ -424,6 +431,10 @@ function historyRows(w) {
       at: a.at,
       chain: false,
       outcome: null,
+      pending: isPending,
+      fee: a.fee,
+      bumps: Number(a.bumps || 0),
+      bumpable: canBumpSend(a, isPending),
     });
   }
   // Unconfirmed outputs were already in the address answers; no extra
@@ -436,7 +447,8 @@ function historyRows(w) {
     rows.push({
       kind: 'receive', height: null, txid: m.txid, sat: null, seed: undefined,
       name: undefined, amount: m.amount, address: m.address, at: m.at ?? null,
-      chain: true, mempool: true, outcome: null,
+      chain: true, mempool: true, pending: true, fee: null, bumps: 0, bumpable: false,
+      outcome: null,
     });
   }
   const seen = new Set();
@@ -492,12 +504,15 @@ function txRow(app, r) {
     icon = '<span class="coin ring"></span>';
   }
 
+  const inMempool = !!(r.mempool || r.pending);
   const detail = [];
   if (r.mempool && r.address) detail.push(`to ${r.address.slice(0, 12)}…`);
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
   if (r.to) detail.push(`to ${truncTxid(r.to)}`);
   if (r.name && r.kind !== 'send') detail.push(String(r.name));
+  if (r.fee != null) detail.push(`fee ${sats(r.fee)} sats`);
+  if (r.bumps) detail.push(`bumped ×${r.bumps}`);
 
   let amount = '';
   if (r.kind === 'send' && r.amount != null) {
@@ -510,14 +525,14 @@ function txRow(app, r) {
     amount = '<span class="tx-amt dim">amount unknown</span>';
   }
 
-  const state = r.mempool
+  const state = inMempool
     ? chip('IN MEMPOOL', 'accent')
     : r.height != null
       ? `<span class="tiny muted">⬛ ${sats(r.height)}</span>`
       : chip('PENDING', 'accent');
 
   return `
-    <div class="card-row${r.mempool ? ' mempool' : ''}" ${r.sat != null ? `data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer"` : ''}>
+    <div class="card-row${inMempool ? ' mempool' : ''}" ${r.sat != null ? `data-action="open-frog" data-sat="${r.sat}" style="cursor:pointer"` : ''}>
       <div class="tx-row">
         <div class="tx-icon">${icon}</div>
         <div class="tx-main">
@@ -531,6 +546,9 @@ function txRow(app, r) {
             <span class="spacer"></span>
             <span class="tx-state">${state}</span>
           </div>
+          ${r.bumpable ? `<div class="tx-actions">${logBtn('⛽ BUMP FEE', 'bump-fee', {
+            edge: 'accent', cls: 'small', attrs: `data-txid="${esc(r.txid)}"`,
+          })}</div>` : ''}
         </div>
       </div>
     </div>`;
@@ -1172,6 +1190,36 @@ export function sendSheet(app) {
     <label class="field"><span>Amount (sats)</span><input type="number" data-input="send-amount" min="546" value="10000"></label>
     <div class="hint">Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.</div>
     <div class="mt14">${logBtn('SEND', 'do-send', { edge: 'accent', cls: 'block' })}</div>`;
+}
+
+export function bumpFeeSheet(app, action) {
+  const r = action.rbf;
+  const oldRate = Number(r.fee) / Math.max(1, Number(r.vsize));
+  const suggested = Math.max(1, Math.floor(oldRate) + 1, Math.ceil(Number(app.settings.feeRate) || 1));
+  return `
+    <div class="row"><h2>⛽ BUMP FEE</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="sub">Replace one unconfirmed plain send. The original outputs are preserved exactly.</div>
+    <div class="stat-grid mt10">
+      <dt>Original txid</dt><dd class="tiny wrap">${esc(action.txid)}</dd>
+      <dt>Original fee</dt><dd>${sats(r.fee)} sats · ${oldRate.toFixed(1)} sat/vB</dd>
+      <dt>Size</dt><dd>${sats(r.vsize)} vB</dd>
+      <dt>Bumps so far</dt><dd>${action.bumps || 0}</dd>
+    </div>
+    <div class="warnbox mt10">
+      <b>NO KNOWN HOPPER OR ORDINAL-BEARING COIN IS ELIGIBLE.</b><br>
+      The replacement keeps every existing output — including the change — at the same script and
+      exactly the same value. It adds one or more separate confirmed BIP84 funding coins and one
+      new change output. The higher fee comes only from those added coins, never from an existing
+      output or a Hopper card. This guard uses the wallet's current Hopper/indexer view.
+    </div>
+    <label class="field mt10"><span>New fee rate (sat/vB)</span>
+      <input type="number" min="1" data-input="bump-fee-rate" value="${suggested}">
+    </label>
+    <div class="hint">The wallet raises this to at least one sat/vB above the original and enforces BIP125's incremental-relay margin. Only one replacement can win: if the original confirms first, this bump is rejected and the original stays.</div>
+    <div class="actions mt14">
+      ${logBtn('CANCEL', 'close-overlay', { edge: 'dim', cls: 'small' })}
+      ${logBtn('REPLACE TRANSACTION', 'do-bump', { edge: 'accent', attrs: `data-txid="${esc(action.txid)}"` })}
+    </div>`;
 }
 
 export function transferSheet(app, f) {

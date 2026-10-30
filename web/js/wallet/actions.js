@@ -12,8 +12,8 @@ import { CARD_VALUE, DUST_P2WPKH, NUMS_XONLY } from '../core/params.js';
 import { p2trScript } from './addresses.js';
 import { branchHash, controlBlock, leafHash, taprootOutputKey } from './keys.js';
 import {
-  inputFromUtxo, makeTx, output, serializeTx, signP2wpkh, signTaprootKeyPath,
-  signTapscript, txid,
+  RBF_SEQUENCE, inputFromUtxo, makeTx, output, serializeTx, signP2wpkh,
+  signTaprootKeyPath, signTapscript, txid, vsize,
 } from './tx.js';
 
 export const FEE_FLOOR = 1;
@@ -225,7 +225,7 @@ export function buildMint({
 
   // 3. Commit transaction.
   const commitTx = makeTx({
-    inputs: inputs.map(inputFromUtxo),
+    inputs: inputs.map((u) => inputFromUtxo(u)),
     outputs: [output(commitValue, commitScript), output(0n, change.script)],
   });
   const commitFinal = finalize({
@@ -314,7 +314,7 @@ export function buildPrepare({
   if (totalIn < CARD_VALUE) throw new Error('not enough sats to fund the frog card');
 
   const tx = makeTx({
-    inputs: inputs.map(inputFromUtxo),
+    inputs: inputs.map((u) => inputFromUtxo(u)),
     outputs: [output(CARD_VALUE, state.script), output(0n, change.script)],
   });
   const types = inputs.map((u, i) => (i === 0 ? { type: inputType } : { type: 'p2wpkh' }));
@@ -365,7 +365,7 @@ export function buildCross({
   const totalIn = inputs.reduce((a, u) => a + BigInt(u.value), 0n);
 
   const tx = makeTx({
-    inputs: inputs.map(inputFromUtxo),
+    inputs: inputs.map((u) => inputFromUtxo(u)),
     outputs: [output(CARD_VALUE, next.script), output(0n, change.script)],
   });
   const types = inputs.map((u, i) => (i === 0
@@ -455,7 +455,10 @@ export function buildSend({
   if (totalIn < BigInt(amount)) throw new Error('insufficient funds');
 
   const tx = makeTx({
-    inputs: picked.map(inputFromUtxo),
+    // A plain send is the one wallet transaction that opts into BIP125 RBF.
+    // It never carries a frog; the bump builder keeps every output here and
+    // adds funding instead of reducing change. Game actions stay 0xffffffff.
+    inputs: picked.map((u) => inputFromUtxo(u, RBF_SEQUENCE)),
     outputs: [output(BigInt(amount), recipientScript), output(0n, change.script)],
   });
   const final = finalize({
@@ -471,5 +474,10 @@ export function buildSend({
     hex: bytesToHex(serializeTx(final.tx, true)),
     txid: txid(final.tx),
     fee: final.fee,
+    vsize: vsize(final.tx),
+    changeIndex: final.tx.outputs.length > 1 ? 1 : null,
+    // Public funding metadata for the RBF envelope. Never return the
+    // private key objects that coin selection happens to hold.
+    inputs: picked.map(({ key, ...rest }) => rest),
   };
 }

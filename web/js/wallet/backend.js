@@ -448,6 +448,10 @@ export class DemoBackend {
   }
 
   async feeRate() { return 2; }
+  async getTxHex(txid) {
+    const entry = this.chain.txs.find((t) => t.txid === txid);
+    return entry?.hex || null;
+  }
   async broadcast(hex) { return this.chain.submit(hex); }
   async fund(script, value = 200000, count = 8) {
     return this.chain.fund({ script, value, count });

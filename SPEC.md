@@ -414,7 +414,28 @@ script commits to the mint id, which the recipient cannot know until it has
 discovered the frog. The recipient re-enters custody with PREPARE on its next
 action.
 
-All inputs use sequence `0xFFFFFFFF`; lock time zero; version 2.
+All HOPPER action inputs use sequence `0xFFFFFFFF`; lock time zero; version 2.
+They are intentionally not replaceable: MINT, PREPARE, CROSS and TRANSFER may
+move an inscription or a state card, and shaving an output to raise a fee can
+burn the anchor sat.
+
+An ordinary wallet **SEND** is separate from these actions. Its inputs use
+sequence `0xFFFFFFFD` (BIP125 opt-in), and the wallet may replace an
+unconfirmed send only under this narrower policy:
+
+* the original is a wallet-created plain BIP84 send, still unconfirmed, and
+  the backend returns exactly the recorded serialization;
+* every original input is a plain, range-known, non-Hopper BIP84 coin, and
+  the current wallet view still contains no Hopper at any of those outpoints
+  or sats;
+* every original output keeps its exact script and value; the replacement
+  appends confirmed plain BIP84 funding and one new change output;
+* the replacement pays a strictly higher absolute fee and feerate, including
+  BIP125's incremental-relay margin.
+
+The wallet never replaces a HOPPER action. The transaction builder recomputes
+the FIFO sat ranges and refuses a replacement if a known Hopper sat would land
+in its fee.
 
 ### 3.7 Sat assignment invariant
 

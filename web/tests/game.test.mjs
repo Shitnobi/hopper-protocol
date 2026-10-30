@@ -91,6 +91,8 @@ let utxos = await scan();
 assert.ok(utxos.length >= 8, 'faucet coins visible');
 
 const mint = buildMint({ keys: wallet, utxos, seed: 0x9058d0fa, name: 'Hopkinson', feeRate: 2 });
+assert.ok(mint.commit.tx.inputs.every((i) => i.sequence === 0xffffffff), 'mint commit is not RBF');
+assert.ok(mint.reveal.tx.inputs.every((i) => i.sequence === 0xffffffff), 'mint reveal is not RBF');
 collect('mint-commit', mint.commit.hex);
 const commitId = chain.submit(mint.commit.hex);
 assert.equal(commitId, mint.commit.txid);
@@ -112,6 +114,7 @@ assert.ok(mintOut, 'mint output visible at the frog address');
 
 // PREPARE into custody.
 const prep = buildPrepare({ keys: wallet, utxo: mintOut, frog, funding: utxos, feeRate: 2 });
+assert.ok(prep.tx.inputs.every((i) => i.sequence === 0xffffffff), 'TRAVEL TO ROAD is not RBF');
 collect('prepare', prep.hex);
 chain.submit(prep.hex);
 frog = chain.record(mint.sat);
@@ -128,6 +131,7 @@ assert.equal(chain.utxo(prep.txid, 0).value, Number(CARD_VALUE));
 // CROSS.
 utxos = await scan();
 const cross = buildCross({ keys: wallet, stateUtxo: stUtxo, frog, funding: utxos, feeRate: 2 });
+assert.ok(cross.tx.inputs.every((i) => i.sequence === 0xffffffff), 'CROSS is not RBF');
 collect('cross', cross.hex);
 chain.submit(cross.hex);
 frog = chain.record(mint.sat);
@@ -158,6 +162,7 @@ if (frog.location) {
   };
   const recipient = wallet.receive(1);
   const transfer = buildTransfer({ keys: wallet, utxo, frog, recipientScript: recipient.script, feeRate: 2 });
+  assert.ok(transfer.tx.inputs.every((i) => i.sequence === 0xffffffff), 'TRANSFER is not RBF');
   collect('transfer', transfer.hex);
   chain.submit(transfer.hex);
   const moved = chain.record(mint.sat);
@@ -172,6 +177,7 @@ const plain = utxos.find((u) => u.kind === 'p2wpkh' && !u.frogs.length);
 if (plain) {
   const before = chain.tipHeight();
   const send = buildSend({ keys: wallet, utxos, recipientScript: wallet.receive(3).script, amount: 10000, feeRate: 2 });
+  assert.ok(send.tx.inputs.every((i) => i.sequence === 0xfffffffd), 'ordinary send opts into BIP125');
   collect('send', send.hex);
   chain.submit(send.hex);
   assert.equal(chain.tipHeight(), before + 1);
