@@ -183,6 +183,12 @@ ok(transferHtml.includes('PREVIEW TRANSACTION') && transferHtml.includes('data-a
   'Hopper transfer offers PREVIEW TRANSACTION');
 ok(!transferHtml.includes('data-action="do-transfer"') && transferHtml.includes('data-input="transfer-fee"'),
   'Hopper transfer has no direct broadcast and has an editable fee rate');
+const stagedTransferHtml = screens.transferSheet({
+  ...quoteApp,
+  w: { ...quoteApp.w, _frogUtxo: () => ({ kind: 'state' }) },
+}, { sat: 7000000, name: 'Hopkinson', state: 'home' });
+ok(stagedTransferHtml.includes('transfer leaf of the staged state output'),
+  'a staged or HOME transfer explains that it spends the state transfer leaf');
 
 const previewHtml = screens.txPreviewSheet(quoteApp, {
   kind: 'send', to: 'bcrt1qdestination', destinationAmount: 10000n,
@@ -283,10 +289,9 @@ ok(hopReview.includes('APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION'),
 ok(hopReview.includes('data-action="do-approve-tx"') && !hopReview.includes('do-cross'),
   'the signed review approves the built transaction, not a fresh build');
 
-// A Hopper already staged in the tapscript state output has an empty lily
-// pad: its name and art stay visible, but SEND/TRAVEL belong to a Hopper
-// still sitting in a spendable mint/ordinary output. The Road still offers
-// the HOP that spends the state leaf.
+// A Hopper staged in the tapscript state output keeps its pond grid slot and
+// name, but its lily is empty and it has no pond actions. The Road owns the
+// SEND (transfer leaf) and HOP (state fork) of that staged sat.
 const lilyFrog = { sat: 9000000000, name: 'Lily', state: 'idle', seed: 1, gen: 1, dist: 0 };
 const stagedLily = {
   ...demo,
@@ -295,13 +300,36 @@ const stagedLily = {
 };
 const stagedPondHtml = screens.pond({ w: stagedLily, settings: stagedLily.settings });
 ok(stagedPondHtml.includes('Lily'), 'the staged Hopper still shows its name on the lily pad');
+ok(stagedPondHtml.includes('data-pondfrog="1:empty"'),
+  'the staged Hopper sits on an empty lily pad');
 ok(!stagedPondHtml.includes('data-action="sheet-transfer"')
   && !stagedPondHtml.includes('data-action="travel-to-road"'),
 'the staged Hopper lily pad has no SEND or TRAVEL TO ROAD');
 const stagedRoadHtml = screens.road({ w: stagedLily, settings: stagedLily.settings, road: [] });
-ok(stagedRoadHtml.includes('data-action="sheet-cross"')
-  && !stagedRoadHtml.includes('data-action="travel-to-road"'),
-'a staged Hopper still offers HOP on The Road');
+const stagedSendAt = stagedRoadHtml.indexOf('data-action="sheet-transfer"');
+const stagedHopAt = stagedRoadHtml.indexOf('data-action="sheet-cross"');
+ok(stagedSendAt >= 0 && stagedHopAt > stagedSendAt,
+  'a staged Hopper offers SEND to the left of HOP on The Road');
+ok(!stagedRoadHtml.includes('data-action="travel-to-road"'),
+  'the staged Hopper is not offered TRAVEL TO ROAD again');
+
+// HOME is immortal and never crosses again: it must leave The Road, remain
+// on the pond, and keep a plain transfer SEND that spends the state send leaf.
+const homeFrog = { ...lilyFrog, state: 'home', dist: 5, immortal_height: 974100 };
+const stagedHome = {
+  ...demo,
+  frogs: [homeFrog],
+  _frogUtxo: () => ({ kind: 'state' }),
+};
+const homePondHtml = screens.pond({ w: stagedHome, settings: stagedHome.settings });
+ok(homePondHtml.includes('data-pondfrog="1:home"'),
+  'a HOME Hopper keeps its crowned art on the pond');
+ok(homePondHtml.includes('data-action="sheet-transfer"')
+  && !homePondHtml.includes('data-action="travel-to-road"'),
+'a HOME Hopper on the pond has SEND and no TRAVEL TO ROAD');
+const homeRoadHtml = screens.road({ w: stagedHome, settings: stagedHome.settings, road: [] });
+ok(!homeRoadHtml.includes('Lily') && !homeRoadHtml.includes('data-action="sheet-cross"'),
+  'a HOME Hopper is absent from The Road');
 
 const stateAddress = 'bcrt1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqstate';
 const stateAddressMock = { _frogUtxo: () => ({ kind: 'state', address: stateAddress }) };

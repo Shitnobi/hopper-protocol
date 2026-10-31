@@ -243,30 +243,37 @@ function pondItem(app, f, { mode } = {}) {
   const state = SPRITE_STATE(f);
   const crossing = f.state === 'crossing';
   const pending = !!f.commit_pending;
+  const utxo = app.w._frogUtxo?.(f);
+  const staged = utxo?.kind === 'state';
+  const home = f.state === 'home';
+  // A staged Hopper is not sitting in the pond: it is in its tapscript
+  // state output, controlled by The Road. Keep its grid slot and name, but
+  // paint an empty lily. HOME is the exception: it is crowned, immortal and
+  // lives on the pond, so it keeps its art and gets a plain transfer SEND.
+  const emptyLily = mode === 'pond' && !home && (staged || crossing);
+  const spriteState = emptyLily ? 'empty' : state;
   const gen = Number(f.gen) || generationAt(f.mint_height ?? (app.w?.tipHeight || 0));
   const displayName = state === 'dead' ? `RIP ${f.name || 'UNNAMED'}` : (f.name || 'UNNAMED');
   const name = esc(displayName);
   let action = '';
   if (pending) {
     action = '<span class="tiny muted">✏ INSCRIBING</span>';
-  } else if (crossing && mode !== 'road') {
-    action = logBtn('🚫 ON ROAD', 'on-road', { edge: 'dim', cls: 'small' });
   } else if (mode === 'road') {
     // A minted Hopper still sits in its mint output and must be staged in
     // the 25,000-sat tapscript state output before a crossing can be signed.
-    const utxo = app.w._frogUtxo?.(f);
-    action = utxo?.kind === 'state'
-      ? logBtn('🚦 HOP', 'sheet-cross', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` })
+    action = staged
+      ? logBtn('SEND', 'sheet-transfer', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` })
+        + logBtn('🚦 HOP', 'sheet-cross', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` })
       : logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
   } else if (mode === 'wallet' || mode === 'pond') {
-    const utxo = app.w._frogUtxo?.(f);
-    // A Hopper already staged in its tapscript state output is spent from
-    // The Road (HOP), not from the pond. Leave the lily pad empty: no SEND,
-    // no TRAVEL TO ROAD, but keep the name and art visible. A crossing card
-    // is handled above as ON ROAD.
-    if (utxo?.kind !== 'state') {
+    if (home && utxo) {
+      // HOME's sat is still in the state output; this spends its send leaf.
       action = logBtn('SEND', 'sheet-transfer', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
-      if (utxo && f.state === 'idle') {
+    } else if (staged || crossing) {
+      // No SEND, TRAVEL or HOP from the pond while the sat is on The Road.
+    } else if (utxo) {
+      action = logBtn('SEND', 'sheet-transfer', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
+      if (f.state === 'idle') {
         action += logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` });
       }
     }
@@ -281,7 +288,7 @@ function pondItem(app, f, { mode } = {}) {
   return `
     <div class="pond-item">
       <div class="pond-tap" data-action="open-frog" data-sat="${f.sat}">
-        <canvas class="pond-art" data-pondfrog="${f.seed >>> 0}:${state}" width="320" height="275"></canvas>
+        <canvas class="pond-art" data-pondfrog="${f.seed >>> 0}:${spriteState}" width="320" height="275"></canvas>
         <span class="pf-name">${name}</span>
         <span class="pf-sub">${sub}</span>
       </div>
@@ -2137,9 +2144,12 @@ export function bumpFeeSheet(app, action) {
 }
 
 export function transferSheet(app, f) {
+  const staged = app.w?._frogUtxo?.(f)?.kind === 'state';
   return `
     <div class="row"><h2>TRANSFER ${esc(f.name || '')}</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">No inscription, no state change. The Hopper walks to an ordinary address.</div>
+    <div class="sub">${staged
+    ? 'Spends the transfer leaf of the staged state output. No new inscription — the Hopper leaves The Road for an ordinary address.'
+    : 'No inscription, no state change. The Hopper walks to an ordinary address.'}</div>
     <div class="stat-grid mt10">
       <dt>Sat</dt><dd>${sats(f.sat)}</dd>
       <dt>State</dt><dd>${esc(String(f.state || '').toUpperCase())}</dd>

@@ -1074,24 +1074,47 @@ await waitFor('location.hash === "#/road"', 30000, 'road after travel approval')
 await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cross button after travel');
 
 // A Hopper staged in the tapscript state output belongs to The Road. Its
-// pond lily pad keeps the name/art but offers no SEND or TRAVEL TO ROAD.
+// pond slot keeps the name but paints an empty lily and offers no actions.
 await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
 await waitFor('document.querySelector(".pond-item")', 10000, 'staged pond card');
 const stagedPond = await evaluate(`(() => {
   const item = document.querySelector('.pond-item');
+  const art = item?.querySelector('canvas[data-pondfrog]');
   return {
     name: item?.querySelector('.pf-name')?.textContent || '',
+    pondfrog: art?.getAttribute('data-pondfrog') || '',
     buttons: [...(item?.querySelectorAll('.pf-actions .btn') || [])].map((b) => b.textContent.trim()),
     hasActions: Boolean(item?.querySelector('.pf-actions')),
   };
 })()`);
 console.log('staged pond:', stagedPond);
 if (stagedPond.name !== 'Test Hopper') errors.push(`staged pond name: ${JSON.stringify(stagedPond)}`);
+if (!/:empty$/.test(stagedPond.pondfrog)) {
+  errors.push(`staged pond should paint an empty lily: ${JSON.stringify(stagedPond)}`);
+}
 if (stagedPond.buttons.length || stagedPond.hasActions) {
   errors.push(`staged pond should be empty: ${JSON.stringify(stagedPond)}`);
 }
 await evaluate(`document.querySelector('[data-action=nav][data-view=road]').click()`);
 await waitFor('document.querySelector("[data-action=sheet-cross]")', 10000, 'cross button after staged pond check');
+
+// The staged Road card offers a normal transfer SEND immediately left of HOP.
+const stagedRoadActions = await evaluate(`(() => {
+  const box = document.querySelector('.water-box');
+  return [...(box?.querySelectorAll('.pf-actions .btn') || [])].map((b) => b.textContent.trim());
+})()`);
+console.log('staged road actions:', stagedRoadActions);
+if (stagedRoadActions.join('|') !== 'SEND|🚦 HOP') {
+  errors.push(`staged road actions are wrong: ${JSON.stringify(stagedRoadActions)}`);
+}
+await evaluate(`document.querySelector('.water-box [data-action=sheet-transfer]').click()`);
+await waitFor('document.querySelector("[data-input=transfer-to]")', 10000, 'staged transfer sheet');
+const stagedTransferCopy = await evaluate(`document.querySelector('#overlay')?.innerText || ''`);
+if (!/transfer leaf of the staged state output/.test(stagedTransferCopy)) {
+  errors.push(`staged transfer does not name the state leaf: ${JSON.stringify(stagedTransferCopy.slice(0, 200))}`);
+}
+await evaluate(`document.querySelector('#overlay [data-action=close-overlay]').click()`);
+await waitFor('document.getElementById("overlay").hidden', 5000, 'staged transfer close');
 
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);

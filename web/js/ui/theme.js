@@ -356,7 +356,9 @@ export function paintPondFrog(ctx, w, h, seed, state) {
   const radius = side * (0.34 + 0.05 * pondScatter(seed, 2));
   const flower = pondScatter(seed, 3) > 0.25;
   paintLily(ctx, cx, cy, radius, flower);
-  paintSprite(ctx, seed, state, cx, cy - radius * 0.2, radius * 1.25);
+  // The pad stays in the same seed-scattered spot; only the frog is absent
+  // while its sat is staged in a tapscript state output.
+  if (state !== 'empty') paintSprite(ctx, seed, state, cx, cy - radius * 0.2, radius * 1.25);
 }
 
 /** The small, generic pond on the wallet screen. */

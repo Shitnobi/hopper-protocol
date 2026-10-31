@@ -299,12 +299,14 @@ The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
 boot intro and the eight-page rules walkthrough (swipe left or right, or
 use BACK and NEXT). Once a Hopper is staged in its tapscript state output,
-its pond lily pad keeps the name and art but drops SEND and TRAVEL TO ROAD;
-the HOP that spends the state leaf lives on The Road. Approving that HOP
-moves the Hopper out of the direction picker into **Crossings in flight**
-immediately, labelled in mempool until a block gives the indexer a real
-settlement height. Shell updates are handled before the app starts: a
-same-build load never reloads, and a stale-build reload suppresses the
+its pond slot keeps the name but paints an empty lily with no SEND or
+TRAVEL TO ROAD. The Road shows that staged Hopper with SEND (the state
+output's transfer leaf) and HOP (the state fork). A HOME Hopper never
+returns to The Road: it stays on the pond with its crowned art and a
+transfer SEND. Approving a HOP moves the Hopper out of the direction picker
+into **Crossings in flight** immediately, labelled in mempool until a block
+gives the indexer a real settlement height. Shell updates are handled before
+the app starts: a same-build load never reloads, and a stale-build reload suppresses the
 splash, so a new deploy cannot look like a boot loop. While it is out
 there, the card is a small treadmill:
 the lane dashes scroll left and the Hopper arcs to the right in a one-second
