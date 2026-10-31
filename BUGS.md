@@ -279,3 +279,65 @@ The state-address replay was correct, but the local road projection was not. `Wa
 ### Known limitation
 
 Live mode hides a local road row only after the state-address replay has marked it settled. If the backend is unreachable, the wallet keeps the last projected row rather than claiming a settlement it cannot verify. Demo mode uses its deterministic six-block settlement.
+
+## 2026-10-31 — The boot splash restarted in a short reload loop
+
+**Reported:** The loading screen crashed and looped a few times before the app loaded.
+
+**Build:** fixed in `1f0a973`, cache/build `hopper-v7-3-14`.
+
+### Root causes
+
+1. **A fresh load reloaded itself even though it was already current.** `build-guard` treated a missing cache as a reason to reload, and its check only asked whether the cache **key** existed. `caches.open(VERSION)` creates that key at the start of the install, before a single shell file is cached, so the guard could reload halfway through its own precache.
+2. **Two independent reload paths ran on the same update.** `main.js` reloaded on every `controllerchange`, while `build-guard` could also call `location.replace`. A new worker taking control and the guard's own reload could both navigate the tab.
+3. **Each navigation restarted the 2.8-second boot intro.** The splash has no idea why the page loaded, so a reload caused by an update looked exactly like the splash crashing and starting over.
+4. **Reload suppression was not authoritative.** The one-shot flag was checked after the cache check in one path, so a stale page with a complete new cache could reload again on every navigation. The flag also lived only in `sessionStorage`, which private mode can deny.
+5. **An intro canvas error could leave the splash permanently visible.** `drawIntro` ran inside the animation frame without a `try/catch`; if it threw, no further frame was scheduled and `#intro` was never hidden.
+
+### Fix
+
+- `web/js/build-guard.js`
+  - Reads the deployed `sw.js` version **and** its complete `SHELL` list.
+  - `cacheComplete()` verifies every shell file with `cache.match()`, instead of trusting the cache key.
+  - If the running `BUILD` equals the deployed version, it only registers the worker to fill the cache in the background. It never reloads a current page.
+  - If the running build is stale, it waits for the complete cache, then reloads **once**. The one-shot flag is checked before the cache check, so a stale page plus a complete cache cannot spin.
+  - The reload URL carries `guard=1` as well as `build=<version>`. That attempt marker survives the navigation even when `sessionStorage` is unavailable.
+  - The automatic reload records `hopper.introSkip` before navigating.
+  - `HOPPER_REPAIR` uses the same guard marker.
+- `web/js/main.js`
+  - Removed the `controllerchange` reload. `build-guard` owns shell updates; a worker taking control no longer restarts the app.
+  - `consumeIntroSkip()` honours the guard marker or a stale `?build=` query, removes `build`, `guard` and `repair` from the URL, and skips the splash.
+  - `beginBootIntro()` renders the app directly when the load came from an update.
+- `web/js/ui/tour.js`
+  - A `drawIntro` exception now logs and calls `finish(false)`, so a canvas failure cannot leave the splash covering the app.
+- `web/tests/e2e.mjs`
+  - Records main-frame navigations and asserts a fresh boot performs exactly one.
+  - Loads `?build=hopper-v7-3-0`, then asserts the splash is hidden, the query is cleaned, and no extra navigation occurred.
+
+### Verification
+
+- Fresh local profile, first load: exactly one `Page.frameNavigated`, `HOPPER_BUILD = hopper-v7-3-14`, controller present, cache 54 files, no build-guard flag.
+- Same-profile reload: exactly one navigation; cache remains `hopper-v7-3-14`.
+- Deliberately stale `build-guard` with a complete `hopper-v7-3-14` cache and `BUILD = hopper-v7-3-13`: exactly initial load + one guarded reload, then it stops. The `guard=1` query prevented a third navigation.
+- Fresh-profile browser E2E passed:
+  - `boot navigations: [ 'http://127.0.0.1:8130/' ]`
+  - `stale build boot: { introHidden: true, search: '', build: 'hopper-v7-3-14', rules: true }`
+  - `console errors: none`, `e2e: ok`.
+- Full `npm test` passed: core 136, game ok, emergency 103, params 7, media 40, scan 94, ord 46, ui 66, fees 19, preview 87, localmint 40, chainfrog 45, history 134, rbf 125; v7 fold sync/parity/doc boot pass.
+- Live after deployment:
+  - First load and one manual reload each performed exactly one navigation.
+  - Build `hopper-v7-3-14`, service-worker controlled, only cache `hopper-v7-3-14`, 54 cached files, no guard flag.
+  - Params, mempool default, Settings download/spend controls and rules text verified.
+  - No console errors.
+
+### Deploy
+
+- Commit `1f0a973` — “Stop a shell update from replaying the boot screen”.
+- Fast-forwarded `master` and `last_change`; pushed both.
+- GitHub Pages run `41218968278` completed successfully.
+- Live build `hopper-v7-3-14`.
+- Reload once to activate the new service-worker cache. The update itself no longer replays the splash or loops.
+
+### Known limitation
+
+If a CDN edge or the browser's HTTP cache keeps serving an old `build-guard.js` after a deploy, the new guard refuses a second automatic reload in that tab instead of spinning. The old page keeps working; the next navigation (or **RELOAD THE APP** / DevTools → Service Workers → Unregister) picks up the new shell. A genuinely unreachable cache cannot be updated offline.
