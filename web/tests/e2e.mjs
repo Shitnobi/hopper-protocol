@@ -1059,6 +1059,26 @@ await evaluate(`document.querySelector('.overlay [data-action=travel-approved]')
 await waitFor('location.hash === "#/road"', 30000, 'road after travel approval');
 await waitFor('document.querySelector("[data-action=sheet-cross]")', 30000, 'cross button after travel');
 
+// A Hopper staged in the tapscript state output belongs to The Road. Its
+// pond lily pad keeps the name/art but offers no SEND or TRAVEL TO ROAD.
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await waitFor('document.querySelector(".pond-item")', 10000, 'staged pond card');
+const stagedPond = await evaluate(`(() => {
+  const item = document.querySelector('.pond-item');
+  return {
+    name: item?.querySelector('.pf-name')?.textContent || '',
+    buttons: [...(item?.querySelectorAll('.pf-actions .btn') || [])].map((b) => b.textContent.trim()),
+    hasActions: Boolean(item?.querySelector('.pf-actions')),
+  };
+})()`);
+console.log('staged pond:', stagedPond);
+if (stagedPond.name !== 'Test Hopper') errors.push(`staged pond name: ${JSON.stringify(stagedPond)}`);
+if (stagedPond.buttons.length || stagedPond.hasActions) {
+  errors.push(`staged pond should be empty: ${JSON.stringify(stagedPond)}`);
+}
+await evaluate(`document.querySelector('[data-action=nav][data-view=road]').click()`);
+await waitFor('document.querySelector("[data-action=sheet-cross]")', 10000, 'cross button after staged pond check');
+
 // 4. Cross.
 await evaluate(`document.querySelector('[data-action=sheet-cross]').click()`);
 await waitFor('document.querySelector("[data-action=preview-hop]")');

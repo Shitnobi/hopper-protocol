@@ -259,9 +259,15 @@ function pondItem(app, f, { mode } = {}) {
       : logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
   } else if (mode === 'wallet' || mode === 'pond') {
     const utxo = app.w._frogUtxo?.(f);
-    action = logBtn('SEND', 'sheet-transfer', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
-    if (utxo && f.state === 'idle') {
-      action += logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` });
+    // A Hopper already staged in its tapscript state output is spent from
+    // The Road (HOP), not from the pond. Leave the lily pad empty: no SEND,
+    // no TRAVEL TO ROAD, but keep the name and art visible. A crossing card
+    // is handled above as ON ROAD.
+    if (utxo?.kind !== 'state') {
+      action = logBtn('SEND', 'sheet-transfer', { edge: 'accent', cls: 'small', attrs: `data-sat="${f.sat}"` });
+      if (utxo && f.state === 'idle') {
+        action += logBtn('TRAVEL TO ROAD', 'travel-to-road', { edge: 'dim', cls: 'small', attrs: `data-sat="${f.sat}"` });
+      }
     }
   }
   const sub = pending

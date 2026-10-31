@@ -185,4 +185,30 @@ ok(hopReview.includes('APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION'),
 ok(hopReview.includes('data-action="do-approve-tx"') && !hopReview.includes('do-cross'),
   'the signed review approves the built transaction, not a fresh build');
 
+// A Hopper already staged in the tapscript state output has an empty lily
+// pad: its name and art stay visible, but SEND/TRAVEL belong to a Hopper
+// still sitting in a spendable mint/ordinary output. The Road still offers
+// the HOP that spends the state leaf.
+const lilyFrog = { sat: 9000000000, name: 'Lily', state: 'idle', seed: 1, gen: 1, dist: 0 };
+const stagedLily = {
+  ...demo,
+  frogs: [lilyFrog],
+  _frogUtxo: () => ({ kind: 'state' }),
+};
+const stagedPondHtml = screens.pond({ w: stagedLily, settings: stagedLily.settings });
+ok(stagedPondHtml.includes('Lily'), 'the staged Hopper still shows its name on the lily pad');
+ok(!stagedPondHtml.includes('data-action="sheet-transfer"')
+  && !stagedPondHtml.includes('data-action="travel-to-road"'),
+'the staged Hopper lily pad has no SEND or TRAVEL TO ROAD');
+const stagedRoadHtml = screens.road({ w: stagedLily, settings: stagedLily.settings, road: [] });
+ok(stagedRoadHtml.includes('data-action="sheet-cross"')
+  && !stagedRoadHtml.includes('data-action="travel-to-road"'),
+'a staged Hopper still offers HOP on The Road');
+
+const mintLily = { ...demo, frogs: [lilyFrog], _frogUtxo: () => ({ kind: 'mint' }) };
+const mintPondHtml = screens.pond({ w: mintLily, settings: mintLily.settings });
+ok(mintPondHtml.includes('data-action="sheet-transfer"')
+  && mintPondHtml.includes('data-action="travel-to-road"'),
+'an unstaged Hopper keeps SEND and TRAVEL TO ROAD');
+
 console.log(`ui: ${checks} checks passed (fee/preview/road/emergency/hop)`);
