@@ -4,7 +4,7 @@
 
 **Reported:** On Safari for iOS 15 everything worked except the soundtrack. SOUND was ON and VOLUME read 55%, but no music played.
 
-**Build:** `hopper-v7-3-19` (initial fix in `51f6cb2`).
+**Build:** `hopper-v7-3-19`, commit `ab4bbb7` (initial unlock fix in `51f6cb2`).
 
 ### Root causes
 
