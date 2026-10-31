@@ -5,8 +5,8 @@
 import assert from 'node:assert/strict';
 
 import {
-  BLOCKSTREAM_ESPLORA, OrdClient, LiveBackend,
-  effectiveEsploraUrl, effectiveOrdUrl, ORDINALS_COM,
+  BLOCKSTREAM_ESPLORA, EsploraClient, MEMPOOL_ESPLORA, OrdClient, LiveBackend,
+  effectiveEsploraUrl, effectiveOrdUrl, normalizeEsploraUrl, ORDINALS_COM,
 } from '../js/wallet/backend.js';
 import { DEFAULT_SETTINGS } from '../js/wallet/wallet.js';
 
@@ -33,6 +33,14 @@ eq('default settings leave the Esplora field blank', DEFAULT_SETTINGS.esploraUrl
 eq('default settings start live on mainnet defaults', DEFAULT_SETTINGS.mode, 'live');
 eq('default settings leave the Indexer blank', DEFAULT_SETTINGS.indexerUrl, '');
 eq('default settings leave the Ord field blank', DEFAULT_SETTINGS.ordUrl, '');
+eq('mempool.space is a first-class Esplora endpoint',
+  effectiveEsploraUrl({ esploraUrl: MEMPOOL_ESPLORA }, 'mainnet'), MEMPOOL_ESPLORA);
+eq('a pasted mempool.space root gains /api', normalizeEsploraUrl('https://mempool.space'), MEMPOOL_ESPLORA);
+eq('a bare mempool.space host gains https and /api', normalizeEsploraUrl('mempool.space'), MEMPOOL_ESPLORA);
+eq('a pasted Blockstream root gains /api', normalizeEsploraUrl('https://blockstream.info'), BLOCKSTREAM_ESPLORA);
+eq('an explicit Esplora path is left alone', normalizeEsploraUrl('https://mempool.space/api/v1'), 'https://mempool.space/api/v1');
+eq('another host is left alone', normalizeEsploraUrl('http://127.0.0.1:3002'), 'http://127.0.0.1:3002');
+eq('unconfirmed spending is on by default', DEFAULT_SETTINGS.spendUnconfirmed, true);
 const liveDefault = new LiveBackend({ esploraUrl: effectiveEsploraUrl({}, 'mainnet') });
 eq('LiveBackend is built on Blockstream by default', liveDefault.esplora.base, BLOCKSTREAM_ESPLORA);
 const mainnetDefaults = new LiveBackend({
@@ -107,6 +115,38 @@ const backend3 = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
 backend3.indexer = { utxo: async () => { throw new Error('404'); } };
 backend3.ord = { output: async () => null };
 eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
+
+
+// --- mempool.space-compatible transport ----------------------------------
+{
+  let calls = 0;
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new TypeError('Failed to fetch');
+    return new Response('973911', { status: 200 });
+  };
+  const client = new EsploraClient(MEMPOOL_ESPLORA, { metered: true });
+  client.minIntervalMs = 0;
+  const tip = await (await client.req('/blocks/tip/height')).text();
+  eq('a public Esplora network failure is retried once', calls, 2);
+  eq('the retry returns the tip', tip, '973911');
+
+  calls = 0;
+  globalThis.fetch = async () => { calls += 1; return new Response('nope', { status: 503 }); };
+  const failing = new EsploraClient(MEMPOOL_ESPLORA, { metered: true });
+  failing.minIntervalMs = 0;
+  await assert.rejects(() => failing.req('/blocks/tip/height'), /esplora .*: 503 nope/);
+  eq('a 5xx is retried before it is reported', calls, 2);
+
+  let seen = null;
+  globalThis.fetch = async (url, opts) => { seen = opts; return new Response('txid', { status: 200 }); };
+  await new EsploraClient(MEMPOOL_ESPLORA).broadcast('00');
+  eq('broadcast sends raw text/plain like mempool.space expects', seen.headers['content-type'], 'text/plain');
+
+  globalThis.fetch = saved;
+  checks += 1;
+}
 
 globalThis.fetch = realFetch;
 console.log(`ord: ${checks} checks passed`);

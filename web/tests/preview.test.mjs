@@ -2,6 +2,7 @@
 // record an action, or touch the mempool. Approval broadcasts exactly once.
 import assert from 'node:assert/strict';
 import { vsize } from '../js/wallet/tx.js';
+import { isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
 
 const store = new Map();
 globalThis.localStorage = {
@@ -45,6 +46,7 @@ function counter(w) {
   ok(p.changeAmount > 0n, 'send preview has change');
   ok(p.fee > 0n, 'send preview has an actual fee');
   eq('send preview fee rate', p.feeRate, 3);
+  eq('a confirmed send is not flagged as unconfirmed', p.usesUnconfirmed, false);
   eq('send preview has no ledger action yet', w.actions.filter((a) => a.kind === 'send').length, 0);
   eq('send preview has no pending broadcast yet', w.pending.length, 0);
   eq('send preview is not on the demo chain', await w.backend.getTx(p.built.txid), null);
@@ -181,6 +183,48 @@ function counter(w) {
   eq('hop approval returns the preview txid', built.txid, p.built.txid);
   eq('hop approval records a crossing', w.actions.filter((a) => a.kind === 'cross')[0]?.dir, 1);
   eq('hop approval put the preview bytes on the chain', !!(await w.backend.getTx(p.built.txid)), true);
+}
+
+
+{
+  // Unconfirmed SEND funding: the user opt-in is default-on, lets a plain
+  // BIP84 mempool coin pay a fee even before ord/indexer know its ranges,
+  // but never changes the mint/prepare/cross funding pool.
+  const w = await wallet();
+  const raw = w.utxos.find((u) => u.kind === 'p2wpkh');
+  const coin = {
+    ...raw,
+    unconfirmed: true, exact: false, ranges: null, spendable: false,
+    status: { confirmed: false },
+  };
+  eq('default settings allow unconfirmed spending', DEFAULT_SETTINGS.spendUnconfirmed, true);
+  eq('a non-exact unconfirmed coin is not strict funding', isFundingUtxo(coin), false);
+  eq('the SEND opt-in accepts a non-exact unconfirmed coin', isFundingUtxo(coin, { allowUnconfirmed: true }), true);
+  eq('strict selection refuses it', (() => {
+    try { selectFunding([coin], 1000n); return 'selected'; } catch (e) { return /insufficient/.test(e.message) ? 'insufficient' : e.message; }
+  })(), 'insufficient');
+  eq('the opt-in selection takes it', selectFunding([coin], 1000n, [], { allowUnconfirmed: true }).length, 1);
+
+  w.utxos = [coin];
+  w.refresh = async () => w;
+  w.settings.spendUnconfirmed = true;
+  w._computeBalance();
+  eq('unconfirmed pending is counted', String(w.balance.pending), String(coin.value));
+  eq('unconfirmed funds are spendable by default', String(w.balance.spendable), String(coin.value));
+  const p = await w.previewSend(w.keys.receive(9).address, 25000, { feeRate: 2 });
+  eq('SEND uses the unconfirmed coin', p.built.inputs.length, 1);
+  eq('SEND flags its unconfirmed funding', p.usesUnconfirmed, true);
+  await w._revalidatePreview(p);
+  checks += 1;
+
+  w.settings.spendUnconfirmed = false;
+  w._computeBalance();
+  eq('opting out removes it from spendable', String(w.balance.spendable), '0');
+  await assert.rejects(
+    () => w.previewSend(w.keys.receive(10).address, 25000, { feeRate: 2 }),
+    /insufficient funds/,
+  );
+  checks += 1;
 }
 
 console.log(`preview: ${checks} checks passed`);

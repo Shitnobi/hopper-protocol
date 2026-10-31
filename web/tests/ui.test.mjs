@@ -124,6 +124,12 @@ ok(!hopSheet.includes('Death at target'), 'the v6 death table is gone');
 
 const settingsHtml = screens.settings({ w: live, settings: live.settings, scanArmed: false });
 ok(settingsHtml.includes('HOPPER v7') && settingsHtml.includes('WIRE 0x07'), 'the footer names v7');
+ok(settingsHtml.includes('data-input="spendUnconfirmed"'), 'settings offers the unconfirmed-spend control');
+ok(settingsHtml.includes('DOWNLOAD HISTORY TXT'), 'settings hosts the history download');
+ok(settingsHtml.includes('USE MEMPOOL.SPACE') && settingsHtml.includes('data-url="https://mempool.space/api"'),
+  'settings offers the mempool.space preset');
+ok(!settingsHtml.includes('data-action="copy-history-debug"'),
+  'the old history copy action is gone');
 
 // The rules are player-facing copy: keep the road's wording exact.
 const rulesText = screens.RULES.flatMap((page) => page.lines).join('\n');

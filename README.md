@@ -182,10 +182,11 @@ Older action rows without a stored sat recover it from the arrival; if they
 also lack the commit txid, it is read back once from input 0 of the reveal so
 the commit's change stays in the same mint group. Even with no sat anywhere,
 the reveal and commit txids form one cluster, so those rows cannot drift apart.
-History also has **COPY HISTORY DATA**: it copies the public txids, sats,
-heights and the grouping keys History used, with no seed or private material.
-Shortened txids and addresses in History are copy controls: tapping one
-copies the full value, with a `txid copied` or `address copied` confirmation.
+Settings → **HISTORY DATA** downloads a plain-text snapshot of the public
+txids, sats, heights and the grouping keys History used, with no seed or
+private material. Shortened txids and addresses in History are copy controls:
+tapping one copies the full value, with a `txid copied` or `address copied`
+confirmation.
 
 Observed receives are persisted in the local ledger, so an initial deposit
 does not disappear when its coin is later spent. On the first run after this
@@ -201,6 +202,22 @@ Transaction fee fields show mempool.space's
 sat/vB field; typing overrides it. The API is consulted once per window and
 cached for 60 seconds. Recommendations below the wallet's 1 sat/vB relay
 floor remain visible, but filling the field raises them to the floor.
+
+**Unconfirmed funds** are spendable by default. Settings → SPENDING →
+**Unconfirmed funds** lets a SEND use an unconfirmed payment or change (the
+transaction can only confirm after its parent). Turning it off waits for
+confirmation. Mint, TRAVEL TO ROAD and HOP always need range-known funding,
+so they normally wait for confirmation regardless.
+
+Both Blockstream and **mempool.space** speak the same Esplora API: Settings
+has one-tap **USE MEMPOOL.SPACE** / **USE BLOCKSTREAM** presets, and either
+URL can be typed directly — a bare host gains `/api`, and an explicit
+`/api` path is left alone. Public hosts get a small
+client-side queue and one retry because a 24-address gap walk fired at once
+triggers throttling. mempool.space caps `/address/:address/utxo` at 500
+outputs and is slower on busy addresses; a local node is faster. If the
+browser reports `Failed to fetch` while `curl` works, allowlist the host in
+NoScript (or the extension blocking cross-origin requests).
 
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad

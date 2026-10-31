@@ -103,21 +103,24 @@ function actualTypes(tx, types) {
 
 // --- coin selection -------------------------------------------------------
 
-export function isFundingUtxo(u) {
+export function isFundingUtxo(u, { allowUnconfirmed = false } = {}) {
   // Funding is BIP84 P2WPKH only. The frog address (P2TR) and every state
   // card are excluded here as well as in Wallet._funding(), so no ordinary
   // send, mint, TRAVEL TO ROAD or CROSS can ever select the anchor sat as a
   // fee input. There is deliberately no burn builder in this file.
-  return u.kind === 'p2wpkh'
-    && u.spendable !== false
-    && !(u.frogs && u.frogs.length)
-    && u.exact !== false;
+  if (u.kind !== 'p2wpkh' || (u.frogs && u.frogs.length)) return false;
+  if (u.spendable !== false && u.exact !== false
+      && (u.unconfirmed !== true || allowUnconfirmed)) return true;
+  // An unconfirmed plain coin has no sat ranges yet (ord/indexer do not
+  // index the mempool). The SEND opt-in lets it pay a fee when the user
+  // accepts that trade; mint/prepare/cross never pass this flag.
+  return allowUnconfirmed === true && u.unconfirmed === true;
 }
 
-export function selectFunding(utxos, target, exclude = []) {
+export function selectFunding(utxos, target, exclude = [], opts = {}) {
   const skip = new Set(exclude);
   const pool = utxos
-    .filter((u) => isFundingUtxo(u) && !skip.has(`${u.txid}:${u.vout}`))
+    .filter((u) => isFundingUtxo(u, opts) && !skip.has(`${u.txid}:${u.vout}`))
     .sort((a, b) => b.value - a.value);
   const picked = [];
   let total = 0n;
@@ -525,6 +528,7 @@ export function buildTransfer({
 
 export function buildSend({
   keys, utxos, recipientScript, amount, feeRate = 2, changeIndex = 0,
+  allowUnconfirmed = false,
 }) {
   if (!Number.isSafeInteger(Number(amount)) || Number(amount) < 546) {
     throw new Error('send amount must be at least 546 sats');
@@ -532,7 +536,7 @@ export function buildSend({
   const change = keys.change(changeIndex);
   const rate = Math.max(FEE_FLOOR, feeRate);
   const target = BigInt(amount) + 2000n;
-  const picked = selectFunding(utxos, target);
+  const picked = selectFunding(utxos, target, [], { allowUnconfirmed });
   const totalIn = picked.reduce((a, u) => a + BigInt(u.value), 0n);
   if (totalIn < BigInt(amount)) throw new Error('insufficient funds');
 

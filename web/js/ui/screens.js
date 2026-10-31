@@ -407,7 +407,6 @@ export function history(app) {
   return `
     ${heading('📜 History')}
     <div class="sub">Every wallet transaction — sends, receives, change, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
-    <div class="actions mt10">${logBtn('COPY HISTORY DATA', 'copy-history-debug', { edge: 'dim', cls: 'small' })}</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => txRow(app, r)).join('') : '<div class="sub">No transactions yet — they appear here as you use the wallet.</div>'}
     </div>`;
@@ -812,12 +811,21 @@ function historyRows(w) {
   });
 }
 
+/** The kind labels actually painted by the last History render. */
+export function historyDomOrder() {
+  if (typeof document === 'undefined') return [];
+  return [...document.querySelectorAll('#app .card-row .tx-top .kind')]
+    .map((el) => String(el.textContent || '').trim());
+}
+
 /**
- * A copyable snapshot of the history inputs and the keys History actually
- * grouped by. No seed, mnemonic, or private material is included: only the
- * public transaction/address metadata needed to explain a bad ordering.
+ * A downloadable snapshot of the history inputs and the keys History
+ * actually grouped by. No seed, mnemonic, or private material is included:
+ * only the public transaction/address metadata needed to explain a bad
+ * ordering. `domOrder` carries the last painted History order when the
+ * download is started from Settings.
  */
-export function historyDebug(w) {
+export function historyDebug(w, domOrder = null) {
   const txid = (v) => {
     const tx = String(v || '').toLowerCase();
     return /^[0-9a-f]{64}$/.test(tx) ? tx : null;
@@ -892,10 +900,7 @@ export function historyDebug(w) {
   // `dom` is the order actually painted in the app. If they differ, the
   // ledger is right and the History screen is a stale paint.
   const computed = kindOrder(history({ w }));
-  const dom = typeof document !== 'undefined'
-    ? [...document.querySelectorAll('#app .card-row .tx-top .kind')]
-      .map((el) => String(el.textContent || '').trim())
-    : [];
+  const dom = Array.isArray(domOrder) ? domOrder : historyDomOrder();
   return JSON.stringify({
     build: globalThis.HOPPER_BUILD || 'development',
     href: typeof location !== 'undefined' ? location.href : '',
@@ -1390,12 +1395,29 @@ export function settings(app) {
           <option value="0" ${!s.deepScan ? 'selected' : ''}>Off</option>
         </select>
       </div>
+      <div class="actions mt6">
+        ${logBtn('USE MEMPOOL.SPACE', 'esplora-preset', { edge: 'dim', cls: 'small', attrs: 'data-url="https://mempool.space/api"' })}
+        ${logBtn('USE BLOCKSTREAM', 'esplora-preset', { edge: 'dim', cls: 'small', attrs: 'data-url="https://blockstream.info/api"' })}
+      </div>
       <div class="actions mt14">
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet.</div>
+      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet. Both public hosts speak Esplora; mempool.space can be slower on busy addresses and is subject to browser-extension blocking (allowlist it in NoScript).</div>
       <div class="hint">An empty Indexer means no HOPPER indexer. A mint paid to this wallet's ordinals address is recovered from its reveal witness; a frog transferred in later, the road and the leaderboard still need an indexer. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
+    </div>
+
+    <div class="window" data-lily="accent">
+      <div style="font-weight:700">SPENDING</div>
+      <div class="sub">What a SEND may use while it is still in the mempool.</div>
+      <div class="settings-grid mt10">
+        <label>Unconfirmed funds</label>
+        <select data-input="spendUnconfirmed">
+          <option value="1" ${s.spendUnconfirmed !== false ? 'selected' : ''}>Spend (default)</option>
+          <option value="0" ${s.spendUnconfirmed === false ? 'selected' : ''}>Wait for confirmation</option>
+        </select>
+      </div>
+      <div class="hint">On: an unconfirmed payment or change may fund a SEND, so you can chain spends. Mint, TRAVEL TO ROAD and HOP still require known sat ranges, which in practice means confirmed funding. Off: only confirmed coins fund anything.</div>
     </div>
 
     <div class="window" data-lily="home">
@@ -1428,6 +1450,13 @@ export function settings(app) {
       <div style="font-weight:700">EMERGENCY DESCRIPTORS</div>
       <div class="sub">A live snapshot for every staged Hopper: raw leaves, control blocks, output key and owner path. The automatic packs above keep the stored copy current. It never contains the seed.</div>
       <div class="actions mt10">${logBtn('EXPORT EMERGENCY DESCRIPTORS', 'export-emergency', { edge: 'dim', cls: 'small' })}</div>
+    </div>
+
+    <div class="window" data-lily="dim">
+      <div style="font-weight:700">HISTORY DATA</div>
+      <div class="sub">Download a plain-text snapshot of this wallet's public ledger: txids, sats, heights and the keys History grouped by.</div>
+      <div class="actions mt10">${logBtn('DOWNLOAD HISTORY TXT', 'download-history-debug', { edge: 'dim', cls: 'small' })}</div>
+      <div class="hint">Never includes the seed, mnemonic or private keys. Useful when a History row groups incorrectly on a device we cannot inspect directly.</div>
     </div>
 
     <div class="window" data-lily="accent">
@@ -1783,6 +1812,7 @@ export function txPreviewSheet(app, p) {
         ? `<dd class="tiny wrap">${esc(p.changeAddress)}</dd>`
         : '<dd>none — this transaction has one output</dd>'}
       <dt>Change amount</dt><dd>${sats(p.changeAddress ? p.changeAmount : 0n)} sats</dd>
+      ${p.usesUnconfirmed ? '<dt>Funding</dt><dd>includes unconfirmed mempool sats</dd>' : ''}
       <dt>Fee rate</dt><dd>${esc(feeRate)}</dd>
       <dt>Actual fee</dt><dd>${sats(p.fee)} sats</dd>
       <dt>Transaction size</dt><dd>${sats(p.built.vsize || 0)} vB</dd>`;
@@ -1801,7 +1831,7 @@ export function txPreviewSheet(app, p) {
     </div>
     <div class="warnbox mt10">${warning}</div>
     <div class="hint">Actual fee is what these signed transactions pay, not an estimate. Effective rate:
-      ${esc(feeRateLabel(p.effectiveFeeRate))}.${mint ? ' The reveal cannot confirm before its commit.' : ''}</div>
+      ${esc(feeRateLabel(p.effectiveFeeRate))}.${mint ? ' The reveal cannot confirm before its commit.' : ''}${p.usesUnconfirmed ? ' Some funding is unconfirmed, so this transaction can only confirm after its parent.' : ''}</div>
     <div class="actions mt14">
       ${logBtn('CANCEL', 'abort-preview', { edge: 'dim', cls: 'small' })}
       ${logBtn('APPROVE & BROADCAST', 'do-approve-tx', { edge: 'accent' })}

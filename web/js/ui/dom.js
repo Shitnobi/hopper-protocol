@@ -179,6 +179,27 @@ export async function copyText(text, label = 'copied') {
   }
 }
 
+/** Save text as a downloaded file. Used for public diagnostics, never keys. */
+export function downloadText(text, filename, label = 'download ready') {
+  const blob = new Blob([String(text ?? '')], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = String(filename || 'hopper.txt');
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  try {
+    a.click();
+    toast(label, 'ok');
+  } finally {
+    a.remove();
+    // Give the browser time to claim the blob before revoking it.
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  return filename;
+}
+
 export function hexSeed(text) {
   const s = String(text || '').trim().toLowerCase();
   if (!s) return (crypto.getRandomValues(new Uint32Array(1))[0]) >>> 0;

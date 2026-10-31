@@ -25,18 +25,79 @@ async function timedFetch(url, opts = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 
 // --- Esplora --------------------------------------------------------------
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function retryableNetworkError(err) {
+  const name = String(err?.name || '');
+  const message = String(err?.message || err || '');
+  if (name === 'AbortError' || /timed out/i.test(message)) return false;
+  return name === 'TypeError' || /failed to fetch|network|socket|econn|fetch failed/i.test(message);
+}
+
 export class EsploraClient {
-  constructor(baseUrl) {
+  /**
+   * `metered` turns on a small client-side request queue and one retry.
+   * Public Esplora hosts (Blockstream, mempool.space) collapse under a
+   * 24-address gap walk fired eight-at-a-time; a browser then reports
+   * `Failed to fetch` or times out. A local node stays unthrottled.
+   */
+  constructor(baseUrl, { metered = false } = {}) {
     this.base = baseUrl.replace(/\/+$/, '');
+    this.metered = !!metered;
+    this.minIntervalMs = this.metered ? 300 : 0;
+    this.retries = this.metered ? 1 : 0;
+    this._last = 0;
+    this._queue = Promise.resolve();
   }
 
   async req(path, opts = {}) {
-    const res = await timedFetch(this.base + path, {
-      ...opts,
-      headers: { 'content-type': 'text/plain', ...(opts.headers || {}) },
-    });
-    if (!res.ok) throw new Error(`esplora ${path}: ${res.status}`);
-    return res;
+    if (!this.metered) return this._req(path, opts, false);
+    const run = this._queue.then(() => this._req(path, opts, true));
+    // Keep the queue alive after a failed request; the caller still gets
+    // the rejection because it holds `run`, not the swallowed tail.
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _req(path, opts, paced) {
+    let attempt = 0;
+    for (;;) {
+      if (paced) {
+        const wait = this.minIntervalMs - (Date.now() - this._last);
+        if (wait > 0) await sleep(wait);
+      }
+      try {
+        const res = await timedFetch(this.base + path, {
+          ...opts,
+          headers: { 'content-type': 'text/plain', ...(opts.headers || {}) },
+        });
+        this._last = Date.now();
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          const err = new Error(`esplora ${path}: ${res.status}${body ? ` ${body.slice(0, 200)}` : ''}`);
+          err.status = res.status;
+          if (paced && attempt < this.retries
+              && (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504)) {
+            attempt += 1;
+            await sleep(500 * attempt);
+            continue;
+          }
+          throw err;
+        }
+        return res;
+      } catch (err) {
+        this._last = Date.now();
+        if (paced && attempt < this.retries && retryableNetworkError(err)) {
+          attempt += 1;
+          await sleep(600 * attempt);
+          continue;
+        }
+        if (retryableNetworkError(err)) {
+          throw new Error(`cannot reach ${this.base}${path}: the browser blocked the request (extension/NoScript?) or the host is offline`);
+        }
+        throw err;
+      }
+    }
   }
 
   async tipHeight() {
@@ -115,7 +176,14 @@ export class EsploraClient {
   }
 
   async broadcast(hex) {
-    const res = await timedFetch(`${this.base}/tx`, { method: 'POST', body: hex }, 30000);
+    const res = await timedFetch(`${this.base}/tx`, {
+      method: 'POST',
+      body: hex,
+      // mempool.space (and Esplora generally) read the raw hex body;
+      // text/plain is also a CORS-safelisted content type, so this stays a
+      // simple request with no preflight.
+      headers: { 'content-type': 'text/plain' },
+    }, 30000);
     const text = (await res.text()).trim();
     if (!res.ok) throw new Error(`broadcast rejected: ${text}`);
     return text;
@@ -339,6 +407,8 @@ export class IndexerClient {
 // --- public defaults -----------------------------------------------------
 
 export const BLOCKSTREAM_ESPLORA = 'https://blockstream.info/api';
+/** mempool.space speaks the same Esplora HTTP API as Blockstream. */
+export const MEMPOOL_ESPLORA = 'https://mempool.space/api';
 export const ORDINALS_COM = 'https://ordinals.com';
 
 /**
@@ -349,11 +419,34 @@ export const ORDINALS_COM = 'https://ordinals.com';
  * Regtest/testnet/signet have no public default.
  */
 export function effectiveEsploraUrl(settings = {}, network = 'mainnet') {
-  const explicit = String(settings.esploraUrl || '').trim();
+  const explicit = normalizeEsploraUrl(settings.esploraUrl);
   if (explicit) return explicit;
   if (network !== 'mainnet') return '';
   if (String(settings.electrumUrl || '').trim()) return '';
   return BLOCKSTREAM_ESPLORA;
+}
+
+/**
+ * Accept the host root people naturally paste. Both public providers serve
+ * their Esplora API under /api; `https://mempool.space` alone would 404 on
+ * every /blocks or /address path. Explicit paths are never rewritten.
+ */
+export function normalizeEsploraUrl(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return '';
+  if (!/^https?:\/\//i.test(text)) text = `https://${text}`;
+  try {
+    const url = new URL(text);
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    if ((host === 'mempool.space' || host === 'blockstream.info')
+        && (url.pathname === '/' || url.pathname === '')) {
+      url.pathname = '/api';
+      return url.toString().replace(/\/$/, '');
+    }
+  } catch {
+    // A malformed URL is returned as typed; the connection error names it.
+  }
+  return String(raw || '').trim();
 }
 
 // --- ord sat ranges ------------------------------------------------------
@@ -479,9 +572,11 @@ export class DemoBackend {
 }
 
 export class LiveBackend {
-  constructor({ esploraUrl = '', indexerUrl = '', electrumUrl = '', ordUrl = '' } = {}) {
+  constructor({ esploraUrl = '', indexerUrl = '', electrumUrl = '', ordUrl = '', esploraMetered = false } = {}) {
     this.kind = 'live';
-    this.esplora = esploraUrl ? new EsploraClient(esploraUrl) : null;
+    this.esplora = esploraUrl
+      ? new EsploraClient(normalizeEsploraUrl(esploraUrl), { metered: esploraMetered })
+      : null;
     this.electrum = electrumUrl ? new ElectrumClient(electrumUrl) : null;
     this.indexer = indexerUrl ? new IndexerClient(indexerUrl) : null;
     this.ord = ordUrl ? new OrdClient(ordUrl) : null;

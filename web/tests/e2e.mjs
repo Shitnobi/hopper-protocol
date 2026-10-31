@@ -779,30 +779,53 @@ const addressToast = await evaluate('document.querySelector("#toasts")?.innerTex
 if (!/address copied/.test(addressToast)) errors.push('history copy: no address confirmation');
 console.log('history copy:', JSON.stringify({ txid: copyTargets.txidShown, address: copyTargets.addressShown }));
 
-// The diagnostic copies the public grouping inputs, never the seed. It is
-// the evidence needed when a mint still refuses to keep its three rows
-// together on a device we cannot inspect directly.
-const hasDebug = await evaluate(`!!document.querySelector('[data-action=copy-history-debug]')`);
-if (!hasDebug) errors.push('history debug: button missing');
-await evaluate(`document.querySelector('[data-action=copy-history-debug]').click()`);
-await sleep(260);
-const debugText = await evaluate('navigator.clipboard.readText()');
+// The diagnostic is downloaded as a .txt from Settings, never copied. It
+// contains the public grouping inputs, never the seed.
+if (historyText.includes('COPY HISTORY DATA')) errors.push('history: old copy button is still on the page');
+await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await sleep(300);
+const settingsText = await evaluate('document.querySelector("#app")?.innerText || ""');
+if (!/DOWNLOAD HISTORY TXT/.test(settingsText)) errors.push('settings: history download button missing');
+await evaluate(`(() => {
+  window.__download = { name: null, text: null };
+  const origCreate = URL.createObjectURL;
+  URL.createObjectURL = (blob) => {
+    blob.text().then((t) => { window.__download.text = t; });
+    return origCreate.call(URL, blob);
+  };
+  const origClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download) { window.__download.name = this.download; return; }
+    return origClick.call(this);
+  };
+  return true;
+})()`);
+await evaluate(`document.querySelector('[data-action=download-history-debug]').click()`);
+for (let i = 0; i < 30; i++) {
+  if (await evaluate('Boolean(window.__download && window.__download.text)')) break;
+  await sleep(100);
+}
+const download = await evaluate('window.__download');
+if (!download?.name || !/^hopper-history-.*\.txt$/.test(download.name)) {
+  errors.push(`history download: wrong filename ${JSON.stringify(download?.name)}`);
+}
+const debugText = String(download?.text || '');
 let debugData = null;
 try { debugData = JSON.parse(debugText); } catch (_) { /* reported below */ }
-if (!debugData) errors.push('history debug: clipboard is not JSON');
+if (!debugData) errors.push('history download: file is not JSON');
 else {
-  if (!debugData.build) errors.push('history debug: no build');
-  if (!Array.isArray(debugData.rows) || !debugData.rows.length) errors.push('history debug: no grouped rows');
-  if (!debugData.rows?.every((r) => typeof r.mintKey === 'string')) errors.push('history debug: row without group key');
-  if (/seed|mnemonic|private/i.test(debugText)) errors.push('history debug: contains private material');
+  if (!debugData.build) errors.push('history download: no build');
+  if (!Array.isArray(debugData.rows) || !debugData.rows.length) errors.push('history download: no grouped rows');
+  if (!debugData.rows?.every((r) => typeof r.mintKey === 'string')) errors.push('history download: row without group key');
+  if (/seed|mnemonic|private/i.test(debugText)) errors.push('history download: contains private material');
   if (debugData.computed?.slice(0, 3).join('|') !== 'HOPPER ARRIVED|CHANGE|MINT') {
-    errors.push(`history debug: computed ${debugData.computed?.slice(0, 3).join(' > ')}`);
+    errors.push(`history download: computed ${debugData.computed?.slice(0, 3).join(' > ')}`);
   }
   if (debugData.dom?.slice(0, 3).join('|') !== 'HOPPER ARRIVED|CHANGE|MINT') {
-    errors.push(`history debug: painted ${debugData.dom?.slice(0, 3).join(' > ')}`);
+    errors.push(`history download: painted ${debugData.dom?.slice(0, 3).join(' > ')}`);
   }
-  console.log('history debug:', JSON.stringify({
-    build: debugData.build, rows: debugData.rows.length,
+  console.log('history download:', JSON.stringify({
+    filename: download.name, build: debugData.build, rows: debugData.rows.length,
     painted: debugData.dom?.slice(0, 3),
   }));
 }

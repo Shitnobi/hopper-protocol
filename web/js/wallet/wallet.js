@@ -181,6 +181,7 @@ export const DEFAULT_SETTINGS = {
   mute: false,
   volume: 0.55,
   deepScan: false,
+  spendUnconfirmed: true,
   gap: GAP_LIMIT,
   gapExtra: 0,
   addressBook: [],
@@ -210,6 +211,9 @@ export function loadSettings() {
   s.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.55;
   s.mute = s.mute === true;
   s.deepScan = s.deepScan === true;
+  // Default-on for new and upgraded wallets. Only an explicit off value
+  // disables the mempool spend path.
+  s.spendUnconfirmed = s.spendUnconfirmed !== false && s.spendUnconfirmed !== '0';
   s.addressBook = Array.isArray(s.addressBook) ? s.addressBook : [];
   return s;
 }
@@ -446,6 +450,7 @@ export class WalletSession {
         indexerUrl: this.settings.indexerUrl,
         electrumUrl: this.settings.electrumUrl,
         ordUrl: effectiveOrdUrl(this.settings, this.network),
+        esploraMetered: isPublicEndpoint(esploraUrl),
       });
     }
     const effective = {
@@ -1827,12 +1832,22 @@ export class WalletSession {
     let cards = 0n;
     let unspendable = 0n;
     let pending = 0n;
+    const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
     for (const u of this.utxos) {
-      total += BigInt(u.value);
-      if (u.unconfirmed) pending += BigInt(u.value);
-      if (!u.exact || !u.ranges) unspendable += BigInt(u.value);
-      else if (u.kind === 'p2wpkh' && !u.frogs.length) spendable += BigInt(u.value);
-      else cards += BigInt(u.value);
+      const value = BigInt(u.value);
+      const plain = u.kind === 'p2wpkh' && !(u.frogs && u.frogs.length);
+      total += value;
+      if (u.unconfirmed) pending += value;
+      // Exact ranges keep a coin safe from sweeping an ordinal into a fee.
+      // An unconfirmed plain coin can still fund a SEND when the opt-in is
+      // on: its only unknown is where the sats came from, never a known
+      // Hopper/card output. Mint/travel/hop use the stricter _funding().
+      const pendingSend = spendUnconfirmed && u.unconfirmed === true && plain;
+      if (plain && (u.spendable !== false && u.exact && u.ranges)
+          && (!u.unconfirmed || spendUnconfirmed)) spendable += value;
+      else if (pendingSend) spendable += value;
+      else if (u.exact && u.ranges && !plain) cards += value;
+      else unspendable += value;
     }
     this.balance = { total, spendable, cards, unspendable, pending };
   }
@@ -2063,7 +2078,27 @@ export class WalletSession {
 
   _funding() {
     // Funding inputs are BIP84 P2WPKH, never the frog address or a card.
-    return this.utxos.filter((u) => u.kind === 'p2wpkh' && u.exact && !u.frogs.length);
+    // A confirmed coin needs exact sat ranges. An unconfirmed exact coin is
+    // usable only when the user allows mempool funds; this same pool feeds
+    // mint/travel/hop, so the opt-out is global.
+    const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
+    return this.utxos.filter((u) => u.kind === 'p2wpkh' && u.exact
+      && !(u.frogs && u.frogs.length) && (!u.unconfirmed || spendUnconfirmed));
+  }
+
+  /** SEND funding additionally accepts unconfirmed plain coins whose sat
+   *  ranges are not known yet. Mint/travel/hop keep the stricter pool above
+   *  because the anchor sat depends on input order and exact ranges. */
+  _sendFunding() {
+    const base = this._funding();
+    if (this.settings.spendUnconfirmed === false) return base;
+    const seen = new Set(base.map((u) => `${u.txid}:${u.vout}`));
+    const extra = this.utxos.filter((u) => {
+      if (u.kind !== 'p2wpkh' || !u.unconfirmed || (u.frogs && u.frogs.length)) return false;
+      if (u.exact) return false;
+      return !seen.has(`${u.txid}:${u.vout}`);
+    });
+    return [...base, ...extra];
   }
 
   _frogUtxo(frog) {
@@ -2274,11 +2309,15 @@ export class WalletSession {
     const recipient = decodeAddress(address, this.network);
     const rate = rateOr(feeRate ?? this.settings.feeRate);
     const change = this.keys.change(0);
+    const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
     const built = buildSend({
-      keys: this.keys, utxos: this._funding(), recipientScript: recipient.script,
-      amount: BigInt(amountSats), feeRate: rate,
+      keys: this.keys, utxos: this._sendFunding(), recipientScript: recipient.script,
+      amount: BigInt(amountSats), feeRate: rate, allowUnconfirmed: spendUnconfirmed,
     });
     const changeOut = built.changeIndex == null ? null : built.tx.outputs[built.changeIndex];
+    const unconfirmedOutpoints = new Set(this.utxos
+      .filter((u) => u.unconfirmed)
+      .map((u) => `${u.txid}:${u.vout}`));
     return {
       kind: 'send',
       built,
@@ -2292,6 +2331,7 @@ export class WalletSession {
       destinationAmount: built.tx.outputs[0].value,
       changeAddress: changeOut ? change.address : null,
       changeAmount: changeOut ? changeOut.value : 0n,
+      usesUnconfirmed: built.inputs.some((i) => unconfirmedOutpoints.has(`${i.txid}:${i.vout}`)),
     };
   }
 
@@ -2346,10 +2386,17 @@ export class WalletSession {
       if (live.script && inputScript && !equalBytes(live.script, inputScript)) {
         throw new Error('preview expired: an input script changed; cancel and preview again');
       }
-      if ((preview.kind === 'send' || preview.kind === 'mint')
-          && (live.kind !== 'p2wpkh' || live.exact === false || live.spendable === false
-            || (live.frogs && live.frogs.length))) {
-        throw new Error('preview expired: a funding coin now carries a Hopper; cancel and preview again');
+      if (preview.kind === 'send' || preview.kind === 'mint') {
+        const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
+        const confirmedOk = live.exact !== false && live.spendable !== false
+          && (!live.unconfirmed || spendUnconfirmed);
+        const pendingOk = spendUnconfirmed && live.unconfirmed === true;
+        const fundingOk = live.kind === 'p2wpkh'
+          && !(live.frogs && live.frogs.length)
+          && (confirmedOk || pendingOk);
+        if (!fundingOk) {
+          throw new Error('preview expired: a funding coin now carries a Hopper; cancel and preview again');
+        }
       }
     }
     if (preview.kind === 'mint') {

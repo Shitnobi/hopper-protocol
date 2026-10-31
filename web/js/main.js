@@ -1,7 +1,7 @@
 // HOPPER PWA — boot, vault, routing, and event handling.
 
 import {
-  busy, closeOverlay, copyText, esc, openOverlay, seedText,
+  busy, closeOverlay, copyText, downloadText, esc, openOverlay, seedText,
   shortHash, sats, spriteUri, toast,
 } from './ui/dom.js';
 import * as screens from './ui/screens.js';
@@ -37,6 +37,7 @@ const app = {
   lockError: '',
   frogLogo: spriteUri(0x9058d0fa, 'idle'),
   previewUri: '',
+  historyDom: [],
   screen: 'boot',
   menuOpen: false,
   intro: false,
@@ -201,6 +202,11 @@ function render() {
   mountVolume();
   updateMintPreview();
   if (app.rulesWalk) startRulesLoop();
+  // Keep the painted History order for the Settings download. The button
+  // lives in Settings now, after History has been replaced in the DOM.
+  if (!app.rulesWalk && app.w && app.view === 'history') {
+    app.historyDom = screens.historyDomOrder();
+  }
 }
 
 function setBusy(on, text = 'working…') {
@@ -1013,13 +1019,19 @@ const handlers = {
   },
   'close-overlay'() { dismissOverlay(); },
   copy(el) { copyText(el.dataset.text || '', el.dataset.copyLabel || 'copied'); },
-  'copy-history-debug'() {
-    // Capture the painted order first, then force History to show the same
-    // ledger that was copied. A background repair must never leave stale
-    // cards above the corrected rows.
-    const data = screens.historyDebug(app.w);
-    render();
-    copyText(data, 'history data copied');
+  'download-history-debug'() {
+    // The last History paint is saved in app.historyDom; Settings is on
+    // screen now, so reading #app would return no History rows.
+    const data = screens.historyDebug(app.w, app.historyDom || []);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadText(data, `hopper-history-${stamp}.txt`, 'history data downloaded');
+  },
+  'esplora-preset'(el) {
+    const input = document.querySelector('[data-input=esploraUrl]');
+    if (!input) return;
+    input.value = el.dataset.url || '';
+    input.focus();
+    toast('Endpoint filled — press APPLY to connect', 'ok');
   },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
@@ -1221,7 +1233,15 @@ const handlers = {
   'test-backend'() {
     run('testing the chain', async () => {
       const h = await app.w.backend.tipHeight();
-      toast(`Chain answered: height ${sats(h)}`, 'ok');
+      let probe = '';
+      try {
+        const key = app.w.keys.receive(0);
+        const list = await app.w.backend.addressUtxos(key.address, key.script);
+        probe = ` · address endpoint answered (${list.length} UTXO${list.length === 1 ? '' : 's'})`;
+      } catch (e) {
+        throw new Error(`height ${sats(h)} answered, but the address endpoint failed: ${e.message || String(e)}`);
+      }
+      toast(`Chain answered: height ${sats(h)}${probe}`, 'ok');
     });
   },
   'add-address'() {
@@ -1367,6 +1387,11 @@ document.addEventListener('change', (ev) => {
   if (key === 'deepScan') {
     app.w.settings.deepScan = value === '1';
     saveSettings(app.w.settings);
+  } else if (key === 'spendUnconfirmed') {
+    app.w.settings.spendUnconfirmed = value !== '0';
+    saveSettings(app.w.settings);
+    app.w._computeBalance();
+    render();
   } else if (key === 'mute') {
     app.w.settings.mute = value === '1';
     app.settings.mute = app.w.settings.mute;
