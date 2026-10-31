@@ -215,3 +215,7 @@ State-address replay is deliberately a cold/manual-pass operation, not part of e
 ### Addendum — `hopper-v7-3-11`
 
 The initial `v7-3-10` replay ran only on a cold or manual pass. After a HOP confirmed, the restored record could stay `crossing` until REFRESH because the automatic tick had no reason to walk the history again. `v7-3-11` replays once per new tip while a local Hopper is `crossing`/`in_flight` (or a local HOP action is within 144 blocks). The confirmed `dist`/death then appears without manual intervention; the unchanged-tip path still costs no extra request. Cache/build are `hopper-v7-3-11`.
+
+- Commit `aa4b6b7` — “Refresh an in-flight Hopper when the tip advances”.
+- GitHub Pages run `41209845032` completed successfully.
+- Live check: build `hopper-v7-3-11`, service-worker controlled, only cache `hopper-v7-3-11`, no console errors.
