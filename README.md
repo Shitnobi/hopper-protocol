@@ -168,7 +168,13 @@ than painted twice: a local TRAVEL TO ROAD and the indexer's `transfer` for
 that tx are one row, and a local HOP and the indexer's `cross` are one row.
 A local HOP row names its direction (`HOP LEFT`, `HOP STRAIGHT`,
 `HOP RIGHT`) and the spent leaf (`dir 0/1/2`), so a hop is legible even when
-no indexer is configured. Each `CHANGE` says which spend produced it
+no indexer is configured. On a cold or manual pass the wallet also replays
+the derived state address's transaction history: every TRAVEL and HOP spends
+or creates an output at that one script, and the crossing body in input 0
+names the direction. A crossing made on another device is therefore rebuilt
+from the chain, not only from this browser's local actions. A still-mempool
+HOP is shown as in flight and keeps the pond from offering a conflicting
+second HOP. Each `CHANGE` says which spend produced it
 (`change from mint`, `change from travel to road`, `change from hop right`).
 History is newest first, so the journey for one Hopper reads bottom-up as
 `RECEIVE` → `MINT` → `HOPPER ARRIVED` → `TRAVEL TO ROAD` → `HOP RIGHT` →
@@ -186,8 +192,11 @@ timeline. That is how an initial deposit and a Hopper arrival appear
 alongside the mint; the indexer's global mint feed is filtered so unrelated
 NPC mints are not shown. A MINT row is also reconstructed from the owned mint
 output when the local action ledger is absent, so restoring the same seed on
-another browser shows the same mint. Internal change is a separate `CHANGE`
-row, never a fake incoming `RECEIVE`.
+another browser shows the same mint. The same cold/manual state-address
+replay fills in TRAVEL, HOP and settlement rows that happened elsewhere, so
+Bio is owned by the Hopper's chain career rather than by one browser's
+ledger. Internal change is a separate `CHANGE` row, never a fake incoming
+`RECEIVE`.
 
 A mint's change usually comes from its commit transaction, while HOPPER
 ARRIVED comes from the reveal. Because History is newest first, the mixed
@@ -461,10 +470,13 @@ curl -sN localhost:9770/v1/events/stream
   reveal, derives the state script from `(sat, mint outpoint, owner)`, and
   watches that address. A new device with the same words and a chain source
   can therefore recover a PREPAREd/staged Hopper with no indexer and no ord
-  server. The ord address is queried before the HD gap plan, so a throttled
-  gap address cannot hide a mint. A frog that was transferred in later has
-  no new inscription body on its output; that discovery still needs a
-  HOPPER indexer (or ord ranges plus one).
+  server. A cold/manual pass also replays that state address's history, so
+  TRAVEL, each HOP's direction and each settlement are rebuilt from chain
+  transactions without an indexer; a mempool HOP is reported as in flight.
+  The ord address is queried before the HD gap plan, so a throttled gap
+  address cannot hide a mint. A frog that was transferred in later has no
+  new inscription body on its output; that discovery still needs a HOPPER
+  indexer (or ord ranges plus one).
 - **Demo vs live**: new wallets start in **live** mode; `DemoBackend`
   implements the same interface as `EsploraClient`/`ElectrumClient` +
   `IndexerClient` and is opt-in from Settings. Apply URLs in Settings.
@@ -501,8 +513,9 @@ node tests/game.test.mjs        # mint → prepare → hop → settlement → tr
 node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
-node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 131 checks: deposits, copy targets, causal journey, change labels
+node tests/localmint.test.mjs   # 40 mint-recognition and commit-checks from the reveal witness without an indexer
+node tests/chainfrog.test.mjs   # 37 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP
+node tests/history.test.mjs     # 134 checks: deposits, copy targets, causal journey, mempool HOP order, change labels
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

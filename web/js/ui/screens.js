@@ -568,7 +568,8 @@ function historyRows(w) {
       at: a.at,
       chain: false,
       outcome: null,
-      pending: isPending,
+      mempool: a.mempool === true,
+      pending: isPending || a.mempool === true,
       fee: a.fee,
       bumps: Number(a.bumps || 0),
       bumpable: canBumpSend(a, isPending),
@@ -1498,9 +1499,24 @@ function frogEvents(w, sat) {
       const dir = hopDirName(a.dir);
       if (key) add(key, {
         type: 'cross', label: dir ? `HOPPED ${dir}` : 'HOPPED ONTO THE ROAD',
-        detail: a.height != null ? `block ${a.height} · on the road` : 'local crossing',
+        detail: a.height != null ? `block ${a.height} · on the road`
+          : (a.mempool ? 'in mempool · on the road' : 'local crossing'),
         color: C.accent, height: a.height, dir,
       });
+    } else if (kind === 'settle') {
+      const dead = String(a.outcome || '').toLowerCase() === 'dead';
+      const dir = hopDirName(a.dir);
+      const key = `settle:${a.height ?? '?'}:${Number(sat)}`;
+      add(key, dead
+        ? {
+          type: 'died', label: 'DIED', height: a.height, dir,
+          detail: `block ${a.height}${dir ? ` · ${dir}` : ''} — roadkill is forever`,
+          color: '#d98a80',
+        }
+        : {
+          type: 'crossed', label: 'CROSSED THE ROAD', height: a.height, dir,
+          detail: `block ${a.height}${dir ? ` · ${dir}` : ''}`, color: C.home,
+        });
     } else if (kind === 'transfer') {
       const key = txKey('transfer', a.txid);
       if (key) add(key, {
@@ -1511,7 +1527,10 @@ function frogEvents(w, sat) {
     }
   }
   const rank = { born: 0, prepare: 1, cross: 2, transferred: 3, crossed: 4, died: 4 };
-  return out.sort((a, b) => (a.height ?? 0) - (b.height ?? 0)
+  // A mempool/local event has no height yet. It is the newest event, not a
+  // block-zero event: never let it jump above the mint.
+  const when = (e) => (e.height == null ? Infinity : Number(e.height));
+  return out.sort((a, b) => when(a) - when(b)
     || (rank[a.type] ?? 9) - (rank[b.type] ?? 9));
 }
 

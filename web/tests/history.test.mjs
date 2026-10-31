@@ -500,6 +500,22 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     .map((m) => m[1]);
   eq('bio finishes the journey with the road result',
     settledLabels, ['MINTED', 'TRAVELED TO THE ROAD', 'HOPPED RIGHT', 'CROSSED THE ROAD']);
+
+  // A restored/off-device browser can know the next HOP only from the state
+  // address and the mempool. It must render as the newest event, not as a
+  // block-zero event above the mint.
+  w.actions.unshift({
+    kind: 'cross', sat: frog.sat, txid: 'ab'.repeat(32), dir: 2,
+    height: null, mempool: true, at: new Date().toISOString(),
+  });
+  const pendingKinds = [...history({ w }).matchAll(/class="kind">([^<]+)/g)].map((m) => m[1]);
+  ok(pendingKinds.includes('HOP RIGHT'), 'a mempool HOP appears in History');
+  ok(/IN MEMPOOL/.test(plain(history({ w }))), 'the mempool HOP is labelled IN MEMPOOL');
+  const pendingLife = [...bio({ w, frogRecord: w.frogBySat(frog.sat) }, frog.sat)
+    .matchAll(/class="timeline-label"[^>]*>([^<]+)/g)].map((m) => m[1]);
+  eq('a mempool HOP is the newest Bio event',
+    pendingLife, ['MINTED', 'TRAVELED TO THE ROAD', 'HOPPED RIGHT',
+      'CROSSED THE ROAD', 'HOPPED RIGHT']);
 }
 
 console.log(`history: ${checks} checks passed`);

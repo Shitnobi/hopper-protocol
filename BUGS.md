@@ -137,3 +137,73 @@ Bio now recovers hops made in **this browser** from its local action ledger, and
 ### Known limitation
 
 The History feed remains **newest first**, so the journey reads bottom-up. The rows stay adjacent and each change names its spend; Bio gives the same journey in chronological order. If the HOP was made on another browser/device with no indexer, this browser still cannot reconstruct that crossing without walking state-address history; the local and indexer paths are the ones this fix covers.
+
+## 2026-10-31 — A confirmed HOP was invisible on a restored/other device
+
+**Reported:** “I am not seeing the first cross on Satoshi Hoppamoto recognized.”
+
+**Build:** `hopper-v7-3-10`.
+
+### On-chain facts
+
+- Mint: `799ed32ce7532a604906cbb91e92608b6b01db92d5532be145c001d5f178ce9f` (`i0`), height `973899`, sat `1965983893977665`, name “Satoshi Hoppamoto”, G1.
+- TRAVEL TO ROAD: `dba210ebfa9490c545edadf295d2ad5f89d2cc15c8e9eb1c9363f00f86efe710`, height `973900`.
+- First HOP: `544c2178be584a59d0362e801aec66e2d4948143163c34c503dd7235f3253510`, height `973933`, direction `1` (STRAIGHT).
+- Outcome block `973934` hash `000000000000000000016bb394d8a6d087c8a601b80bc79b5ebb9ae8cd43d4ac`, wrap `2`. `1 != 2`, so the HOP survived; settlement at `973939`.
+- The mint, TRAVEL and HOP all end at the same derived state address, so the first cross was genuinely on chain. A second HOP (`5c9fb7989b7f6773e7d890bf312a104947d38cad6284a7577e9f2283a9484130`, RIGHT) was in the mempool while this was being diagnosed.
+
+### Root cause
+
+The wallet only rebuilt a Hopper's road career from **local actions** and **indexer events**. It recovered the mint and staged state output without an indexer, but it never replayed the state address's transaction history. A crossing broadcast by another browser, or one whose local action ledger was lost, therefore left the restored record at `idle`, `dist = 0`, even though the chain and the inscription fold both showed the HOP and its settlement. Bio had the same hole. The first cross was not rejected by the envelope; the wallet simply never looked for it.
+
+### Fix
+
+- `web/js/wallet/chainfrog.js` (new)
+  - `frogTxRole()` parses the tapscript witness, finds the 55-byte `FRG7CROSS` body in input 0, and requires `(sat, mint_txid, mint_index)` to match the local mint record.
+  - `replayFrogChain()` orders the state-address transactions by height, treats a state-creating non-crossing as TRAVEL, and replays crossings with the same rules as the fold:
+    - target `required(T)`;
+    - outcome block `T + 1`, `wrap(displayHash)`;
+    - death when `dir === wrap`;
+    - settlement only at `T + 6`;
+    - `home` when `dist >= target`.
+  - A confirmed HOP still inside finality becomes `crossing` with `in_flight`.
+  - A HOP in the mempool is reported as `crossing` / `in flight` but is **not** counted as settled and does not increment `dist`.
+  - Missing transaction hex or a missing block hash returns `null`, so a partial backend answer never invents state.
+- `web/js/wallet/wallet.js`
+  - `_reconstructChainFrogs()` runs on cold/manual passes, asks each local Hopper's derived state address for its history, and applies the replay. It only runs when the wallet still has a state output at that script.
+  - Transaction hex and block hashes are cached for the session.
+  - Reconstructed TRAVEL/HOP/settle rows are merged into the action ledger. Existing local actions keep their fee and timestamp but receive the confirmed height/direction; synthetic rows are tagged `source: 'chain-replay'` and replaced on reorg/replay instead of accumulating.
+  - `road()` now also emits a road row from a replayed `frog.in_flight`, so a restored in-flight HOP appears as `ON THE ROAD` / `in mempool`.
+- `web/js/ui/screens.js`
+  - Action rows with `mempool: true` render faded and `IN MEMPOOL`.
+  - Bio renders local `settle` actions as `CROSSED THE ROAD` / `DIED`.
+  - Bio places a height-less mempool event at the end, not at block zero; a pending HOP can no longer sort above `MINTED`.
+- `web/tests/chainfrog.test.mjs` (new, 37 checks)
+  - Real signed mint/TRAVEL/HOP bytes.
+  - TRAVEL recognition, STRAIGHT HOP, settlement at `T+6`, dead HOP, in-flight finality, mempool HOP, pre-genesis target 5, missing-hex refusal.
+  - Wallet ledger application, upgrade of a local HOP rather than duplication, and preservation of the confirmed height/direction.
+- `web/tests/history.test.mjs` now 134 checks; adds the mempool HOP History/Bio ordering case.
+- `README.md` documents state-address replay and the mempool HOP behavior.
+- `web/sw.js` and `web/js/build-guard.js` bumped to `hopper-v7-3-10`.
+
+### Verification
+
+- Full `npm test` passes:
+  - core 136, game ok, emergency 103, params 7, media 36, scan 94, ord 46, ui 63, fees 19, preview 87, localmint 40, chainfrog 37, history 134, rbf 125;
+  - v7 fold sync/parity and doc boot pass.
+- Fresh-profile browser E2E passes with `e2e: ok`; cache `hopper-v7-3-10`; no console errors.
+  - Log: `~/AI/regtest-last-change/logs/e2e-v7-3-10.log`.
+- Replayed the actual `Satoshi Hoppamoto` state address against `mempool.space`:
+  - owner leaf from the first cross witness derived the exact state script;
+  - replay produced `dist = 1`, `state = crossing` (the second HOP is in the mempool), one settled `CROSSED STRAIGHT`, one pending `HOP RIGHT`, and TRAVEL at `973900`.
+  - History rendered top-down: `HOP RIGHT` (IN MEMPOOL) → `CROSSED STRAIGHT` → `HOP STRAIGHT` → `TRAVEL TO ROAD` → `MINT`.
+  - Bio rendered: `MINTED` → `TRAVELED TO THE ROAD` → `HOPPED STRAIGHT` → `CROSSED THE ROAD` → `HOPPED RIGHT` (in mempool).
+
+### Deploy
+
+- Commit and Pages run recorded after the push.
+- Reload the app once to activate the `hopper-v7-3-10` service-worker cache.
+
+### Known limitation
+
+State-address replay is deliberately a cold/manual-pass operation, not part of every 30-second warm poll. A crossing made on another device appears after unlock, REFRESH, or RESCAN. A confirmed HOP in the six-block finality window is shown as `HOPPING`, with `dist` unchanged until settlement, matching the indexer and the inscription fold.

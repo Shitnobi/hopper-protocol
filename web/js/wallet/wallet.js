@@ -17,6 +17,7 @@ import {
   DemoBackend, LiveBackend, effectiveEsploraUrl, effectiveOrdUrl,
 } from './backend.js';
 import { parseLocalMint } from './localmint.js';
+import { frogTxRole, replayFrogChain } from './chainfrog.js';
 import { parseTx } from './txparse.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
@@ -218,6 +219,11 @@ export class WalletSession {
     this._visHandler = null;
     this._txCache = new Map();
     this._localMintCache = new Map();
+    // Chain-derived frog history is bounded to the state address, but the
+    // same transaction/header can be needed by several frogs. Keep the
+    // parsed peer answers for the session; never persist private material.
+    this._chainHexCache = new Map();
+    this._chainHashCache = new Map();
     this._loadLedger();
     this._loadRecovery();
   }
@@ -923,7 +929,12 @@ export class WalletSession {
     // A local/chain mint names sat + mint outpoint. Derive its state script
     // and ask the chain for that output; this is the only way a restored
     // wallet finds a staging address without an indexer or ord server.
-    if (this.cold || force || rescanning) await this._discoverStaged(records, utxos);
+    if (this.cold || force || rescanning) {
+      await this._discoverStaged(records, utxos);
+      if (await this._reconstructChainFrogs(records, utxos, { tip })) {
+        notes.push('Hopper road history rebuilt from the chain');
+      }
+    }
 
     let recordFailed = false;
     const missing = [...candidates].filter((sat) => !records.has(sat));
@@ -1146,6 +1157,180 @@ export class WalletSession {
       }
     });
     if (changed) this._saveLedger();
+  }
+
+  /** Merge chain-derived road actions into the local ledger. Actions from
+   *  this browser keep their fee/at fields; only the confirmed height and
+   *  direction are filled in. Synthetic actions are tagged so a reorg can
+   *  replace them on the next replay instead of accumulating ghosts. */
+  _upsertChainActions(sat, actions) {
+    const n = Number(sat);
+    if (!Number.isSafeInteger(n)) return false;
+    const before = this.actions.length;
+    this.actions = (this.actions || []).filter((a) =>
+      !(a?.source === 'chain-replay' && Number(a.sat) === n));
+    let changed = this.actions.length !== before;
+    for (const action of actions || []) {
+      const kind = String(action.kind || '').toLowerCase();
+      if (!kind) continue;
+      const tx = String(action.txid || '').toLowerCase();
+      const hit = this.actions.find((a) => {
+        if (String(a?.kind || '').toLowerCase() !== kind) return false;
+        if (tx) return String(a.txid || '').toLowerCase() === tx;
+        return Number(a.height) === Number(action.height) && Number(a.sat) === n;
+      });
+      if (hit) {
+        if (action.height != null && Number(hit.height) !== Number(action.height)) {
+          hit.height = Number(action.height);
+          changed = true;
+        }
+        if (action.dir != null && hit.dir !== action.dir) {
+          hit.dir = Number(action.dir);
+          changed = true;
+        }
+        if (action.outcome && hit.outcome !== action.outcome) {
+          hit.outcome = action.outcome;
+          changed = true;
+        }
+        continue;
+      }
+      this.actions.unshift({
+        ...action,
+        sat: n,
+        at: new Date().toISOString(),
+        source: 'chain-replay',
+      });
+      changed = true;
+    }
+    this.actions = this.actions.slice(0, 300);
+    return changed;
+  }
+
+  async _chainTxHex(txid) {
+    const tx = String(txid || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(tx)) return null;
+    if (this._chainHexCache.has(tx)) return this._chainHexCache.get(tx);
+    let hex = null;
+    try {
+      hex = await this.backend.getTxHex(tx);
+    } catch {
+      hex = null;
+    }
+    if (typeof hex === 'string' && /^[0-9a-f]+$/i.test(hex.trim())) {
+      hex = hex.trim().toLowerCase();
+      this._chainHexCache.set(tx, hex);
+      if (this._chainHexCache.size > 600) {
+        this._chainHexCache.delete(this._chainHexCache.keys().next().value);
+      }
+      return hex;
+    }
+    return null;
+  }
+
+  async _chainBlockHash(height) {
+    const h = Number(height);
+    if (!Number.isInteger(h) || h < 0) return null;
+    if (this._chainHashCache.has(h)) return this._chainHashCache.get(h);
+    let hash = null;
+    try { hash = await this.backend.blockHashAt(h); } catch { hash = null; }
+    if (typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash)) {
+      hash = hash.toLowerCase();
+      this._chainHashCache.set(h, hash);
+      if (this._chainHashCache.size > 600) {
+        this._chainHashCache.delete(this._chainHashCache.keys().next().value);
+      }
+      return hash;
+    }
+    return null;
+  }
+
+  /** Replay the state address's transaction history. The state script is
+   *  fixed for (sat, mint, owner), so every TRAVEL and HOP appears in one
+   *  address history. This is the indexer-free path that lets a restored
+   *  browser see crossings it did not author itself. It is deliberately
+   *  cold/manual-only: warm passes must not turn into history walks. */
+  async _reconstructChainFrogs(records, utxos, { tip = 0 } = {}) {
+    if (this.settings.mode === 'demo' || !this.backend?.addressHistory
+        || !this.backend?.getTxHex || !this.backend?.blockHashAt) return false;
+    const local = [...records.values()].filter((r) =>
+      r?.local === true && Number.isSafeInteger(Number(r.sat)) && Number(r.sat) > 0);
+    if (!local.length) return false;
+    const scriptHex = (script) => {
+      if (!script) return '';
+      try { return typeof script === 'string' ? script.toLowerCase() : bytesToHex(script); } catch { return ''; }
+    };
+    let any = false;
+    await mapLimit(local, 2, async (record) => {
+      const sat = Number(record.sat);
+      let state;
+      try { state = stateScripts(record, this.keys.ord.ownerXonly); } catch { return; }
+      const stateHex = bytesToHex(state.script);
+      // A frog that was sent to another owner no longer has an output at our
+      // derived state script. Do not replay its old life as if we still held it.
+      const current = utxos.find((u) => scriptHex(u.script) === stateHex
+        && !u.spent && u.spendable !== true);
+      if (!current) return;
+
+      let rows = [];
+      try {
+        rows = await this.backend.addressHistory(
+          scriptToAddress(state.script, this.network), state.script,
+        );
+      } catch { return; }
+      if (!Array.isArray(rows) || !rows.length) return;
+
+      const hexByTx = new Map();
+      const roles = new Map();
+      let complete = true;
+      await mapLimit(rows, 4, async (row) => {
+        const txid = String(row?.txid || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(txid)) return;
+        const hex = await this._chainTxHex(txid);
+        if (!hex) { complete = false; return; }
+        hexByTx.set(txid, hex);
+        roles.set(txid, frogTxRole({ record, hex, stateScript: state.script }));
+      });
+      if (!complete) return;
+
+      const heights = new Set();
+      for (const row of rows) {
+        const txid = String(row?.txid || '').toLowerCase();
+        const role = roles.get(txid);
+        const h = Number(row?.height);
+        if (role?.crossing && Number.isInteger(h) && h > 0 && h + 1 <= tip) {
+          heights.add(h + 1);
+        }
+      }
+      const hashByHeight = new Map();
+      for (const h of heights) {
+        const hash = await this._chainBlockHash(h);
+        if (!hash) { complete = false; break; }
+        hashByHeight.set(String(h), hash);
+      }
+      if (!complete) return;
+
+      const replay = replayFrogChain({
+        record, rows, txHex: hexByTx, hashByHeight, tip, stateScript: state.script,
+      });
+      if (!replay) return;
+
+      record.state = replay.state;
+      record.dist = replay.dist;
+      record.crossings_entered = replay.crossingsEntered;
+      record.crossings_settled = replay.crossingsSettled;
+      record.deaths = replay.deaths;
+      record.last_target_hops = replay.lastTarget;
+      record.in_flight = replay.inFlight;
+      record.immortal_height = replay.immortalHeight;
+      record.death_height = replay.deathHeight;
+      record.outcome_block_hash = replay.outcomeBlockHash;
+      record.outcome_wrap = replay.outcomeWrap;
+      record.provisional_dead = replay.provisionalDead;
+      record.chain_replayed = true;
+      if (this._upsertChainActions(sat, replay.actions)) this._saveLedger();
+      any = true;
+    });
+    return any;
   }
 
   /** Recover HOPPER mints paid to our ordinals address from their reveal
@@ -2652,7 +2837,25 @@ export class WalletSession {
     }));
     const seen = new Set(remote.map((c) => Number(c.sat)));
     for (const c of this._localRoadEntries()) {
-      if (!seen.has(Number(c.sat))) remote.push(c);
+      if (!seen.has(Number(c.sat))) { remote.push(c); seen.add(Number(c.sat)); }
+    }
+    // A restored browser may know the crossing only from the state-address
+    // replay. Keep that road row alive without asking the indexer again.
+    for (const f of this.frogs || []) {
+      const sat = Number(f?.sat);
+      if (!Number.isSafeInteger(sat) || seen.has(sat) || !f.in_flight) continue;
+      const inf = f.in_flight;
+      const measured = Number.isFinite(Number(inf.height)) && Number(inf.height) > 0;
+      remote.push({
+        sat, seed: f.seed, name: f.name, dist: f.dist, gen: f.gen,
+        inFlight: {
+          txid: inf.txid, height: inf.height,
+          target_hops: inf.target_hops, dir: inf.dir,
+          settle_height: inf.settle_height ?? (measured ? Number(inf.height) + 6 : null),
+        },
+        provisionalDead: f.provisional_dead ?? null,
+        outcomeBlockHash: f.outcome_block_hash ?? null,
+      });
     }
     return remote;
   }
