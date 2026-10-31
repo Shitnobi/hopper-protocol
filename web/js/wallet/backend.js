@@ -469,6 +469,7 @@ export function normalizeEsploraUrl(raw) {
  */
 export function effectiveOrdUrl(settings = {}, network = 'mainnet') {
   const explicit = String(settings.ordUrl || '').trim();
+  if (/^(none|off|disabled)$/i.test(explicit)) return '';
   if (explicit) return explicit;
   return network === 'mainnet' ? ORDINALS_COM : '';
 }

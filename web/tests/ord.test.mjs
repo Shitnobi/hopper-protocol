@@ -21,6 +21,8 @@ eq('mainnet defaults to the public ord', effectiveOrdUrl({}, 'mainnet'), ORDINAL
 eq('regtest has no public ord default', effectiveOrdUrl({}, 'regtest'), '');
 eq('an explicit ord endpoint wins', effectiveOrdUrl({ ordUrl: 'http://127.0.0.1:8080/' }, 'mainnet'), 'http://127.0.0.1:8080/');
 eq('an explicit regtest ord wins', effectiveOrdUrl({ ordUrl: 'http://127.0.0.1:8082' }, 'regtest'), 'http://127.0.0.1:8082');
+eq('none disables the public ord default', effectiveOrdUrl({ ordUrl: 'none' }, 'mainnet'), '');
+eq('off disables a custom ord endpoint', effectiveOrdUrl({ ordUrl: 'OFF' }, 'mainnet'), '');
 
 eq('mainnet defaults to Blockstream Esplora', effectiveEsploraUrl({}, 'mainnet'), BLOCKSTREAM_ESPLORA);
 eq('regtest has no public Esplora default', effectiveEsploraUrl({}, 'regtest'), '');

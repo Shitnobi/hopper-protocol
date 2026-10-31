@@ -254,6 +254,10 @@ export class WalletSession {
     this.mempool = [];
     this.pending = [];
     this.imported = new Set();
+    // State outputs sit at scripts that are not on an HD index. Once a local
+    // mint reveals one, remember its address/script/outpoint so the warm
+    // watch plan can keep it without an indexer.
+    this.staged = {};
     this.tipHeight = null;
     this.tipHash = null;
     this.receiveIndex = 0;
@@ -315,6 +319,11 @@ export class WalletSession {
         .slice(-50)
       : [];
     this.imported = new Set(l.imported || []);
+    this.staged = l.staged && typeof l.staged === 'object' && !Array.isArray(l.staged)
+      ? Object.fromEntries(Object.entries(l.staged).filter(([sat, row]) =>
+        Number.isSafeInteger(Number(sat)) && row && typeof row.address === 'string'
+          && typeof row.script === 'string'))
+      : {};
     this.used = l.used || {};
     this.lastUsed = l.lastUsed && typeof l.lastUsed === 'object' ? l.lastUsed : {};
     this.hot = Array.isArray(l.hot)
@@ -353,6 +362,7 @@ export class WalletSession {
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
       imported: [...this.imported],
+      staged: this.staged || {},
       used: this.used || {},
       lastUsed: this.lastUsed || {},
       hot: this.hot || [],
@@ -927,17 +937,36 @@ export class WalletSession {
     //    index, and every index that held coins last pass. A cold pass
     //    asks about everything the walk reached.
     const entries = [];
+    const seenAddresses = new Set();
+    const addEntry = (entry) => {
+      if (!entry?.address || seenAddresses.has(entry.address)) return;
+      seenAddresses.add(entry.address);
+      entries.push(entry);
+    };
+    // The ordinals address comes first so a partial failure later in the
+    // plan cannot hide a mint. Known state scripts follow, then the HD plan.
+    addEntry(this._entry('ord'));
+    for (const row of Object.values(this.staged || {})) {
+      const sat = Number(row?.sat);
+      if (!Number.isSafeInteger(sat) || !row?.address || !row?.script) continue;
+      try {
+        addEntry({
+          branch: 'state', index: sat, key: this.keys.ord,
+          address: row.address, script: hexToBytes(row.script), kind: 'state', sat,
+        });
+      } catch { /* a corrupt ledger row is not a reason to stop scanning */ }
+    }
     for (const [branch, index] of this._plan(this.cold)) {
       const entry = this._entry(branch, index);
-      if (entry) entries.push(entry);
+      if (entry) addEntry(entry);
     }
-    entries.push(this._entry('ord'));
 
     const utxos = [];
     const mempoolByTx = new Map();
     const queriedOk = new Set();
     let hotNow = [];
     let watchFailed = null;
+    let stagedChanged = false;
     const prevByAddress = new Map();
     for (const u of previousUtxos) {
       if (!u.address) continue;
@@ -962,7 +991,8 @@ export class WalletSession {
         for (const u of list) utxos.push(u);
         break;
       }
-      const dtos = await mapLimit(list, 2, async (u) => {
+      const isState = w.kind === 'state';
+      const dtos = isState ? [] : await mapLimit(list, 2, async (u) => {
         try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
       });
       // The UTXO answer already carries mempool status. Aggregate outputs
@@ -981,13 +1011,19 @@ export class WalletSession {
       });
       list.forEach((u, i) => {
         const dto = dtos[i];
-        const ranges = dto && dto.ranges
-          ? dto.ranges.map(([a, b]) => [a, b - 1])
-          : (u.ranges || null);
-        const exact = dto ? (dto.exact !== false && !(ranges && ranges.some(([a]) => a >= 4e15))) : false;
-        const frogs = dto ? (dto.frogs || []) : (u.frogs || []);
-        const kind = w.kind === 'frog' ? 'frog' : 'p2wpkh';
-        const key = w.kind === 'frog' ? this.keys.ord : w.key;
+        const ranges = isState
+          ? [[Number(w.sat), Number(w.sat)]]
+          : dto && dto.ranges
+            ? dto.ranges.map(([a, b]) => [a, b - 1])
+            : (u.ranges || null);
+        const exact = isState
+          ? true
+          : dto ? (dto.exact !== false && !(ranges && ranges.some(([a]) => a >= 4e15))) : false;
+        const frogs = isState
+          ? [Number(w.sat)]
+          : dto ? (dto.frogs || []) : (u.frogs || []);
+        const kind = isState ? 'state' : w.kind === 'frog' ? 'frog' : 'p2wpkh';
+        const key = w.kind === 'frog' || isState ? this.keys.ord : w.key;
         utxos.push({
           txid: u.txid, vout: u.vout, value: Number(u.value), script: u.script,
           address: w.address, kind, ranges, exact, frogs,
@@ -996,6 +1032,16 @@ export class WalletSession {
           spendable: kind !== 'state' && exact && !frogs.length,
         });
       });
+      if (isState && list.length && this.staged[String(w.sat)]) {
+        const prior = this.staged[String(w.sat)];
+        const first = list[0];
+        if (String(prior.txid || '').toLowerCase() !== String(first.txid).toLowerCase()
+            || Number(prior.vout) !== Number(first.vout)) {
+          prior.txid = String(first.txid).toLowerCase();
+          prior.vout = Number(first.vout);
+          stagedChanged = true;
+        }
+      }
       if (list.length) {
         if (w.branch === 0) {
           used[w.address] = true;
@@ -1029,6 +1075,7 @@ export class WalletSession {
       }
     }
     this.hot = hotNow;
+    if (stagedChanged) this._saveLedger();
     this.mempool = [...mempoolByTx.values()].sort((a, b) => b.amount - a.amount);
     if (readFailed) notes.push(`gap walk stopped: ${readFailed}`);
     if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
@@ -1067,16 +1114,28 @@ export class WalletSession {
 
     // A mint reveals its own inscription in the taproot witness. Recover
     // that record even when no HOPPER indexer is configured (the public
-    // defaults have none) and ord's range endpoint is unavailable.
-    const localMints = await this._localMintRecords(utxos, records);
+    // defaults have none) and ord's range endpoint is unavailable. If the
+    // reveal has already been spent into its state output, the ord address
+    // history still names it on a cold/forced pass.
+    const localMints = await this._localMintRecords(utxos, records, {
+      history: this.cold || (force && this.chainMints.length === 0),
+    });
     for (const record of localMints) {
       if (records.has(record.sat)) continue;
       records.set(record.sat, record);
       candidates.add(record.sat);
     }
+    // Fill in mints whose reveal is already spent. The parse above wins for
+    // a reveal still in `utxos`; these rows only add missing sats.
+    this._seedChainMints(records, candidates, previousFrogs, utxos);
     if (localMints.length) {
       notes.push(`${localMints.length} Hopper mint${localMints.length === 1 ? '' : 's'} recognized from the ord address`);
     }
+
+    // A local/chain mint names sat + mint outpoint. Derive its state script
+    // and ask the chain for that output; this is the only way a restored
+    // wallet finds a staging address without an indexer or ord server.
+    if (this.cold || force || rescanning) await this._discoverStaged(records, utxos);
 
     let recordFailed = false;
     const missing = [...candidates].filter((sat) => !records.has(sat));
@@ -1108,8 +1167,11 @@ export class WalletSession {
         if (owned.error) ownershipFailed = true;
         continue;
       }
-      frogs.push(record);
+      // The record's location is the outpoint that currently carries the
+      // sat, not necessarily the mint reveal. A restored local record starts
+      // at the reveal and must move to the discovered state outpoint.
       if (owned.utxo) {
+        record.location = { txid: owned.utxo.txid, vout: Number(owned.utxo.vout) };
         if (owned.custody) {
           owned.utxo.kind = 'state';
           owned.utxo.key = this.keys.ord;
@@ -1119,6 +1181,7 @@ export class WalletSession {
           utxos.push(owned.utxo);
         }
       }
+      frogs.push(record);
       this.imported.add(Number(sat));
     }
     if (recordFailed) notes.push('some Hopper records could not be fetched');
@@ -1282,23 +1345,91 @@ export class WalletSession {
     return this.gapLimit();
   }
 
+  /** The state script for one local mint. State outputs sit at scripts that
+   *  are not on an HD path; this is only reachable with the public mint data
+   *  (sat + mint outpoint + owner key). */
+  _stagedEntry(record) {
+    try {
+      const state = stateScripts(record, this.keys.ord.ownerXonly);
+      return {
+        sat: Number(record.sat),
+        address: scriptToAddress(state.script, this.network),
+        script: bytesToHex(state.script),
+      };
+    } catch { return null; }
+  }
+
+  /** A local mint can already have been spent into its state output before
+   *  this browser saw it. The state address is derivable, so ask the chain
+   *  for it and remember the address for warm passes. No indexer or ord
+   *  server is involved. */
+  async _discoverStaged(records, utxos) {
+    if (typeof this.backend?.addressUtxos !== 'function') return;
+    const local = [...records.values()].filter((r) =>
+      r?.local === true && Number.isSafeInteger(Number(r.sat)) && Number(r.sat) > 0);
+    let changed = false;
+    await mapLimit(local, 2, async (record) => {
+      const location = record.location;
+      const direct = location && utxos.find((u) =>
+        String(u.txid).toLowerCase() === String(location.txid).toLowerCase()
+        && Number(u.vout) === Number(location.vout));
+      if (direct) return;
+      const entry = this._stagedEntry(record);
+      if (!entry) return;
+      let found;
+      try { found = await this.backend.addressUtxos(entry.address, hexToBytes(entry.script)); } catch { return; }
+      if (!Array.isArray(found) || !found.length) return;
+      const first = found[0];
+      const prior = this.staged[String(entry.sat)] || {};
+      const next = {
+        ...prior, ...entry,
+        txid: String(first.txid).toLowerCase(), vout: Number(first.vout),
+      };
+      if (prior.address !== next.address || prior.script !== next.script
+          || prior.txid !== next.txid || Number(prior.vout) !== Number(next.vout)) {
+        this.staged[String(entry.sat)] = next;
+        changed = true;
+      }
+      for (const u of found) {
+        if (utxos.some((x) => String(x.txid).toLowerCase() === String(u.txid).toLowerCase()
+          && Number(x.vout) === Number(u.vout))) continue;
+        utxos.push({
+          ...u, kind: 'state', address: entry.address,
+          ranges: [[entry.sat, entry.sat]], exact: true, frogs: [entry.sat],
+          key: this.keys.ord, keyRef: { branch: 'ord', index: 0 },
+          spendable: false, unconfirmed: isUnconfirmedUtxo(u),
+        });
+      }
+    });
+    if (changed) this._saveLedger();
+  }
+
   /** Recover HOPPER mints paid to our ordinals address from their reveal
    *  witnesses. Positive answers are cached by outpoint; the chain remains
-   *  the source, and a spent reveal simply disappears from `utxos`. */
-  async _localMintRecords(utxos, records) {
+   *  the source, and a spent reveal simply disappears from `utxos`.
+   *
+   *  On a cold/manual pass the ord address history is also walked. That is
+   *  what recovers a mint that was already PREPAREd into its staging output
+   *  on another device with the same mnemonic: the reveal is no longer a
+   *  UTXO, but its transaction is still in the address history. */
+  async _localMintRecords(utxos, records, { history = false } = {}) {
     if (!this.backend?.getTxHex) return [];
+    const ordAddress = this.keys.frogAddress();
+    const ordScript = p2trScript(this.keys.ord.outputXonly);
+    const ordHex = bytesToHex(ordScript);
     const known = new Set();
     for (const record of records.values()) {
       const location = record?.location;
       if (location?.txid) known.add(`${String(location.txid).toLowerCase()}:${Number(location.vout)}`);
     }
-    const ordAddress = this.keys.frogAddress();
-    const ordScript = p2trScript(this.keys.ord.outputXonly);
     const candidatesForMint = utxos.filter((u) => u.kind === 'frog'
       && u.address === ordAddress
       && !known.has(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
+    for (const u of utxos) {
+      if (u?.txid) known.add(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`);
+    }
     const found = [];
-    await mapLimit(candidatesForMint, 2, async (u) => {
+    const parseOne = async (u) => {
       const key = `${String(u.txid).toLowerCase()}:${Number(u.vout)}`;
       const height = u.status?.block_height ?? u.status?.height ?? null;
       let record = null;
@@ -1320,8 +1451,71 @@ export class WalletSession {
         if (!record) return;
       }
       if (!records.has(record.sat) && !found.some((r) => r.sat === record.sat)) found.push(record);
-    });
+    };
+    await mapLimit(candidatesForMint, 2, parseOne);
+
+    if (history && typeof this.backend.addressHistory === 'function') {
+      let rows = [];
+      try { rows = await this.backend.addressHistory(ordAddress, ordScript); } catch { rows = []; }
+      const seen = new Set(candidatesForMint.map((u) =>
+        `${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
+      const extra = [];
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const txid = String(row?.txid || '').toLowerCase();
+        const key = `${txid}:0`;
+        if (!/^[0-9a-f]{64}$/.test(txid) || known.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        // LiveBackend's history rows carry outputs. When present, only fetch
+        // the transaction if its first output is our ordinals script.
+        const out0 = row.outputs?.[0];
+        if (out0?.script && bytesToHex(out0.script) !== ordHex) continue;
+        extra.push({
+          txid, vout: 0, value: out0?.value ?? null, script: ordScript,
+          address: ordAddress, kind: 'frog',
+          status: { block_height: row.height ?? row.status?.block_height ?? null },
+        });
+      }
+      await mapLimit(extra.slice(0, 50), 2, parseOne);
+    }
     return found;
+  }
+
+  /** Rebuild minimal local records from the persisted chain-mint ledger.
+   *  This keeps a staged Hopper visible after a reload without asking an
+   *  indexer or ord server; the state address is watched separately. */
+  _seedChainMints(records, candidates, previousFrogs = [], utxos = []) {
+    for (const mint of this.chainMints || []) {
+      const sat = Number(mint?.sat);
+      const mintTxid = String(mint?.txid || '').toLowerCase();
+      if (!Number.isSafeInteger(sat) || sat <= 0 || !/^[0-9a-f]{64}$/.test(mintTxid)) continue;
+      if (records.has(sat)) continue;
+      const staged = this.staged[String(sat)];
+      const stagedUtxo = staged?.txid && utxos.find((u) =>
+        String(u.txid).toLowerCase() === String(staged.txid).toLowerCase()
+        && Number(u.vout) === Number(staged.vout));
+      const prior = previousFrogs.find((f) => Number(f?.sat) === sat);
+      // Only trust a remembered state outpoint when this pass actually saw
+      // it. Otherwise the old spend could be mistaken for a live coin.
+      const location = stagedUtxo
+        ? { txid: String(stagedUtxo.txid).toLowerCase(), vout: Number(stagedUtxo.vout) }
+        : { txid: mintTxid, vout: Number(mint.mint_index) || 0 };
+      records.set(sat, {
+        ...(prior || {}),
+        sat,
+        seed: mint.seed,
+        name: mint.name || '',
+        state: prior?.state || 'idle',
+        dist: Number(prior?.dist) || 0,
+        mint_height: Number(mint.height) || 0,
+        mint_txid: mintTxid,
+        mint_index: Number.isSafeInteger(Number(mint.mint_index)) ? Number(mint.mint_index) : 0,
+        commit: /^[0-9a-f]{64}$/.test(String(mint.commit || '').toLowerCase())
+          ? String(mint.commit).toLowerCase() : null,
+        location,
+        local: true,
+      });
+      candidates.add(sat);
+    }
   }
 
   /** Record every settled wallet output the chain has shown us. This is
@@ -1620,7 +1814,10 @@ export class WalletSession {
       if (!atMint && f.local !== true) continue;
       const mintUtxo = (this.utxos || []).find((u) => String(u.txid).toLowerCase() === mintTxid
         && Number(u.vout) === Number(f.mint_index ?? 0));
-      if (atMint && (!mintUtxo || mintUtxo.address !== ordAddress)) continue;
+      // A local record (parsed from the reveal or recovered from the mint
+      // ledger) is already proved ours by the ord address/history. Indexer
+      // records still need the current mint outpoint as proof.
+      if (atMint && f.local !== true && (!mintUtxo || mintUtxo.address !== ordAddress)) continue;
       // Indexers normally carry mint_height, but local/ord records and old
       // ledgers may not. Reuse the height already learned from the Hopper
       // arrival or its UTXO so restored devices sort MINT beside, not below,
@@ -1638,7 +1835,7 @@ export class WalletSession {
       const commit = String(f.commit || '').toLowerCase();
       const row = {
         txid: mintTxid, sat: Number(f.sat), seed: f.seed, name: f.name || '',
-        height,
+        height, mint_index: Number(f.mint_index ?? 0) || 0,
         commit: /^[0-9a-f]{64}$/.test(commit) ? commit : null,
         at: new Date().toISOString(),
       };
@@ -1647,6 +1844,7 @@ export class WalletSession {
         if (!prior.name && row.name) prior.name = row.name;
         if (prior.seed == null && row.seed != null) prior.seed = row.seed;
         if (!prior.commit && row.commit) prior.commit = row.commit;
+        if (prior.mint_index == null) prior.mint_index = row.mint_index;
       } else {
         this.chainMints.unshift(row);
         // On a device without the local action ledger, a new on-chain mint
@@ -1880,7 +2078,7 @@ export class WalletSession {
     const direct = utxos.find((u) => record.location && u.txid === record.location.txid && u.vout === record.location.vout);
     if (direct) return { owned: true, utxo: direct, custody: direct.kind === 'state' };
     const inRanges = utxos.find((u) => u.ranges && u.ranges.some(([a, b]) => record.sat >= a && record.sat <= b));
-    if (inRanges) return { owned: true, utxo: inRanges, custody: false };
+    if (inRanges) return { owned: true, utxo: inRanges, custody: inRanges.kind === 'state' };
 
     // 2. A custody output commits to (sat, mint, owner): derive it and
     //    compare with the output script at the indexer's location.

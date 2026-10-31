@@ -1063,6 +1063,13 @@ const handlers = {
     input.focus();
     toast('Endpoint filled — press APPLY to connect', 'ok');
   },
+  'ord-preset'(el) {
+    const input = document.querySelector('[data-input=ordUrl]');
+    if (!input) return;
+    input.value = el.dataset.url || '';
+    input.focus();
+    toast('Ord disabled — press APPLY to connect', 'ok');
+  },
 
   'open-frog'(el) { openFrog(el.dataset.sat); },
 

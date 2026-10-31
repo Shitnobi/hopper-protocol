@@ -433,9 +433,16 @@ curl -sN localhost:9770/v1/events/stream
   ownership. Live deep scan is **off by default**; demo mode always scans so
   the simulator has something to show. A HOPPER mint reveal carries its
   canonical v7 body in the taproot witness, so the wallet recognizes a mint
-  paid to its ordinals address **without an indexer or ord**. A frog that
-  was transferred in later has no new inscription body on its output; that
-  discovery still needs a HOPPER indexer (or ord ranges plus one).
+  paid to its ordinals address **without an indexer or ord**. On a cold or
+  manual pass it also walks that address's transaction history: if the
+  reveal was already spent into its state output, the wallet parses the old
+  reveal, derives the state script from `(sat, mint outpoint, owner)`, and
+  watches that address. A new device with the same words and a chain source
+  can therefore recover a PREPAREd/staged Hopper with no indexer and no ord
+  server. The ord address is queried before the HD gap plan, so a throttled
+  gap address cannot hide a mint. A frog that was transferred in later has
+  no new inscription body on its output; that discovery still needs a
+  HOPPER indexer (or ord ranges plus one).
 - **Demo vs live**: new wallets start in **live** mode; `DemoBackend`
   implements the same interface as `EsploraClient`/`ElectrumClient` +
   `IndexerClient` and is opt-in from Settings. Apply URLs in Settings.
@@ -459,7 +466,9 @@ curl -sN localhost:9770/v1/events/stream
   `https://ordinals.com` on mainnet) and uses the same recursive
   `/r/utxo` view directly when the indexer still cannot name a coin.
   That is the public, CORS-enabled ord endpoint, so it works from a
-  static page without a same-origin proxy.
+  static page without a same-origin proxy. Type `none` in the Ord field
+  (or press **NO ORD**) to disable it when a host lacks CORS; local mint
+  and staging recovery still uses Esplora alone.
 
 ### Tests
 

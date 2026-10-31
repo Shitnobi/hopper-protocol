@@ -4,8 +4,8 @@
 
 import assert from 'node:assert/strict';
 
-import { buildMint, buildSend } from '../js/wallet/actions.js';
-import { p2trScript } from '../js/wallet/addresses.js';
+import { buildMint, buildPrepare, buildSend, stateScripts } from '../js/wallet/actions.js';
+import { p2trScript, scriptToAddress } from '../js/wallet/addresses.js';
 import { deriveWallet } from '../js/wallet/keys.js';
 import { parseLocalMint } from '../js/wallet/localmint.js';
 
@@ -142,5 +142,110 @@ checks += 1;
 await wallet.refresh({ force: true });
 eq('the cached mint does not re-read the reveal', backend.hexCalls, 1);
 eq('the frog survives a later pass', wallet.frogs.length, 1);
+
+// --- a spent reveal is recovered from ord-address history, then staged ---
+{
+  const fundKey = keys.receive(1);
+  const funding = {
+    txid: '33'.repeat(32), vout: 0, value: 200000,
+    script: fundKey.script, address: fundKey.address, kind: 'p2wpkh', key: fundKey,
+    ranges: [[0, 199999]], exact: true, frogs: [], spendable: true,
+    status: { confirmed: true, block_height: 100 },
+  };
+  const prep = buildPrepare({ keys, utxo: reveal, frog: record, funding: [funding], feeRate: 2 });
+  const stateAddress = scriptToAddress(prep.stateScript, 'regtest');
+  const stateUtxo = {
+    txid: prep.txid, vout: 0, value: Number(prep.stateValue),
+    script: prep.stateScript, address: stateAddress,
+    status: { confirmed: true, block_height: 120 },
+  };
+
+  class StagedBackend {
+    constructor() { this.hexCalls = 0; }
+    async tipHeight() { return 120; }
+    async tipHash() { return '00'.repeat(32); }
+    async addressHistory(address) {
+      if (address !== keys.frogAddress()) return [];
+      return [{
+        txid: built.reveal.txid, height: 110,
+        outputs: [{ value: 1000, script: ordScript, address: keys.frogAddress() }],
+      }];
+    }
+    async addressUtxos(address) {
+      if (address === stateAddress) return [{ ...stateUtxo }];
+      return [];
+    }
+    async utxo() { return null; }
+    async frogger() { return null; }
+    async froggers() { return { items: [] }; }
+    async events() { return { events: [] }; }
+    async getTx() { return null; }
+    async getTxHex(txid) {
+      if (String(txid).toLowerCase() !== built.reveal.txid) return null;
+      this.hexCalls += 1;
+      return built.reveal.hex;
+    }
+    async broadcast() { throw new Error('not used'); }
+    async leaderboard() { return { entries: [] }; }
+    async road() { return { active: [] }; }
+  }
+
+  // The earlier session persisted a ledger for this mnemonic. A restored
+  // device starts from the words alone.
+  settingsStore.clear();
+  const restored = new WalletSession({
+    mnemonic: MNEMONIC, network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+  });
+  const backend = new StagedBackend();
+  restored.backend = backend;
+  restored._autoSync = false;
+  await restored.refresh({ force: true });
+  eq('a spent reveal is recovered from address history', restored.frogs.length, 1);
+  eq('the recovered frog moves to its staged outpoint', restored.frogs[0].location, {
+    txid: prep.txid, vout: 0,
+  });
+  eq('the state address is remembered for warm passes', restored.staged[String(record.sat)].address, stateAddress);
+  eq('the state output is a card, not a plain coin', restored.utxos.find((u) => u.txid === prep.txid)?.kind, 'state');
+  eq('the recovered mint is in the chain ledger', restored.chainMints[0]?.sat, record.sat);
+  eq('the reveal transaction was read once', backend.hexCalls, 1);
+
+  await restored.refresh({ force: true });
+  eq('a warm forced pass keeps the staged frog', restored.frogs.length, 1);
+  eq('the staged frog still points at the state output', restored.frogs[0].location.txid, prep.txid);
+  eq('the cached reveal is not re-read', backend.hexCalls, 1);
+
+  const reopened = new WalletSession({
+    mnemonic: MNEMONIC, network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+  });
+  reopened.backend = backend;
+  reopened._autoSync = false;
+  await reopened.refresh({ force: true });
+  eq('a reloaded ledger still watches the staged address', reopened.frogs.length, 1);
+  eq('the staged outpoint survives the reload', reopened.frogs[0].location.txid, prep.txid);
+  eq('the reveal is still not re-read after a reload', backend.hexCalls, 1);
+}
+
+// --- the ord address is asked before the HD plan, so a throttled gap
+//     address cannot hide a mint -------------------------------------------
+{
+  class FailingPlanBackend extends LocalOnlyBackend {
+    async addressUtxos(address) {
+      if (address === keys.frogAddress()) return [{ ...reveal }];
+      throw new Error('throttled');
+    }
+  }
+  settingsStore.clear();
+  const w = new WalletSession({
+    mnemonic: MNEMONIC, network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+  });
+  w.backend = new FailingPlanBackend(built.reveal.hex, reveal, keys.frogAddress());
+  w._autoSync = false;
+  await w.refresh({ force: true });
+  eq('a mint survives a failed HD address after the ord query', w.frogs.length, 1);
+  assert.match(w.scan.note, /address scan stopped: throttled/);
+}
 
 console.log(`localmint: ${checks} checks passed`);

@@ -1402,13 +1402,14 @@ export function settings(app) {
       <div class="actions mt6">
         ${logBtn('USE MEMPOOL.SPACE', 'esplora-preset', { edge: 'dim', cls: 'small', attrs: 'data-url="https://mempool.space/api"' })}
         ${logBtn('USE BLOCKSTREAM', 'esplora-preset', { edge: 'dim', cls: 'small', attrs: 'data-url="https://blockstream.info/api"' })}
+        ${logBtn('NO ORD', 'ord-preset', { edge: 'dim', cls: 'small', attrs: 'data-url="none"' })}
       </div>
       <div class="actions mt14">
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet. Both public hosts speak Esplora; mempool.space can be slower on busy addresses and is subject to browser-extension blocking (allowlist it in NoScript). A self-hosted Esplora must send Access-Control-Allow-Origin for this site — curl does not enforce CORS, so a working curl can still fail in the wallet.</div>
-      <div class="hint">An empty Indexer means no HOPPER indexer. A mint paid to this wallet's ordinals address is recovered from its reveal witness; a frog transferred in later, the road and the leaderboard still need an indexer. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
+      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet. Use <b>NO ORD</b> (or type <code>none</code>) to disable the Ord server; local mint and staging recovery keeps working from Esplora alone. Both public hosts speak Esplora; mempool.space can be slower on busy addresses and is subject to browser-extension blocking (allowlist it in NoScript). A self-hosted Esplora must send Access-Control-Allow-Origin for this site — curl does not enforce CORS, so a working curl can still fail in the wallet.</div>
+      <div class="hint">An empty Indexer means no HOPPER indexer. A mint paid to this wallet's ordinals address is recovered from its reveal witness; a PREPAREd Hopper is recovered by deriving its state address from the reveal and asking Esplora for that output. The road and leaderboard still need an indexer, and a frog transferred in later still needs ord ranges or an indexer.</div>
     </div>
 
     <div class="window" data-lily="accent">
