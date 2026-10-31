@@ -1206,6 +1206,12 @@ export class WalletSession {
           hit.outcome = action.outcome;
           changed = true;
         }
+        for (const k of ['settled', 'settle_height', 'mempool']) {
+          if (action[k] != null && hit[k] !== action[k]) {
+            hit[k] = action[k];
+            changed = true;
+          }
+        }
         continue;
       }
       this.actions.unshift({
@@ -2611,7 +2617,7 @@ export class WalletSession {
       await this.backend.broadcast(preview.built.hex);
       this._recordAction({
         kind: 'cross', sat: preview.frogSat, txid: preview.built.txid, dir: preview.dir,
-        at: new Date().toISOString(),
+        settled: false, at: new Date().toISOString(),
       });
       // Record the new state output immediately. If the Hopper was sent to a
       // different owner, the output is no longer ours and our last pack is
@@ -2806,10 +2812,19 @@ export class WalletSession {
       if (!Number.isSafeInteger(sat)) continue;
       const f = this.frogBySat?.(sat);
       if (!f || String(f.state || 'idle') !== 'idle') continue;
+      // A chain replay marks the crossing settled once T+6 has passed. The
+      // action stays in History, but the frog is back on the bank and the
+      // direction picker/HOP button must be available again.
+      if (a.settled === true) continue;
       const txid = String(a.txid || '').toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(txid)) continue;
       const at = Number(a.height);
       if (Number.isFinite(at) && at >= 0 && tip - at > 144) continue;
+      // The demo chain has no state-address replay to mark the action
+      // settled. Its six-block settlement is deterministic, so release the
+      // frog once that height is reached. Live mode relies on the replay so
+      // an unverifiable backend failure never claims a settlement.
+      if (this.settings?.mode === 'demo' && Number.isFinite(at) && at + 6 <= tip) continue;
       const crossHeight = Number.isFinite(at) && at >= 0 ? at : tip;
       rows.push({
         sat,

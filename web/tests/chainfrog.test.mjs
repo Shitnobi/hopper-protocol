@@ -90,6 +90,10 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   eq('a surviving first HOP advances dist', replay.dist, 1);
   eq('one HOP is not yet home at target 5', replay.state, 'idle');
   eq('the HOP action keeps its confirmed height', replay.actions.find((a) => a.kind === 'cross').height, 105);
+  eq('a settled HOP is marked settled', {
+    settled: replay.actions.find((a) => a.kind === 'cross').settled,
+    settles: replay.actions.find((a) => a.kind === 'cross').settle_height,
+  }, { settled: true, settles: 111 });
   eq('settlement is six blocks after the HOP', replay.actions.find((a) => a.kind === 'settle').height, 111);
   eq('settlement records survival', replay.actions.find((a) => a.kind === 'settle').outcome, 'crossed');
   eq('TRAVEL is reconstructed too', replay.actions.find((a) => a.kind === 'prepare').height, 100);
@@ -105,6 +109,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   });
   eq('a HOP inside finality stays crossing', replay.state, 'crossing');
   eq('an in-flight HOP does not advance dist', replay.dist, 0);
+  eq('an in-flight HOP is not marked settled', replay.actions.find((a) => a.kind === 'cross').settled, false);
   eq('an in-flight HOP has no settlement row yet', replay.actions.some((a) => a.kind === 'settle'), false);
   eq('an in-flight HOP freezes its target', replay.inFlight.target_hops, 5);
 }
@@ -192,6 +197,15 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   eq('a local action is upgraded, not duplicated', hops.length, 1);
   eq('the confirmed height replaces the local tip height', hops[0].height, 105);
   eq('the chain direction replaces a stale local direction', hops[0].dir, 1);
+  eq('the upgraded action is marked settled', hops[0].settled, true);
+
+  w.frogs = [r];
+  w.tipHeight = 120;
+  w.backend.road = async () => ({ active: [] });
+  eq('a settled HOP is not on The Road', w._localRoadEntries(), []);
+  eq('The Road exposes the idle frog again', (await w.road()).length, 0);
+  hops[0].settled = false;
+  eq('an unsettled HOP is still on The Road', w._localRoadEntries().length, 1);
 }
 
 
@@ -219,6 +233,8 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   eq('an unconfirmed HOP has no settlement', replay.actions.some((a) => a.kind === 'settle' && a.height == null), false);
   const pending = replay.actions.find((a) => a.txid === cross2.txid);
   eq('the mempool HOP is marked pending', { kind: pending.kind, mempool: pending.mempool, dir: pending.dir }, { kind: 'cross', mempool: true, dir: 2 });
+  eq('the mempool HOP is not settled', pending.settled, false);
+  eq('the mempool HOP has no settlement height', pending.settle_height, null);
 }
 
 console.log(`chainfrog.test.mjs: ${checks} checks passed`);

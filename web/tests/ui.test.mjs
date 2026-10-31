@@ -243,4 +243,24 @@ ok(hopRoadHtml.includes('Roo') && hopRoadHtml.includes('ON THE ROAD')
   && hopRoadHtml.includes('in mempool'),
 'the local HOP appears on The Road as an in-mempool crossing');
 
+hopWallet.actions[0].settled = true;
+const settledLocal = WalletSession.prototype._localRoadEntries.call(hopWallet);
+ok(settledLocal.length === 0,
+'a settled HOP is no longer an in-flight road row');
+const settledRoadHtml = screens.road({
+  w: { ...hopWallet, _localRoadEntries: () => settledLocal },
+  settings: hopWallet.settings,
+  road: [],
+});
+ok(settledRoadHtml.includes('Choose a direction')
+  && settledRoadHtml.includes('Roo')
+  && !settledRoadHtml.includes('ON THE ROAD'),
+'a settled HOP returns its Hopper to the direction picker with HOP available');
+
+hopWallet.actions[0].settled = false;
+hopWallet.tipHeight = GENESIS + 25;
+const demoSettled = WalletSession.prototype._localRoadEntries.call(hopWallet);
+ok(demoSettled.length === 0,
+'the demo chain releases a local HOP at its deterministic T+6 settlement');
+
 console.log(`ui: ${checks} checks passed (fee/preview/road/emergency/hop)`);

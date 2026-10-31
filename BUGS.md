@@ -219,3 +219,53 @@ The initial `v7-3-10` replay ran only on a cold or manual pass. After a HOP conf
 - Commit `aa4b6b7` — “Refresh an in-flight Hopper when the tip advances”.
 - GitHub Pages run `41209845032` completed successfully.
 - Live check: build `hopper-v7-3-11`, service-worker controlled, only cache `hopper-v7-3-11`, no console errors.
+
+
+## 2026-10-31 — A settled HOP still occupied The Road
+
+**Reported:** Satoshi Hoppamoto still showed `ON THE ROAD` with no HOP button after the crossing had more than six confirmations.
+
+**Build:** `hopper-v7-3-12`.
+
+### On-chain check
+
+At tip `973992`, the state address contained three transactions:
+
+- TRAVEL `dba210eb…efe710`, height `973900`.
+- First HOP `544c2178…253510`, height `973933`, STRAIGHT, settled `973939`.
+- Second HOP `5c9fb798…484130`, height `973982`, RIGHT, settled `973988`.
+
+Block `973983` (for the second HOP) wrapped `0`, so RIGHT survived. The correct state at tip `973992` is `idle`, `dist = 2`, `in_flight = null`.
+
+### Root cause
+
+The state-address replay was correct, but the local road projection was not. `WalletSession._localRoadEntries()` treated **every** local `kind: 'cross'` action within 144 blocks as an in-flight crossing whenever the frog record was `idle`. The replay had already advanced the frog to `idle`/`dist 2` and cleared `in_flight`, so the frog was eligible for the picker, but the stale local action re-added a synthetic road row with `height: null`. Both `WalletSession.road()` and `screens.road()` call this projection, and `screens.road()` excludes every sat that appears on the road from `Choose a direction`. The settled Hopper therefore stayed labelled `ON THE ROAD` / `in mempool`, and the direction picker—with the HOP action—stayed hidden. The indexer/envelope was not involved.
+
+### Fix
+
+- `web/js/wallet/chainfrog.js`
+  - Each replayed `cross` action now carries `settled`, `settle_height`, `outcome` and `mempool`.
+  - A crossing is `settled: true` only once `T+6 <= tip`; an in-flight confirmed HOP is `settled: false`; a mempool HOP is `settled: false, mempool: true`.
+- `web/js/wallet/wallet.js`
+  - A locally broadcast HOP starts as `settled: false`.
+  - `_upsertChainActions()` copies the settled/mempool fields onto an existing local action instead of duplicating it.
+  - `_localRoadEntries()` skips `settled: true`. The settled HOP remains in History and the road log, but no longer occupies the in-flight grid or hides the picker.
+  - In demo mode, where there is no state-address replay, a local HOP is released once its deterministic `T+6` height is reached.
+- `web/tests/chainfrog.test.mjs` now 45 checks:
+  - settled HOP is marked with `settle_height = T+6`;
+  - in-flight and mempool HOPs are not settled;
+  - a wallet replay produces an empty `_localRoadEntries()`;
+  - an unsettled action still produces a road row.
+- `web/tests/ui.test.mjs` now 66 checks:
+  - settled action produces no local row;
+  - `screens.road()` restores `Choose a direction` and the frog card, without `ON THE ROAD`.
+
+### Verification
+
+- Actual mainnet replay at tip `973992`: `state idle`, `dist 2`, `in_flight null`; `_localRoadEntries()` `[]`; `road()` `[]`.
+- Full `npm test` passes, including chainfrog 45 and ui 66.
+- Fresh-profile browser E2E passes; cache `hopper-v7-3-12`; no console errors.
+
+### Known limitation
+
+Live mode hides a local road row only after the state-address replay has marked it settled. If the backend is unreachable, the wallet keeps the last projected row rather than claiming a settlement it cannot verify. Demo mode uses its deterministic six-block settlement.

@@ -303,7 +303,9 @@ its pond lily pad keeps the name and art but drops SEND and TRAVEL TO ROAD;
 the HOP that spends the state leaf lives on The Road. Approving that HOP
 moves the Hopper out of the direction picker into **Crossings in flight**
 immediately, labelled in mempool until a block gives the indexer a real
-settlement height.
+settlement height. Once the crossing settles at `T+6`, the frog returns to
+the direction picker with HOP available again; the settled row stays in the
+road log and History.
 
 The crossing pips are a real progress display: one dot for every hop in
 the current target (5 at genesis, rising to 25), filled to the Hopper's
@@ -516,9 +518,9 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 40 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/chainfrog.test.mjs   # 37 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP
+node tests/chainfrog.test.mjs   # 45 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP, settled road release
 node tests/history.test.mjs     # 134 checks: deposits, copy targets, causal journey, mempool HOP order, change labels
-node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
+node tests/ui.test.mjs          # 66 checks: pond, settled/in-flight road cards, no demo controls in live mode
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved

@@ -129,6 +129,7 @@ export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateS
   let outcomeWrap = null;
   let provisionalDead = null;
   const settles = [];
+  const crossActions = [];
 
   for (const c of crossings) {
     const target = requiredAt(c.height);
@@ -143,18 +144,28 @@ export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateS
       wrap = wrapOfDisplayHex(hash);
       provisional = c.dir === wrap;
     }
-    if (c.height + 6 > tip) {
+    const settlesAt = c.height + 6;
+    if (settlesAt > tip) {
       state = 'crossing';
       inFlight = {
         txid: c.txid, height: c.height, dir: c.dir,
-        target_hops: target, settle_height: c.height + 6,
+        target_hops: target, settle_height: settlesAt,
       };
       outcomeBlockHash = hash;
       outcomeWrap = wrap;
       provisionalDead = provisional;
+      crossActions.push({
+        kind: 'cross', sat: Number(record.sat), txid: c.txid, height: c.height,
+        dir: c.dir, outcome: null, settled: false, settle_height: null, mempool: false,
+      });
       break;
     }
     settled += 1;
+    crossActions.push({
+      kind: 'cross', sat: Number(record.sat), txid: c.txid, height: c.height,
+      dir: c.dir, outcome: provisional ? 'dead' : 'crossed',
+      settled: true, settle_height: settlesAt, mempool: false,
+    });
     if (provisional) {
       state = 'dead';
       deaths = 1;
@@ -202,12 +213,10 @@ export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateS
 
   const actions = [
     ...prepares.map((p) => ({ kind: 'prepare', sat: Number(record.sat), txid: p.txid, height: p.height })),
-    ...crossings.map((c) => ({
-      kind: 'cross', sat: Number(record.sat), txid: c.txid, height: c.height, dir: c.dir,
-    })),
+    ...crossActions,
     ...pendingCrossings.map((c) => ({
       kind: 'cross', sat: Number(record.sat), txid: c.txid, height: null,
-      dir: c.dir, mempool: true,
+      dir: c.dir, settled: false, settle_height: null, mempool: true,
     })),
     ...settles,
   ];
