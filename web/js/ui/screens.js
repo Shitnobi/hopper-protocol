@@ -352,10 +352,13 @@ function roadEntry(app, c) {
   const tone = c.provisionalDead == null ? 'accent' : c.provisionalDead ? 'dead' : 'home';
   const label = c.provisionalDead == null ? 'ON THE ROAD' : c.provisionalDead ? 'DEAD SEALED' : 'ALIVE SEALED';
   const target = c.inFlight?.target_hops ?? (f ? targetOf(f, tip) : requiredAt(tip + 1));
+  // Once the outcome block is known, a DEAD SEALED crossing is roadkill,
+  // not a frog still hopping. The card keeps the asphalt but stops.
+  const spriteState = c.provisionalDead === true ? 'dead' : 'crossing';
   return `
     <div class="pond-item road-entry">
       <div class="pond-tap road-no-tap">
-        <canvas class="pond-art" data-roadfrog="${seed >>> 0}" width="320" height="275"></canvas>
+        <canvas class="pond-art" data-roadfrog="${seed >>> 0}:${spriteState}" width="320" height="275" aria-hidden="true"></canvas>
         <span class="pf-name">${esc(name)}</span>
         <span class="pf-sub">G${Number(c.gen) || generationAt(f?.mint_height ?? tip)} · ${pips(c.dist, target)}</span>
         <span class="pf-sub" style="display:flex;justify-content:center;gap:6px;align-items:center;margin-top:2px">

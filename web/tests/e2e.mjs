@@ -1116,6 +1116,42 @@ if (!hopRoad.entries.includes('Test Hopper')) errors.push(`HOP did not move to T
 const road = await evaluate('document.body.innerText');
 console.log('road:', road.split('\n').filter(Boolean).slice(0, 12).join(' | '));
 
+const roadSprites = await evaluate(`[...document.querySelectorAll('.road-entry canvas[data-roadfrog]')]
+  .map((cv) => ({ state: cv.dataset.roadfrog.split(':')[1], animated: cv.dataset.roadAnimated }))`);
+console.log('road sprites:', roadSprites);
+if (!roadSprites.some((c) => c.state === 'dead' && c.animated === 'false')) {
+  errors.push(`sealed death should be a still dead sprite: ${JSON.stringify(roadSprites)}`);
+}
+if (!roadSprites.some((c) => c.state === 'crossing' && c.animated === 'true')) {
+  errors.push(`live crossing should animate: ${JSON.stringify(roadSprites)}`);
+}
+
+// The in-flight card is alive: the road slides under a hopping frog. Compare
+// two frames; reduced-motion users get a deliberate still instead. A sealed
+// death is drawn as a still dead sprite, so pick the live crossing canvas.
+const roadMotion = await evaluate(`(async () => {
+  const cv = document.querySelector('.road-entry canvas[data-roadfrog$=":crossing"]');
+  if (!cv) return { error: 'no road canvas' };
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const first = cv.toDataURL();
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  return {
+    reduced,
+    animated: cv.dataset.roadAnimated,
+    changed: first !== cv.toDataURL(),
+    connected: cv.isConnected,
+    width: cv.width,
+    height: cv.height,
+  };
+})()`);
+console.log('road motion:', roadMotion);
+if (roadMotion.error) errors.push(`road animation: ${roadMotion.error}`);
+else if (roadMotion.reduced) {
+  if (roadMotion.animated !== 'false') errors.push(`reduced-motion road should be still: ${JSON.stringify(roadMotion)}`);
+} else if (roadMotion.animated !== 'true' || !roadMotion.changed || !roadMotion.connected) {
+  errors.push(`road animation is not moving: ${JSON.stringify(roadMotion)}`);
+}
+
 // The local HOP is legible in History and in the Hopper's life story even
 // before the indexer has a settle row.
 await evaluate(`document.querySelector('[data-action=nav][data-view=history]').click()`);

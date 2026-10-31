@@ -288,8 +288,15 @@ export function paintLily(ctx, cx, cy, radius, flower) {
 
 /** theme.rs::draw_road — asphalt plus the dashed lane line. */
 export function paintRoad(ctx, w, h) {
+  paintRoadAt(ctx, w, h, 0);
+}
+
+function paintRoadAt(ctx, w, h, offset = 0) {
   fill(ctx, 0, 0, w, h, C.road);
-  laneDashes(ctx, 0, w, h / 2);
+  const phase = ((offset % 44) + 44) % 44;
+  for (let x = -44 + phase; x < w + 44; x += 44) {
+    line(ctx, x + 10, h / 2, Math.min(x + 36, w), h / 2, dim(C.accent, 0.5), 3);
+  }
 }
 
 export function laneDashes(ctx, left, right, y) {
@@ -388,13 +395,87 @@ export function paintSendPond(ctx, w, h) {
   ctx.stroke();
 }
 
-/** Paint one frog on its own stretch of asphalt (app.rs::paint_road_frog). */
-export function paintRoadFrog(ctx, w, h, seed) {
-  paintRoad(ctx, w, h);
+/**
+ * Geometry for the in-flight road card. The road slides left under a frog
+ * that hops right; the card is a treadmill, so the frog stays in frame.
+ * `now` is milliseconds since the animation started. Pure and time-based,
+ * which makes the motion testable without a canvas.
+ */
+export function roadFrogFrame(w, h, seed, now = 0) {
+  const t = Number.isFinite(Number(now)) ? Math.max(0, Number(now)) : 0;
+  const period = 1000;
+  const p = (t % period) / period;
   const side = Math.min(w, h);
-  const cx = w / 2 + pondScatter(seed, 0) * side * 0.08;
-  const cy = h / 2 + pondScatter(seed, 1) * side * 0.05;
-  paintSprite(ctx, seed, 'crossing', cx, cy, side * 0.32);
+  const hopPhase = Math.min(1, p / 0.58);
+  const hop = Math.sin(Math.PI * hopPhase);
+  const landing = p >= 0.58
+    ? Math.exp(-((p - 0.58) * period) / 110)
+    : 0;
+  return {
+    period,
+    p,
+    side,
+    cx: w * 0.45 + pondScatter(seed, 0) * side * 0.025,
+    ground: h * 0.54 + pondScatter(seed, 1) * side * 0.025,
+    dx: hop * side * 0.09,
+    lift: hop * side * 0.11,
+    hop,
+    landing,
+    sx: 1 + landing * 0.10 - hop * 0.02,
+    sy: 1 - landing * 0.14 + hop * 0.03,
+    tilt: hop * 0.08,
+    size: side * 0.34,
+    dash: -((t * 0.18) % 44),
+  };
+}
+
+/** Paint one animated frame of a Hopper travelling right on The Road. */
+export function paintRoadFrogFrame(ctx, w, h, seed, now = 0, state = 'crossing') {
+  const f = roadFrogFrame(w, h, seed, now);
+  paintRoadAt(ctx, w, h, f.dash);
+
+  // Speed streaks trail the frog, moving left with the asphalt.
+  for (let i = 0; i < 3; i += 1) {
+    const slide = (Number(now) * 0.18 + i * 47) % Math.max(1, w * 0.55);
+    const x1 = f.cx - f.size * 0.78 - slide;
+    const x2 = x1 - (10 + i * 5);
+    line(ctx, x2, f.ground - f.size * 0.16 + i * f.size * 0.11,
+      x1, f.ground - f.size * 0.16 + i * f.size * 0.11,
+      'rgba(230, 204, 124, 0.14)', 2);
+  }
+
+  // Contact shadow shrinks as the frog leaves the road.
+  const shadowScale = 1 - Math.min(0.45, f.lift / (f.side * 0.24));
+  ctx.save();
+  ctx.fillStyle = `rgba(0, 0, 0, ${0.24 * shadowScale})`;
+  ctx.beginPath();
+  ctx.ellipse(f.cx + f.dx, f.ground + f.size * 0.30,
+    f.size * 0.34 * shadowScale, f.size * 0.10 * shadowScale, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // A small dust puff on landing, behind the rightward hop.
+  if (f.p >= 0.58 && f.p < 0.88) {
+    const q = (f.p - 0.58) / 0.30;
+    for (let i = 0; i < 3; i += 1) {
+      const alpha = (1 - q) * (0.40 - i * 0.08);
+      fill(ctx, f.cx - f.size * 0.26 - i * f.size * 0.14 - q * f.size * 0.20,
+        f.ground + f.size * 0.31 + (i % 2) * 3, 3, 3,
+        `rgba(216, 190, 138, ${Math.max(0, alpha)})`);
+    }
+  }
+
+  ctx.save();
+  ctx.translate(f.cx + f.dx, f.ground - f.lift);
+  ctx.rotate(f.tilt);
+  ctx.scale(f.sx, f.sy);
+  paintSprite(ctx, seed, state, 0, 0, f.size);
+  ctx.restore();
+}
+
+/** Paint one frog on its own stretch of asphalt (app.rs::paint_road_frog). */
+export function paintRoadFrog(ctx, w, h, seed, state = 'crossing') {
+  paintRoadFrogFrame(ctx, w, h, seed, 0, state);
 }
 
 // --- tiny pixel grids ------------------------------------------------------
@@ -604,13 +685,44 @@ function mountPond(cv) {
 }
 
 function mountRoadFrog(cv) {
-  const [seedText] = (cv.dataset.roadfrog || '0').split(':');
+  if (cv._roadRaf) {
+    cancelAnimationFrame(cv._roadRaf);
+    cv._roadRaf = 0;
+  }
+  const [seedText, spriteState] = (cv.dataset.roadfrog || '0:crossing').split(':');
+  const seed = Number(seedText) >>> 0;
+  const state = spriteState === 'dead' ? 'dead' : 'crossing';
   const w = 320;
   const h = Math.round(w * 0.86);
   const ctx = fitCanvas(cv, w, h, 1);
   cv.style.width = '';
   cv.style.height = '';
-  paintRoadFrog(ctx, w, h, Number(seedText) >>> 0);
+
+  const reduced = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced || state === 'dead') {
+    cv.dataset.roadAnimated = 'false';
+    paintRoadFrog(ctx, w, h, seed, state);
+    return;
+  }
+
+  cv.dataset.roadAnimated = 'true';
+  const started = performance.now();
+  let lastPaint = -Infinity;
+  const frame = (now) => {
+    if (!cv.isConnected) {
+      cv._roadRaf = 0;
+      return;
+    }
+    // 30 fps is enough for a pixel road and leaves the main thread alone.
+    if (now - lastPaint >= 32) {
+      lastPaint = now;
+      paintRoadFrogFrame(ctx, w, h, seed, now - started, state);
+    }
+    cv._roadRaf = requestAnimationFrame(frame);
+  };
+  cv._roadRaf = requestAnimationFrame(frame);
 }
 
 function mountGrave(cv) {

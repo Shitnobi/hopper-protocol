@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
 import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../js/ui/frog-mark.js';
-import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg } from '../js/ui/theme.js';
+import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg, roadFrogFrame } from '../js/ui/theme.js';
 import { pipPlan, pips, targetOf } from '../js/ui/dom.js';
 import { GENESIS, requiredAt } from '../js/core/params.js';
 
@@ -23,6 +23,21 @@ ok(song.notes.every((n) => Number.isFinite(n.t0) && Number.isFinite(n.t1)
   && n.t1 >= n.t0 && n.note >= 0 && n.note <= 127), 'every note has sane timing and pitch');
 ok(song.notes.some((n) => n.vel > 0 && n.vel <= 127), 'every note carries a MIDI velocity');
 ok(song.pan.every(Array.isArray) && song.chanVol.every(Array.isArray), 'mixer lanes are arrays');
+
+// The in-flight road card is a treadmill: asphalt slides left while the
+// frog arcs right. The frame geometry is pure so the motion is testable.
+const road0 = roadFrogFrame(320, 275, 0x12345678, 0);
+ok(road0.lift === 0 && road0.dx === 0 && road0.dash === 0,
+  'the road frame starts grounded with the lane at phase zero');
+const roadAir = roadFrogFrame(320, 275, 0x12345678, 250);
+ok(roadAir.lift > 0 && roadAir.dx > 0 && roadAir.sy > 1,
+  'the frog lifts and leans right during the hop');
+const roadLand = roadFrogFrame(320, 275, 0x12345678, 580);
+ok(roadLand.landing > 0.9 && roadLand.sy < 1 && roadLand.lift < 1,
+  'landing squashes the frog back onto the asphalt');
+const roadLater = roadFrogFrame(320, 275, 0x12345678, 1000);
+ok(roadLater.dash < 0 && roadLater.dash > -44,
+  'the lane dashes scroll left on the next cycle');
 
 // The player is the app's soundtrack, not a wallet-only effect: it wants
 // to play before any vault is opened (FROGGER parity), and reports it.
