@@ -265,6 +265,16 @@ The state-address replay was correct, but the local road projection was not. `Wa
 - Actual mainnet replay at tip `973992`: `state idle`, `dist 2`, `in_flight null`; `_localRoadEntries()` `[]`; `road()` `[]`.
 - Full `npm test` passes, including chainfrog 45 and ui 66.
 - Fresh-profile browser E2E passes; cache `hopper-v7-3-12`; no console errors.
+  - After demo settlement, The Road shows `Choose a direction` and `Test Hopper` with `🚦 HOP`, not an in-flight row.
+  - Log: `~/AI/regtest-last-change/logs/e2e-v7-3-12.log`.
+
+### Deploy
+
+- Commit `55f85b2` — “Release a settled Hopper from The Road”.
+- Fast-forwarded `master` and `last_change`; pushed both.
+- GitHub Pages run `41216753240` completed successfully.
+- Live check: build `hopper-v7-3-12`, service-worker controlled, only cache `hopper-v7-3-12`, params intact, no console errors.
+- Reload once to activate the new service-worker cache.
 
 ### Known limitation
 
