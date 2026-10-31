@@ -201,8 +201,11 @@ The wallet only rebuilt a Hopper's road career from **local actions** and **inde
 
 ### Deploy
 
-- Commit and Pages run recorded after the push.
-- Reload the app once to activate the `hopper-v7-3-10` service-worker cache.
+- Commit `30a1006` — “Rebuild a Hopper's road history from its state address”.
+- Fast-forwarded `master` and `last_change`; pushed both.
+- GitHub Pages run `41209640637` completed successfully.
+- Live check: build `hopper-v7-3-10`, service-worker controlled, only cache `hopper-v7-3-10`, params intact, no console errors.
+- Reload the app once to activate the new service-worker cache.
 
 ### Known limitation
 
