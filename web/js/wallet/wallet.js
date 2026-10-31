@@ -224,6 +224,7 @@ export class WalletSession {
     // parsed peer answers for the session; never persist private material.
     this._chainHexCache = new Map();
     this._chainHashCache = new Map();
+    this._chainReconTip = null;
     this._loadLedger();
     this._loadRecovery();
   }
@@ -929,11 +930,24 @@ export class WalletSession {
     // A local/chain mint names sat + mint outpoint. Derive its state script
     // and ask the chain for that output; this is the only way a restored
     // wallet finds a staging address without an indexer or ord server.
-    if (this.cold || force || rescanning) {
-      await this._discoverStaged(records, utxos);
+    if (this.cold || force || rescanning) await this._discoverStaged(records, utxos);
+    // A local HOP stays in the action ledger while it is in flight. Replay
+    // once per new tip until it settles, so the confirmed dist/death appears
+    // without making the user press REFRESH. Old crossings and unchanged tips
+    // do not pay for another address-history walk.
+    const recentCross = (this.actions || []).some((a) => {
+      if (String(a?.kind || '').toLowerCase() !== 'cross') return false;
+      const h = Number(a.height);
+      return Number.isInteger(h) && h > 0 && tip - h <= 144;
+    }) || (this.frogs || []).some((f) =>
+      f?.local === true && (String(f.state || '') === 'crossing' || f.in_flight));
+    const replayNow = this.cold || force || rescanning
+      || (tip !== this._chainReconTip && recentCross);
+    if (replayNow) {
       if (await this._reconstructChainFrogs(records, utxos, { tip })) {
         notes.push('Hopper road history rebuilt from the chain');
       }
+      this._chainReconTip = tip;
     }
 
     let recordFailed = false;

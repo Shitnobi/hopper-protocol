@@ -168,8 +168,9 @@ than painted twice: a local TRAVEL TO ROAD and the indexer's `transfer` for
 that tx are one row, and a local HOP and the indexer's `cross` are one row.
 A local HOP row names its direction (`HOP LEFT`, `HOP STRAIGHT`,
 `HOP RIGHT`) and the spent leaf (`dir 0/1/2`), so a hop is legible even when
-no indexer is configured. On a cold or manual pass the wallet also replays
-the derived state address's transaction history: every TRAVEL and HOP spends
+no indexer is configured. On a cold or manual pass, and once per new tip while a local HOP is in
+flight, the wallet also replays the derived state address's transaction
+history: every TRAVEL and HOP spends
 or creates an output at that one script, and the crossing body in input 0
 names the direction. A crossing made on another device is therefore rebuilt
 from the chain, not only from this browser's local actions. A still-mempool
@@ -470,9 +471,10 @@ curl -sN localhost:9770/v1/events/stream
   reveal, derives the state script from `(sat, mint outpoint, owner)`, and
   watches that address. A new device with the same words and a chain source
   can therefore recover a PREPAREd/staged Hopper with no indexer and no ord
-  server. A cold/manual pass also replays that state address's history, so
-  TRAVEL, each HOP's direction and each settlement are rebuilt from chain
-  transactions without an indexer; a mempool HOP is reported as in flight.
+  server. A cold/manual pass, and once per new tip while a local HOP is in flight,
+  also replays that state address's history, so TRAVEL, each HOP's direction
+  and each settlement are rebuilt from chain transactions without an
+  indexer; a mempool HOP is reported as in flight.
   The ord address is queried before the HD gap plan, so a throttled gap
   address cannot hide a mint. A frog that was transferred in later has no
   new inscription body on its output; that discovery still needs a HOPPER

@@ -210,3 +210,8 @@ The wallet only rebuilt a Hopper's road career from **local actions** and **inde
 ### Known limitation
 
 State-address replay is deliberately a cold/manual-pass operation, not part of every 30-second warm poll. A crossing made on another device appears after unlock, REFRESH, or RESCAN. A confirmed HOP in the six-block finality window is shown as `HOPPING`, with `dist` unchanged until settlement, matching the indexer and the inscription fold.
+
+
+### Addendum — `hopper-v7-3-11`
+
+The initial `v7-3-10` replay ran only on a cold or manual pass. After a HOP confirmed, the restored record could stay `crossing` until REFRESH because the automatic tick had no reason to walk the history again. `v7-3-11` replays once per new tip while a local Hopper is `crossing`/`in_flight` (or a local HOP action is within 144 blocks). The confirmed `dist`/death then appears without manual intervention; the unchanged-tip path still costs no extra request. Cache/build are `hopper-v7-3-11`.
