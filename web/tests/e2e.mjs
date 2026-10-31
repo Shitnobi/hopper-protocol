@@ -1103,6 +1103,18 @@ if (!hopFit || hopFit.sw > hopFit.cw + 1) errors.push(`hop preview overflows hor
 await evaluate(`document.querySelector('[data-action=do-approve-tx]').click()`);
 await waitFor('location.hash === "#/road"', 30000, 'road after hop');
 await sleep(500);
+const hopRoad = await evaluate(`(() => {
+  const box = document.querySelector('.water-box');
+  const entries = [...document.querySelectorAll('.road-entry')];
+  return {
+    picker: box?.innerText || '',
+    entries: entries.map((e) => e.querySelector('.pf-name')?.textContent || ''),
+    text: entries.map((e) => e.innerText).join(' | '),
+  };
+})()`);
+console.log('road after hop:', hopRoad);
+if (hopRoad.picker.includes('Test Hopper')) errors.push(`HOP stayed in the direction picker: ${JSON.stringify(hopRoad)}`);
+if (!hopRoad.entries.includes('Test Hopper')) errors.push(`HOP did not move to The Road: ${JSON.stringify(hopRoad)}`);
 const road = await evaluate('document.body.innerText');
 console.log('road:', road.split('\n').filter(Boolean).slice(0, 12).join(' | '));
 

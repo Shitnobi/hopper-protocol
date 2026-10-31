@@ -1,6 +1,7 @@
 // Screen policy that is easy to regress: no sound-test affordance belongs in
 // the UI, and the demo chain's block-production controls are demo-only.
 import * as screens from '../js/ui/screens.js';
+import { WalletSession } from '../js/wallet/wallet.js';
 import { GENESIS } from '../js/core/params.js';
 import { Sound } from '../js/sound.js';
 import { volumeFromRange } from '../js/ui/volume.js';
@@ -210,5 +211,34 @@ const mintPondHtml = screens.pond({ w: mintLily, settings: mintLily.settings });
 ok(mintPondHtml.includes('data-action="sheet-transfer"')
   && mintPondHtml.includes('data-action="travel-to-road"'),
 'an unstaged Hopper keeps SEND and TRAVEL TO ROAD');
+
+// A HOP is public as soon as it is broadcast. Until the indexer returns a
+// crossing row, the local action already enough to move the frog from the
+// direction picker to The Road, with no invented confirmation height.
+const hopFrog = { sat: 9000000001, name: 'Roo', state: 'idle', seed: 7, gen: 1, dist: 2 };
+const hopWallet = {
+  ...demo,
+  tipHeight: GENESIS + 20,
+  frogs: [hopFrog],
+  actions: [{
+    kind: 'cross', sat: hopFrog.sat, txid: 'aa'.repeat(32), dir: 1,
+    height: GENESIS + 19, at: '2026-10-30T00:00:00Z',
+  }],
+  frogBySat(sat) { return Number(sat) === hopFrog.sat ? hopFrog : null; },
+};
+const localHop = WalletSession.prototype._localRoadEntries.call(hopWallet);
+ok(localHop.length === 1 && localHop[0].inFlight.height == null
+  && localHop[0].inFlight.settle_height == null && localHop[0].inFlight.local === true,
+'a just-broadcast HOP is an unmeasured local road row');
+const hopRoadHtml = screens.road({
+  w: { ...hopWallet, _localRoadEntries: () => localHop },
+  settings: hopWallet.settings,
+  road: [],
+});
+ok(!hopRoadHtml.includes('Choose a direction'),
+'a HOP in flight leaves the pond direction picker immediately');
+ok(hopRoadHtml.includes('Roo') && hopRoadHtml.includes('ON THE ROAD')
+  && hopRoadHtml.includes('in mempool'),
+'the local HOP appears on The Road as an in-mempool crossing');
 
 console.log(`ui: ${checks} checks passed (fee/preview/road/emergency/hop)`);

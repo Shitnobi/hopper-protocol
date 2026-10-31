@@ -2977,10 +2977,54 @@ export class WalletSession {
     return data.entries || [];
   }
 
+  /** A HOP that we broadcast but the indexer has not shown yet. The
+   *  transaction is already public; waiting for an indexer would leave the
+   *  Hopper sitting in the pond's direction picker until a block (or a
+   *  remote refresh) arrives. Keep this local row only while the frog is
+   *  still idle and the action is recent; a real crossing/settlement record
+   *  supersedes it. */
+  _localRoadEntries() {
+    const tip = Number(this.tipHeight) || 0;
+    const rows = [];
+    for (const a of this.actions || []) {
+      if (String(a?.kind || '').toLowerCase() !== 'cross') continue;
+      const sat = Number(a.sat);
+      if (!Number.isSafeInteger(sat)) continue;
+      const f = this.frogBySat?.(sat);
+      if (!f || String(f.state || 'idle') !== 'idle') continue;
+      const txid = String(a.txid || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txid)) continue;
+      const at = Number(a.height);
+      if (Number.isFinite(at) && at >= 0 && tip - at > 144) continue;
+      const crossHeight = Number.isFinite(at) && at >= 0 ? at : tip;
+      rows.push({
+        sat,
+        seed: f.seed,
+        name: f.name,
+        dist: f.dist,
+        gen: f.gen,
+        local: true,
+        inFlight: {
+          txid,
+          // No inclusion height yet. roadEntry says "in mempool" rather
+          // than inventing a six-block countdown.
+          height: null,
+          target_hops: requiredAt(crossHeight + 1),
+          dir: Number(a.dir),
+          settle_height: null,
+          local: true,
+        },
+        provisionalDead: null,
+        outcomeBlockHash: null,
+      });
+    }
+    return rows;
+  }
+
   async road() {
     if (!this.backend) await this.connect();
     const data = await this.backend.road().catch(() => ({ active: [] }));
-    return (data.active || []).map((c) => ({
+    const remote = (data.active || []).map((c) => ({
       sat: c.frogger_sat ?? c.sat,
       seed: c.seed, name: c.name, dist: c.dist,
       gen: c.gen,
@@ -2991,6 +3035,11 @@ export class WalletSession {
       provisionalDead: c.provisional_dead ?? null,
       outcomeBlockHash: c.outcome_block_hash ?? null,
     }));
+    const seen = new Set(remote.map((c) => Number(c.sat)));
+    for (const c of this._localRoadEntries()) {
+      if (!seen.has(Number(c.sat))) remote.push(c);
+    }
+    return remote;
   }
 
   frogBySat(sat) {

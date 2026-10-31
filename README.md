@@ -273,7 +273,10 @@ Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
 boot intro and the eight-page rules walkthrough (swipe left or right, or
 use BACK and NEXT). Once a Hopper is staged in its tapscript state output,
 its pond lily pad keeps the name and art but drops SEND and TRAVEL TO ROAD;
-the HOP that spends the state leaf lives on The Road.
+the HOP that spends the state leaf lives on The Road. Approving that HOP
+moves the Hopper out of the direction picker into **Crossings in flight**
+immediately, labelled in mempool until a block gives the indexer a real
+settlement height.
 
 The crossing pips are a real progress display: one dot for every hop in
 the current target (5 at genesis, rising to 25), filled to the Hopper's

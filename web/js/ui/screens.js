@@ -294,8 +294,21 @@ function pondItem(app, f, { mode } = {}) {
 
 export function road(app) {
   const w = app.w;
-  const idle = (w.frogs || []).filter((f) => f.state === 'idle');
-  const inFlight = app.road || [];
+  // A just-broadcast HOP is already on the road even before the indexer
+  // sees it. Merge the local action so the frog leaves the direction
+  // picker immediately; a remote crossing row wins if both exist.
+  const inFlight = [];
+  const seen = new Set();
+  for (const c of app.road || []) {
+    const sat = Number(c.sat);
+    if (!seen.has(sat)) { seen.add(sat); inFlight.push(c); }
+  }
+  for (const c of w._localRoadEntries?.() || []) {
+    const sat = Number(c.sat);
+    if (!seen.has(sat)) { seen.add(sat); inFlight.push(c); }
+  }
+  const onRoad = new Set(inFlight.map((c) => Number(c.sat)));
+  const idle = (w.frogs || []).filter((f) => f.state === 'idle' && !onRoad.has(Number(f.sat)));
   const demo = app.settings.mode === 'demo';
   return `
     ${heading('🚦 The Road')}
@@ -329,8 +342,9 @@ export function road(app) {
 
 function roadEntry(app, c) {
   const tip = app.w.tipHeight || 0;
-  const settle = c.inFlight?.settle_height ?? ((c.inFlight?.height ?? tip) + 6);
-  const blocks = Math.max(0, settle - tip);
+  const measured = Number.isFinite(Number(c.inFlight?.height)) && Number(c.inFlight?.height) > 0;
+  const settle = c.inFlight?.settle_height ?? (measured ? Number(c.inFlight.height) + 6 : null);
+  const blocks = settle == null ? null : Math.max(0, settle - tip);
   const f = app.w.frogBySat(c.sat);
   const seed = c.seed ?? f?.seed ?? 0;
   const name = c.name || f?.name || 'UNNAMED';
@@ -345,7 +359,7 @@ function roadEntry(app, c) {
         <span class="pf-sub">G${Number(c.gen) || generationAt(f?.mint_height ?? tip)} · ${pips(c.dist, target)}</span>
         <span class="pf-sub" style="display:flex;justify-content:center;gap:6px;align-items:center;margin-top:2px">
           ${chip(label, tone)}
-          <span class="tiny muted">${blocks ? `⬛ ${blocks}` : 'settling…'}</span>
+          <span class="tiny muted">${blocks == null ? 'in mempool' : blocks ? `⬛ ${blocks}` : 'settling…'}</span>
         </span>
       </div>
     </div>`;
