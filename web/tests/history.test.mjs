@@ -14,7 +14,7 @@ globalThis.localStorage = {
 };
 
 const { WalletSession, DEFAULT_SETTINGS } = await import('../js/wallet/wallet.js');
-const { history, historyDebug } = await import('../js/ui/screens.js');
+const { history, historyDebug, bio } = await import('../js/ui/screens.js');
 const { KEYS } = await import('../js/wallet/storage.js');
 
 let checks = 0;
@@ -415,6 +415,37 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   eq('an unlinked change is ordered by observation time in its block',
     bareOrder.slice(0, 2), ['CHANGE', 'MINT']);
   ok(!/sat 0\b/.test(plain(history({ w: bare }))), 'a sat-less mint row never renders sat 0');
+}
+
+{
+  // A HOP is not an indexer-only event. It is a wallet action, and the Bio
+  // page must read the same local ledger when no indexer is configured.
+  const w = await wallet();
+  await w.mint({ seed: 0x77777777, name: 'Life', feeRate: 2 });
+  await w.prepare(w.frogs[0]);
+  const frog = w.frogBySat(w.frogs[0].sat);
+  const hop = await w.previewCross(frog, { dir: 1, feeRate: 2 });
+  await w.broadcastPreview(hop);
+
+  const historyText = plain(history({ w }));
+  ok(/HOP STRAIGHT/.test(historyText), 'a local HOP names its direction');
+  ok(/dir 1 · STRAIGHT/.test(historyText), 'the HOP row carries the leaf direction');
+  ok(/hopped straight/.test(historyText), 'the HOP row says what the action did');
+
+  const life = plain(bio({ w, frogRecord: frog }, frog.sat));
+  eq('bio renders the mint once', (life.match(/MINTED/g) || []).length, 1);
+  eq('bio renders the hop once', (life.match(/HOPPED ONTO THE ROAD/g) || []).length, 1);
+  ok(/HOPPED ONTO THE ROAD block \d+ · STRAIGHT/.test(life),
+    'bio names the direction of the local hop');
+
+  // Same wallet, no indexer feed. The local action and chain-mint ledgers
+  // must still fill the life story, without duplicating the mint.
+  const noIndexer = { ...w, history: [], frogBySat: w.frogBySat.bind(w) };
+  const fallback = plain(bio({ w: noIndexer, frogRecord: frog }, frog.sat));
+  eq('an indexer-less bio still has one mint', (fallback.match(/MINTED/g) || []).length, 1);
+  eq('an indexer-less bio still has one hop', (fallback.match(/HOPPED ONTO THE ROAD/g) || []).length, 1);
+  ok(fallback.includes('STRAIGHT'), 'the fallback keeps the local direction');
+  ok(/MINTED block \d+/.test(fallback), 'the fallback mint names its action height');
 }
 
 console.log(`history: ${checks} checks passed`);

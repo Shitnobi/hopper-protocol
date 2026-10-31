@@ -163,7 +163,15 @@ so explicitly.
 
 History is wallet-scoped. It merges local actions, indexer events for this
 wallet's Hoppers, settled outputs observed on our addresses, internal change,
-and faded mempool rows. That is how an initial deposit and a Hopper arrival
+and faded mempool rows. A local HOP row names its direction (`HOP LEFT`,
+`HOP STRAIGHT`, `HOP RIGHT`) and the spent leaf (`dir 0/1/2`), so a hop is
+legible even when no indexer is configured.
+
+The Bio page is the same ledger, viewed as one Hopper's life story. It reads
+indexer `mint`, `cross` and `settle` events when they exist, then fills any
+gap from the local action ledger and the chain-mint ledger. Without an
+indexer it still shows the mint and each locally broadcast hop (with its
+direction) instead of an empty timeline. That is how an initial deposit and a Hopper arrival
 appear alongside the mint; the indexer's global mint feed is filtered so
 unrelated NPC mints are not shown. A MINT row is also reconstructed from the
 owned mint output when the local action ledger is absent, so restoring the

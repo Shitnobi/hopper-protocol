@@ -1116,7 +1116,37 @@ if (!hopRoad.entries.includes('Test Hopper')) errors.push(`HOP did not move to T
 const road = await evaluate('document.body.innerText');
 console.log('road:', road.split('\n').filter(Boolean).slice(0, 12).join(' | '));
 
-// 5. Mine 6 and settle.
+// The local HOP is legible in History and in the Hopper's life story even
+// before the indexer has a settle row.
+await evaluate(`document.querySelector('[data-action=nav][data-view=history]').click()`);
+await waitFor('document.querySelector("#app .card-row .tx-top .kind")', 10000, 'history after hop');
+const hopHistory = await evaluate(`(() => {
+  const row = [...document.querySelectorAll('#app .card-row')].find((r) => /HOP/.test(r.innerText));
+  return { text: row?.innerText || '', sat: row?.dataset.sat || '' };
+})()`);
+console.log('history after hop:', hopHistory);
+if (!/HOP STRAIGHT/.test(hopHistory.text) || !/dir 1/.test(hopHistory.text)
+  || !/hopped straight/.test(hopHistory.text)) {
+  errors.push(`HOP history row is not legible: ${JSON.stringify(hopHistory)}`);
+}
+if (!hopHistory.sat) {
+  errors.push('HOP history row has no sat to open its Hopper');
+} else {
+  await evaluate(`document.querySelector('#app .card-row[data-action="open-frog"]').click()`);
+  await waitFor('document.querySelector("[data-action=bio]")', 10000, 'Hopper detail after HOP');
+  await evaluate(`document.querySelector("[data-action=bio]").click()`);
+  await waitFor('location.hash.startsWith("#/bio/")', 10000, 'Bio after HOP');
+  const hopBio = await evaluate(`document.body.innerText`);
+  console.log('bio after hop:', hopBio.split('\n').filter(Boolean).slice(0, 18).join(' | '));
+  if (!/MINTED/.test(hopBio) || !/HOPPED ONTO THE ROAD/.test(hopBio)
+    || !/STRAIGHT/.test(hopBio)) {
+    errors.push(`Bio is missing the local mint/hop: ${JSON.stringify(hopBio.slice(0, 500))}`);
+  }
+}
+
+// 5. Mine 6 and settle. Return to The Road, which owns the mine control.
+await evaluate(`document.querySelector('[data-action=nav][data-view=road]').click()`);
+await waitFor(`document.querySelector('[data-action=mine][data-n="6"]')`, 10000, 'road after Bio');
 await evaluate(`document.querySelector('[data-action=mine][data-n="6"]').click()`);
 await sleep(2500);
 const after = await evaluate('document.body.innerText');
