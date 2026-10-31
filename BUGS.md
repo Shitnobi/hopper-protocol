@@ -341,3 +341,121 @@ Live mode hides a local road row only after the state-address replay has marked 
 ### Known limitation
 
 If a CDN edge or the browser's HTTP cache keeps serving an old `build-guard.js` after a deploy, the new guard refuses a second automatic reload in that tab instead of spinning. The old page keeps working; the next navigation (or **RELOAD THE APP** / DevTools → Service Workers → Unregister) picks up the new shell. A genuinely unreachable cache cannot be updated offline.
+
+## 2026-10-31 — A chain scan updated the ledger but not every live screen
+
+**Reported:** check that nothing the wallet learns from a chain scan is left
+un-rendered.
+
+**Build:** fixed in `7f16a57`, cache/build `hopper-v7-3-15`.
+
+### What was wrong
+
+`WalletSession.refresh()` correctly dispatched `hopper:refresh` after a pass,
+but the UI listener used a hand-written view allowlist and each view decided
+for itself when to fetch remote rows.
+
+1. **BIO was not in the repaint allowlist.** A scan that added a HOP or a
+   settlement updated History, the pond and the wallet, but an open BIO view
+   kept its old timeline until the user navigated away and back.
+2. **MINT was not in the allowlist.** A scan that discovered a funding coin
+   left `MINT!` disabled and the “no tracked coin” notice on screen. A scan
+   that spent it left the button enabled. The target/next-rise schedule also
+   stayed at the old tip. A full re-render was not acceptable because it would
+   wipe the name and focus the user was editing.
+3. **SETTINGS refreshed only its scan panel.** The AUTO RECOVERY PACKS summary
+   is written by the same scan, so it could stay stale for the whole visit.
+4. **THE ROAD used `app.road` from when the view opened.** A scan can rebuild
+   an in-flight crossing from state-address history (`frog.in_flight`), but
+   `screens.road()` merged only `app.road` and local actions. A restored
+   crossing could therefore disappear from the Road until the next navigation
+   refetched it.
+5. **LEADERBOARD rows were rendered but never refetched.** A newly owned Hopper
+   could remain without its YOU marker.
+6. **A send sheet and the graveyard were static overlays.** The send sheet’s
+   spendable line and the graveyard list could stay stale while the underlying
+   wallet updated.
+7. **A missed public-record fetch blanked a visible frog.** The scan-triggered
+   `ensureFrogRecord()` assigned `app.frogRecord = null` on a miss, replacing a
+   record that was already on screen.
+8. **BIO could use the wrong `frogRecord`.** Its fallback did not check the
+   record’s sat, so a record left over from another frog could appear at a new
+   URL. The `bio`/`detail` handlers had the same issue.
+9. **The ON ROAD refusal text never cleared.** After the crossing settled, the
+   wallet/pond kept warning that sending would retreat a crossing that no
+   longer existed.
+10. **The graveyard overlay stayed over the route it opened.** Choosing a dead
+    Hopper navigated to BIO underneath, but the overlay was left covering the
+    page.
+
+### Fix
+
+- Added `screens.scanRefreshMode()` as the single repaint policy:
+  - `render`: WALLET, THE POND, HISTORY
+  - `data`: THE ROAD, LEADERBOARD, Hopper detail, BIO — render, then refetch
+  - `mint`: targeted in-place MINT update
+  - `settings`: targeted scan/recovery update
+  - `defer`: a foreground `run()` is active and will render in its `finally`
+  - `none`: no wallet behind the lock screen
+- BIO is now repainted and its record refreshed.
+- `mintLive()` / `refreshMintLive()` update the funding coin, MINT button,
+  no-coin notice, next target and next rise without rebuilding the form, so
+  the seed/name and focus survive.
+- SETTINGS updates `scanPanel` and `recoverySummaryText()` in place.
+- THE ROAD now merges `w.frogs[].in_flight` even when `app.road` is empty or
+  older; the view then refetches the remote rows after the render.
+- LEADERBOARD refetches its remote rows after a scan; the YOU marker follows
+  the current frog set.
+- The send sheet’s spendable line updates in place. An open graveyard overlay
+  is rebuilt from the current frog list. Signed previews and exported
+  emergency/recovery documents remain frozen snapshots by design.
+- `ensureFrogRecord()` keeps the existing record when a public fetch misses.
+- `screens.bio()` and the `bio`/`detail` handlers ignore a `frogRecord` whose
+  sat does not match the route.
+- `render()` clears a stale `frogRefusal` once no frog is crossing, and
+  `openFrog`/`bio`/`detail` dismiss the overlay before navigating.
+
+### Verification
+
+- Full `npm test` passed: core 136, game ok, emergency 103, params 7,
+  media 40, scan 94, ord 46, ui 91 (was 66), fees 19, preview 87, localmint 40,
+  chainfrog 45, history 134, rbf 125; v7 fold sync/parity/doc boot pass.
+- New UI checks cover the refresh policy, live MINT funding/schedule, a
+  chain-replayed crossing reaching THE ROAD with an empty `app.road`, the
+  recovery line, the send-sheet marker, the graveyard marker, and a
+  wrong-sat BIO fallback.
+- Fresh-profile E2E passed at 800×600 with `console errors: none` and
+  `e2e: ok`. New assertions:
+  - `scan repaint: bio repainted`
+  - `scan repaint: settings recovery 1 saved pack · …`
+  - `scan repaint: mint { probe: 'keep', name: 'SCAN DRAFT', focused: true, disabled: false }`
+  - `scan repaint: send sheet Spendable: 3,166,208 sats…`
+  - `scan repaint: graveyard refreshed`
+  - graveyard → BIO closes the overlay before showing the route.
+  - A fresh boot still performs exactly one navigation; the stale `?build=`
+    boot still skips the splash and cleans the query.
+- Live after deployment (`hopper-v7-3-15`):
+  - first load and one manual reload each performed exactly one navigation;
+  - only cache `hopper-v7-3-15`, 54 cached files, no build-guard flag;
+  - params hash `d466f8db…cf72f`, genesis 974,034, mempool.space default,
+    Settings controls and THE TOLL text intact; no console errors.
+
+### Deploy
+
+- Commit `7f16a57` — “Repaint every live view after a chain scan”.
+- Fast-forwarded `master` and `last_change`; pushed both.
+- GitHub Pages run `41225116541` completed successfully.
+- Live build `hopper-v7-3-15`. Reload once to replace the v14 shell cache.
+
+### Known limits
+
+- A signed transaction preview, HOP review, emergency document and recovery
+  export are intentionally immutable snapshots. Approving a transaction
+  revalidates its inputs and HOP leaf before broadcast; it does not silently
+  rewrite bytes under the user.
+- THE ROAD and LEADERBOARD still need their remote fetch to succeed for remote
+  rows. When it does not, the wallet’s own chain-replayed crossings, local
+  actions, pond and balance still render; the stale remote row is retried on
+  the next scan.
+- Background scans are paused in a hidden tab; returning to the foreground
+  wakes one and then repaints through the same path.
