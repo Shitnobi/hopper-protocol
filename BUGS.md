@@ -128,8 +128,11 @@ Bio now recovers hops made in **this browser** from its local action ledger, and
 
 ### Deploy
 
-- Build `hopper-v7-3-9`, deployed through GitHub Pages.
-- After the deploy, load the site once to activate the new service-worker cache.
+- Commit: `70b813e` — “Merge a Hopper's mint, travel and hop into one readable journey”.
+- Fast-forwarded `master` and `last_change` from `a384e3d` to `70b813e`; pushed both.
+- GitHub Pages run `41181766432` completed successfully.
+- Live release check: build `hopper-v7-3-9`, service worker controlled, only cache `hopper-v7-3-9`, params intact, no console errors.
+- Load the site once to activate the new service-worker cache.
 
 ### Known limitation
 
