@@ -189,12 +189,12 @@ tapping one copies the full value, with a `txid copied` or `address copied`
 confirmation.
 
 Observed receives are persisted in the local ledger, so an initial deposit
-does not disappear when its coin is later spent. On the first run after this
-ledger upgrade, a one-time address-history pass recovers older deposits whose
-coins were already spent; a companion pass recovers change outputs at the
-change addresses the wallet has used, including change spent by a later mint.
-Both passes record confirmed outputs, are versioned in the ledger, and do not
-repeat. RESCAN resets both markers if a user needs to force recovery.
+does not disappear when its coin is later spent. A one-time address-history
+pass recovers older deposits whose coins were already spent; a companion
+pass recovers change outputs at the fixed change script, including change
+spent by a later mint. Both passes record confirmed outputs, are versioned
+in the ledger, and do not repeat. RESCAN resets both markers if a user needs
+to force recovery.
 
 Transaction fee fields show mempool.space's
 `/api/v1/fees/precise` recommendations: **FAST** (`fastestFee`), **MEDIUM**
@@ -213,7 +213,7 @@ Both Blockstream and **mempool.space** speak the same Esplora API: Settings
 has one-tap **USE MEMPOOL.SPACE** / **USE BLOCKSTREAM** presets, and either
 URL can be typed directly — a bare host gains `/api`, and an explicit
 `/api` path is left alone. Public hosts get a small
-client-side queue and one retry because a 24-address gap walk fired at once
+client-side queue and one retry because a burst of address/UTXO requests
 triggers throttling. mempool.space caps `/address/:address/utxo` at 500
 outputs and is slower on busy addresses; a local node is faster. If the
 browser reports `Failed to fetch` while `curl` works, allowlist the host in
@@ -285,15 +285,15 @@ Hopper follows the next block's requirement, so empty dots appear as the
 road raises its toll; an in-flight Hopper keeps its frozen target.
 
 RECEIVE is the egui bottom window, not an address list: a tab for
-**BITCOIN** (the rotating BIP84 receive branch, with NEW ADDRESS and USED
-ADDRESSES) and a tab for **HOPPERS** (the fixed BIP86 frog address), each
-with the warning band the tab demands ("DON'T SEND HOPPERS HERE" /
-"🐸 ONLY SEND HOPPERS HERE"), a scannable QR with the spec's quiet zone,
-the selectable address, COPY and FULL QR. A BITCOIN address retires as
-soon as the wallet sees it paid — mempool or confirmed — and the open
-window immediately repaints with the next unused address. The window is
-height-stable: both tabs use the same fixed QR, address, note and action
-rows, so flipping BITCOIN/HOPPERS never moves or resizes it.
+**BITCOIN** (one fixed BIP84 address at `m/84'/coin'/0'/0/0`) and a tab for
+**HOPPERS** (the fixed BIP86 frog address), each with the warning band the
+tab demands ("DON'T SEND HOPPERS HERE" / "🐸 ONLY SEND HOPPERS HERE"), a
+scannable QR with the spec's quiet zone, the selectable address, COPY and
+FULL QR. Neither address rotates: a payment does not retire or replace it.
+The fixed layout is what lets the wallet watch only receive #0, change #0 and
+the ordinals script instead of walking an HD gap. The window is height-stable:
+both tabs use the same fixed QR, address, note and action rows, so flipping
+BITCOIN/HOPPERS never moves or resizes it.
 
 The music is the egui app's `music.mid` played through WebAudio with the
 same tempo map, voice and master fader; the mute and volume still live in
@@ -385,8 +385,9 @@ curl -sN localhost:9770/v1/events/stream
 ## The web wallet
 
 - **Keys**: BIP-39 → BIP-84 `m/84'/coin'/0'` (`/0/i` receive, `/1/i`
-  change) plus ordinals key `m/84'/coin'/2/0`. P2WPKH and P2TR
-  (BIP-341/BIP-86) addresses, tapleaf/branch/control-block construction.
+  change; the web wallet uses only index 0 for both) plus ordinals key
+  `m/84'/coin'/2/0`. P2WPKH and P2TR (BIP-341/BIP-86) addresses,
+  tapleaf/branch/control-block construction.
 - **Transactions**: consensus serialization, txid/wtxid, vsize, BIP-143 and
   BIP-341 sighashes, SIGHASH_ALL, Schnorr/ECDSA signing. A Rust test
   (`js_tx_verify.rs`) re-derives every sighash with `rust-bitcoin` and
@@ -413,24 +414,23 @@ curl -sN localhost:9770/v1/events/stream
   when "keep this device unlocked" is checked; locking deletes it. Wiping
   removes the vault and local ledger. Unlock decrypts and opens the wallet
   immediately; the first chain refresh runs in the background, so a cold
-  gap walk, a slow public Esplora or an unreachable indexer cannot hold the
+  pass, a slow public Esplora or an unreachable indexer cannot hold the
   lock screen. The protocol-params check still runs before mint/hop signing.
-- **Discovery**: the scan policy is ported from FROGGER. A cold boot (or
-  RESCAN / EXTEND) walks the 20-address gap on receive and change in waves
-  of eight; the change branch is skipped on a brand-new wallet. Every later
-  pass watches only the ordinals address, the next unused index per branch
-  plus one guard (`next - 1` too), and the indices that held coins last
-  pass. A tip gate means an unchanged block asks the chain **nothing**.
-  Public sources get one tip probe every ten minutes while idle, and a 30 s
-  cadence only while one of our transactions is confirming. A failed tip
-  aborts a background pass before any address query; a failed address
-  stops the pass rather than firing the rest of the plan. Public failures
-  back off 1→30 min (local failures 5→300 s). **STOP SCANNING** in Settings
-  clears the timer, block subscription and foreground wake, persists the
-  pause across reloads, and becomes **RESUME SCANNING**; REFRESH and RESCAN
-  still work by hand while paused. RESCAN takes two taps, walks the gap
-  slowly (400 ms per wave on a public source), reports progress and can be
-  stopped; EXTEND grows the persisted window by 20. An address answer already says
+- **Discovery**: the watch set is fixed. The wallet asks only the ordinals
+  address, receive #0, change #0, and one derived tapscript state script for
+  each staged Hopper. There is no HD gap walk, no receive rotation, and no
+  `EXTEND`. A cold boot and every later pass ask the same scripts; only the
+  one-time receive/change history backfills run on a cold pass or RESCAN. A
+  tip gate means an unchanged block asks the chain **nothing**. Public
+  sources get one tip probe every ten minutes while idle, and a 30 s cadence
+  only while one of our transactions is confirming. A failed tip aborts a
+  background pass before any address query; a failed address stops the pass
+  rather than firing the rest of the set. Public failures back off 1→30 min
+  (local failures 5→300 s). **STOP SCANNING** in Settings clears the timer,
+  block subscription and foreground wake, persists the pause across
+  reloads, and becomes **RESUME SCANNING**; REFRESH and RESCAN still work by
+  hand while paused. RESCAN is one tap and re-asks the fixed scripts plus
+  both history backfills. An address answer already says
   whether an output is confirmed; mempool outputs are kept as faded History
   rows labelled IN MEMPOOL and counted in the wallet's pending total — no
   extra request is made to find them. A frog is owned when its sat is in a
@@ -555,7 +555,7 @@ mainnet value on it without review.
   It validates the v7 state machine and byte encodings, not Bitcoin.
 - Live mode refreshes on a block-driven schedule: an Electrum source pushes
   new headers, an Esplora source polls the tip every ten minutes while idle.
-  There is no second index or full-gap sweep on a warm pass. Deep discovery
+  There is no second index or extra HD sweep on a warm pass. Deep discovery
   of state outputs is bounded to 300 public frogs and can be expensive on a
   large pond; it is off by default and can be enabled in Settings if you
   need to recover custody outputs from a fresh device.

@@ -226,6 +226,9 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
       warning: document.querySelector('.receive-warning')?.textContent.trim(),
       tabs: [...document.querySelectorAll('.receive-tab')].map((b) => b.textContent.trim()),
       address: document.querySelector('.receive-address')?.textContent.trim(),
+      note: document.querySelector('.receive-note')?.textContent.trim(),
+      hasNew: Boolean(document.querySelector('[data-action=new-receive]')),
+      hasBook: Boolean(document.querySelector('[data-action=receive-book]')),
       dark,
       sheet: (() => { const r = document.querySelector('.overlay .sheet').getBoundingClientRect(); return { y: Math.round(r.y), h: Math.round(r.height), w: Math.round(r.width) }; })(),
     };
@@ -234,58 +237,53 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
   if (!first.warning.includes("DON'T SEND HOPPERS")) errors.push('receive: missing the bitcoin warning');
   if (first.tabs.join(',') !== 'BITCOIN,HOPPERS') errors.push(`receive: tabs ${JSON.stringify(first.tabs)}`);
   if (first.dark < 1000) errors.push(`receive: QR has no ink (${first.dark})`);
+  if (first.hasNew || first.hasBook) errors.push('receive: the fixed BITCOIN tab must not rotate addresses');
+  if (!/never rotates/.test(first.note)) errors.push(`receive: the fixed note is missing ${JSON.stringify(first.note)}`);
+  autoReceive = first.address;
   await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=ord]').click()`);
   await sleep(250);
   const ord = await evaluate(`({
     warning: document.querySelector('.receive-warning')?.textContent.trim(),
     address: document.querySelector('.receive-address')?.textContent.trim(),
     hasNew: Boolean(document.querySelector('[data-action=new-receive]')),
+    hasBook: Boolean(document.querySelector('[data-action=receive-book]')),
     sheet: (() => { const r = document.querySelector('.overlay .sheet').getBoundingClientRect(); return { y: Math.round(r.y), h: Math.round(r.height), w: Math.round(r.width) }; })(),
   })`);
   if (first.sheet.h !== ord.sheet.h || first.sheet.y !== ord.sheet.y) {
     errors.push(`receive: the window resized on tab switch ${JSON.stringify({ btc: first.sheet, ord: ord.sheet })}`);
   }
   if (!ord.warning.includes('ONLY SEND HOPPERS')) errors.push('receive: missing the hoppers warning');
-  if (ord.hasNew) errors.push('receive: the fixed hoppers tab must not offer NEW ADDRESS');
+  if (ord.hasNew || ord.hasBook) errors.push('receive: the fixed hoppers tab must not offer rotation');
   if (ord.address === first.address) errors.push('receive: the two tabs show the same address');
   await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=btc]').click()`);
   await sleep(200);
   const before = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
 
-  // A payment to the open BITCOIN tab retires that address. The sheet must
-  // repaint with the next one without a manual NEW ADDRESS tap. The faucet
-  // lives in SETTINGS, but navigating leaves the sheet mounted; the refresh
-  // that sees the coins is the same one the background scan performs.
+  // A payment to the fixed BITCOIN address must not retire or replace it.
+  // The faucet's toast is emitted after demoFund's refresh has completed.
   await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
   await sleep(250);
   await click('faucet');
-  await waitFor(
-    `document.querySelector('.overlay .receive-tabs') && document.querySelector('.overlay .receive-address')?.textContent.trim() !== ${JSON.stringify(before)}`,
-    30000, 'receive sheet auto-rotation after payment',
-  );
-  const auto = await evaluate(`({
+  await waitFor(`document.querySelector('#toasts')?.innerText.includes('8 coins funded')`, 30000, 'faucet refresh');
+  const fixed = await evaluate(`({
     address: document.querySelector('.overlay .receive-address')?.textContent.trim(),
     tab: document.querySelector('.overlay .receive-tab.on')?.textContent.trim(),
     note: document.querySelector('.overlay .receive-note')?.textContent.trim(),
   })`);
-  console.log('receive auto-rotation:', { from: before.slice(0, 12), to: auto.address.slice(0, 12), tab: auto.tab });
-  autoReceive = auto.address;
-  if (!auto.address || auto.address === before) errors.push('receive: paid address did not auto-rotate');
-  if (auto.tab !== 'BITCOIN' || !/rotates after it is paid/.test(auto.note)) {
-    errors.push(`receive: auto-rotation lost the bitcoin tab ${JSON.stringify(auto)}`);
+  console.log('receive fixed:', { address: fixed.address.slice(0, 12), tab: fixed.tab });
+  if (fixed.address !== before) errors.push('receive: the fixed address changed after payment');
+  if (fixed.tab !== 'BITCOIN' || !/never rotates/.test(fixed.note)) {
+    errors.push(`receive: payment lost the fixed bitcoin tab ${JSON.stringify(fixed)}`);
   }
+  autoReceive = fixed.address || autoReceive;
   await click('close-overlay');
   await sleep(150);
   await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
   await sleep(150);
   await click('sheet-receive');
-  await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window after auto-rotation');
-
-  const afterAuto = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
-  await click('new-receive');
-  await sleep(250);
+  await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window after payment');
   const after = await evaluate(`document.querySelector('.receive-address').textContent.trim()`);
-  if (!after || after === afterAuto) errors.push('receive: NEW ADDRESS did not rotate');
+  if (after !== before) errors.push('receive: reopening the window changed the fixed address');
   await click('close-overlay');
   await sleep(150);
 }
@@ -593,8 +591,8 @@ const scanPanel = await evaluate(`({
   hasPause: Boolean(document.querySelector('[data-action=toggle-scan]')),
 })`);
 console.log('scan policy:', scanPanel.text.replace(/\n/g, ' | '));
-if (!scanPanel.hasRescan || !scanPanel.hasExtend || !scanPanel.hasPause
-    || !/SCAN|Scan window/i.test(scanPanel.text)) {
+if (!scanPanel.hasRescan || scanPanel.hasExtend || !scanPanel.hasPause
+    || !/Watch set/i.test(scanPanel.text) || !/receive #0/.test(scanPanel.text)) {
   errors.push(`settings: scan policy is incomplete ${JSON.stringify(scanPanel)}`);
 }
 const pauseState = await evaluate(`(async () => {

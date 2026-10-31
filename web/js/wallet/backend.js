@@ -44,9 +44,9 @@ function corsOriginHint() {
 export class EsploraClient {
   /**
    * `metered` turns on a small client-side request queue and one retry.
-   * Public Esplora hosts (Blockstream, mempool.space) collapse under a
-   * 24-address gap walk fired eight-at-a-time; a browser then reports
-   * `Failed to fetch` or times out. A local node stays unthrottled.
+   * Public Esplora hosts (Blockstream, mempool.space) throttle bursts; a
+   * browser then reports `Failed to fetch` or times out. A local node
+   * stays unthrottled.
    */
   constructor(baseUrl, { metered = false } = {}) {
     this.base = baseUrl.replace(/\/+$/, '');
@@ -137,11 +137,10 @@ export class EsploraClient {
   }
 
   /**
-   * The address's transaction list, in the shape the gap walk needs:
-   * "has this script ever been used?". Esplora returns up to 50 recent
-   * transactions (mempool + chain); an address with more history than
-   * that is certainly used, so the page limit cannot make a used index
-   * look empty.
+   * The address's transaction list, in the shape the history backfills
+   * need. Esplora returns up to 50 recent transactions (mempool + chain);
+   * an address with more history than that is certainly used, so the page
+   * limit cannot hide a funded fixed script.
    */
   async addressHistory(address) {
     const txs = await this.addressTxs(address);
@@ -335,9 +334,8 @@ export class ElectrumClient {
     }));
   }
 
-  /** Full history of one script. Used by the cold gap walk: an address
-   *  whose coins were spent still has history, and treating it as unused
-   *  would reuse an index. */
+  /** Full history of one script. A fixed script whose coins were spent
+   *  still has history; the backfills use it to recover old deposits. */
   async addressHistory(address, script) {
     await this.connect();
     const sh = this.scripthash(script);

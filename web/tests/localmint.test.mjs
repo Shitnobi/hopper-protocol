@@ -123,7 +123,7 @@ class LocalOnlyBackend {
 const wallet = new WalletSession({
   mnemonic: MNEMONIC,
   network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+  settings: { ...DEFAULT_SETTINGS, mode: 'live' },
 });
 const backend = new LocalOnlyBackend(built.reveal.hex, reveal, keys.frogAddress());
 wallet.backend = backend;
@@ -195,7 +195,7 @@ eq('the frog survives a later pass', wallet.frogs.length, 1);
   settingsStore.clear();
   const restored = new WalletSession({
     mnemonic: MNEMONIC, network: 'regtest',
-    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+    settings: { ...DEFAULT_SETTINGS, mode: 'live' },
   });
   const backend = new StagedBackend();
   restored.backend = backend;
@@ -217,7 +217,7 @@ eq('the frog survives a later pass', wallet.frogs.length, 1);
 
   const reopened = new WalletSession({
     mnemonic: MNEMONIC, network: 'regtest',
-    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+    settings: { ...DEFAULT_SETTINGS, mode: 'live' },
   });
   reopened.backend = backend;
   reopened._autoSync = false;
@@ -239,7 +239,7 @@ eq('the frog survives a later pass', wallet.frogs.length, 1);
   settingsStore.clear();
   const w = new WalletSession({
     mnemonic: MNEMONIC, network: 'regtest',
-    settings: { ...DEFAULT_SETTINGS, mode: 'live', gap: 20, gapExtra: 0 },
+    settings: { ...DEFAULT_SETTINGS, mode: 'live' },
   });
   w.backend = new FailingPlanBackend(built.reveal.hex, reveal, keys.frogAddress());
   w._autoSync = false;

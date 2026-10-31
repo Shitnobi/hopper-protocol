@@ -1,6 +1,6 @@
-// Pins the ported FROGGER scan policy: a full gap walk only on a cold
-// start/rescan/extend, a 6–10 script warm plan for every new block, and a
-// tip gate that asks the chain NOTHING while the tip is unchanged.
+// Pins the fixed watch policy: ordinals, receive #0 and change #0, plus
+// staged state scripts. There is no gap walk or address rotation, and a tip
+// gate asks the chain NOTHING while the tip is unchanged.
 
 import assert from 'node:assert/strict';
 
@@ -14,9 +14,8 @@ globalThis.localStorage = {
 };
 
 const {
-  GAP_LIMIT, DEFAULT_SETTINGS, WalletSession, loadSettings,
-  buildWatchPlan, shouldSkipChange, failureBackoffMs, isPublicEndpoint,
-  isUnconfirmedUtxo,
+  DEFAULT_SETTINGS, WalletSession, loadSettings,
+  failureBackoffMs, isPublicEndpoint, isUnconfirmedUtxo,
 } = await import('../js/wallet/wallet.js');
 
 let checks = 0;
@@ -27,19 +26,8 @@ function eq(what, got, want) {
 
 // --- settings migration ---------------------------------------------------
 const migrated = loadSettings();
-eq('legacy gap becomes a persisted extension', migrated.gapExtra, 30);
-eq('effective gap keeps the old window', migrated.gap, 50);
-
-// --- warm plan ------------------------------------------------------------
-eq('warm plan is small and exact', buildWatchPlan({
-  lastUsed: { 0: 5, 1: 2 }, receiveFloor: 7, hot: [[0, 2], [1, 9]],
-}), [[0, 2], [0, 6], [0, 7], [0, 8], [1, 2], [1, 3], [1, 4], [1, 9]]);
-
-eq('fresh wallet change skip', shouldSkipChange(false, false, 0, 0), true);
-eq('rescan never skips change', shouldSkipChange(true, false, 0, 0), false);
-eq('a used receive address keeps change in scope', shouldSkipChange(false, true, 0, 0), false);
-eq('a rotated receive address keeps change in scope', shouldSkipChange(false, false, 1, 0), false);
-eq('a restored balance keeps change in scope', shouldSkipChange(false, false, 0, 1), false);
+eq('a legacy gap is ignored', migrated.gap, undefined);
+eq('no gap extension survives', migrated.gapExtra, undefined);
 
 // --- mempool classification ----------------------------------------------
 eq('Esplora mempool output', isUnconfirmedUtxo({ status: { confirmed: false } }), true);
@@ -91,18 +79,21 @@ class FakeBackend {
 const wallet = new WalletSession({
   mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
   network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
 });
 const fake = new FakeBackend(100);
 wallet.backend = fake;
 wallet._autoSync = false;
 
 await wallet.refresh({ force: true });
-eq('cold pass walked receive only (fresh wallet skips change)', fake.historyCalls, 24);
-eq('cold plan queried every reached script', fake.utxoCalls, 27);
+eq('cold pass runs the two fixed history backfills', fake.historyCalls, 2);
+eq('cold pass queries the three fixed HD scripts', fake.utxoCalls, 3);
 eq('cold pass records the tip gate', wallet.fullScanTip, 100);
 eq('cold pass sets the watched tip', wallet.watchTip, 100);
 eq('cold pass is not partial', wallet.scan.partial, false);
+eq('receive is fixed at index 0', wallet.receiveAddress(), wallet.keys.receive(0).address);
+eq('the watch set names the fixed scripts', wallet.scanState().watch,
+  { ord: true, receive: 0, change: 0, staged: 0 });
 
 const beforeGate = { h: fake.historyCalls, u: fake.utxoCalls, t: fake.tipCalls };
 await wallet.refresh({ force: false });
@@ -114,30 +105,24 @@ const beforeWarm = { h: fake.historyCalls, u: fake.utxoCalls };
 fake.tip = 101;
 await wallet.refresh({ force: false });
 eq('new block runs no gap walk', fake.historyCalls, beforeWarm.h);
-eq('new block asks the warm plan only', fake.utxoCalls - beforeWarm.u, 5);
-eq('new block watches both guard indices', wallet.watchTip, 101);
+eq('new block asks only the fixed watch set', fake.utxoCalls - beforeWarm.u, 3);
+eq('new block watches the new tip', wallet.watchTip, 101);
 
 const beforeForced = fake.utxoCalls;
 await wallet.refresh({ force: true });
-eq('a forced pass stays warm', fake.utxoCalls - beforeForced, 5);
+eq('a forced pass asks the same fixed set', fake.utxoCalls - beforeForced, 3);
 
 // --- RESCAN ---------------------------------------------------------------
 const beforeRescan = { h: fake.historyCalls, u: fake.utxoCalls };
 await wallet.startRescan();
-eq('rescan walks both branches even when receive is empty', fake.historyCalls - beforeRescan.h, 48);
+eq('rescan re-runs the fixed history backfills', fake.historyCalls - beforeRescan.h, 2);
+eq('rescan re-asks the fixed watch set', fake.utxoCalls - beforeRescan.u, 3);
 eq('rescan has no progress line when finished', wallet.scan.rescan, null);
 eq('rescan re-arms the gate', wallet.fullScanTip, 101);
-
-// --- EXTEND ---------------------------------------------------------------
-await wallet.extendGap(5);
-eq('extend grows the effective window', wallet.gapLimit(), 25);
-eq('extend re-walks the wider gap', fake.utxoCalls > beforeRescan.u, true);
-eq('extend re-arms the gate', wallet.fullScanTip, 101);
-const savedSettings = JSON.parse(settingsStore.get('hopper.settings.v1'));
-eq('extend persists the extension', savedSettings.gapExtra, 5);
 const savedLedger = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
 eq('the gate tip persists with the ledger', savedLedger.fullScanTip, 101);
-eq('the warm plan state persists with the ledger', savedLedger.hot, []);
+eq('no gap state is persisted', savedLedger.receiveIndex, undefined);
+eq('no hot-address state is persisted', savedLedger.hot, undefined);
 
 // --- unconfirmed outputs from the same address answers --------------------
 // An unconfirmed output arrives in the UTXO list we already request. It must
@@ -154,7 +139,7 @@ fake.addressUtxos = async (address) => {
     : [];
 };
 await wallet.refresh({ force: false });
-eq('mempool output adds only the normal warm plan', mempoolAddressCalls, 5);
+eq('mempool output adds only the fixed watch set', mempoolAddressCalls, 3);
 eq('mempool output adds no gap/history walk', fake.historyCalls, beforeMempool.h);
 eq('mempool output is tracked', wallet.mempool.length, 1);
 eq('mempool output keeps its txid', wallet.mempool[0].txid, memTxid);
@@ -165,44 +150,16 @@ const savedMempool = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.finger
 eq('mempool rows persist with the ledger', savedMempool.mempool[0].txid, memTxid);
 eq('the pending total persists with the ledger', savedMempool.balance.pending, '1234');
 
-// A paid receive address retires immediately, even while the payment is
-// still in the mempool. The next pass is forced once so the new address is
-// watched; after that the tip gate is quiet again.
-eq('a paid receive address rotates automatically', wallet.receiveIndex, 1);
-eq('the paid receive address is marked used', wallet.used[receive0.address], true);
-eq('the rotated address is not marked used', !!wallet.used[wallet.keys.receive(1).address], false);
+// A payment to the fixed address does not rotate it or force another pass.
+eq('the fixed receive address never rotates', wallet.receiveAddress(), receive0.address);
 const afterMempool = mempoolAddressCalls;
 await wallet.refresh({ force: false });
-eq('rotation queues one warm pass for the new address', mempoolAddressCalls > afterMempool, true);
-const afterRotationPass = mempoolAddressCalls;
-await wallet.refresh({ force: false });
-eq('an unchanged tip is quiet again after rotation', mempoolAddressCalls, afterRotationPass);
-
+eq('unchanged tip after payment stays quiet', mempoolAddressCalls, afterMempool);
 fake.tip = 103;
 await wallet.refresh({ force: false });
-eq('a payment to an older address does not rotate the current one', wallet.receiveIndex, 1);
+eq('the fixed address is still the watch address', wallet.receiveAddress(), receive0.address);
 eq('the known mempool row survives the tip gate', wallet.mempool.length, 1);
-
-// Rotation never lands on a known-paid address. If every index in the old
-// window is exhausted, continue the derivation beyond it rather than reuse.
-const rotate = new WalletSession({
-  mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
-  network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
-});
-rotate.receiveIndex = 0;
-rotate.receiveHistory = [rotate.keys.receive(0).address];
-rotate.used = { [rotate.keys.receive(1).address]: true };
-eq('rotation skips a paid address even without scan history', rotate._advanceReceiveAddress().index, 2);
-const exhausted = new WalletSession({
-  mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
-  network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
-});
-exhausted.receiveIndex = GAP_LIMIT - 1;
-exhausted.receiveHistory = Array.from({ length: GAP_LIMIT }, (_, i) => exhausted.keys.receive(i).address);
-exhausted.used = Object.fromEntries(exhausted.receiveHistory.map((a) => [a, true]));
-eq('exhausted rotation advances past the old window', exhausted._advanceReceiveAddress().index, GAP_LIMIT);
+eq('no receive rotation state exists', wallet.receiveIndex, undefined);
 
 const { history: historyHtml } = await import('../js/ui/screens.js');
 const html = historyHtml({
@@ -229,7 +186,7 @@ eq('a failed public pass backs off to two minutes', wallet.tickIntervalMs(), 120
 const pauseWallet = new WalletSession({
   mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
   network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
 });
 pauseWallet.backend = new FakeBackend(100);
 pauseWallet.publicSource = true;
@@ -253,7 +210,7 @@ eq('stop after resume clears the timer', pauseWallet._timer, null);
 const dead = new WalletSession({
   mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
   network: 'regtest',
-  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
 });
 const deadBackend = new FakeBackend(100);
 deadBackend.tipHeight = async () => { deadBackend.tipCalls += 1; throw new Error('tip down'); };
@@ -273,32 +230,22 @@ eq('a failed public pass retries in a minute', dead.tickIntervalMs(), 60_000);
 // --- scan panel says STOP, then RESUME ------------------------------------
 const { scanPanel } = await import('../js/ui/screens.js');
 const panelState = {
-  gapLimit: 20, gapExtra: 0, lastPass: null, lastTip: null, busy: false,
+  watch: { ord: true, receive: 0, change: 0, staged: 0 }, lastPass: null, lastTip: null, busy: false,
   rescan: null, note: '', nextAt: null, auto: false, fails: 0, pending: 0,
   publicSource: true, paused: false,
 };
 const panelApp = (paused) => ({
   w: { settings: { mode: 'live' }, scanState: () => ({ ...panelState, paused }) },
-  scanArmed: false,
 });
 const runningPanel = scanPanel(panelApp(false));
 eq('scan panel offers STOP', />STOP SCANNING</.test(runningPanel), true);
+eq('scan panel names the fixed watch set', /ordinals \+ receive #0 \+ change #0/.test(runningPanel), true);
+eq('scan panel has no gap controls', /EXTEND|Scan window/.test(runningPanel), false);
 eq('scan panel does not offer RESUME while running', />RESUME SCANNING</.test(runningPanel), false);
 const pausedPanel = scanPanel(panelApp(true));
 eq('paused scan panel offers RESUME', />RESUME SCANNING</.test(pausedPanel), true);
 eq('paused scan panel does not offer STOP', />STOP SCANNING</.test(pausedPanel), false);
 eq('paused scan panel says paused', /paused/i.test(pausedPanel), true);
-
-// --- STOP a paced public rescan ------------------------------------------
-wallet.fails = 0;
-wallet.fullScanTip = 101;
-const slow = wallet.startRescan();
-await new Promise((resolve) => setTimeout(resolve, 60));
-wallet.cancelRescan();
-await slow;
-eq('a cancelled rescan does not claim the gap was walked', wallet.fullScanTip, null);
-eq('a cancelled rescan clears the progress line', wallet.scan.rescan, null);
-eq('a cancelled rescan says it stopped', /rescan stopped/.test(wallet.scan.note), true);
 
 // --- backend switch resets the tip gate ---------------------------------
 wallet.fullScanTip = 973263;

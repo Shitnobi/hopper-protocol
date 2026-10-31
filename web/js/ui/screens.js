@@ -1338,10 +1338,8 @@ function scanEta(ts) {
 }
 
 /**
- * The live scan policy, shown in SETTINGS. This is deliberately explicit:
- * on a public API the idle cost is one tip query every ten minutes, a gap
- * walk only happens on request, and a rescan says where it is and can be
- * stopped.
+ * The live scan policy, shown in SETTINGS. The watch set is fixed, so the
+ * only scan choices are pause/resume and a one-shot rescan of that set.
  */
 export function scanPanel(app) {
   const w = app?.w;
@@ -1350,15 +1348,15 @@ export function scanPanel(app) {
   const mode = w.settings?.mode === 'demo'
     ? 'DEMO — in-browser chain'
     : sc.publicSource ? 'PUBLIC — metered' : 'LOCAL NODE — free';
-  const builtIn = Math.max(0, sc.gapLimit - (sc.gapExtra || 0));
+  const watch = sc.watch || { staged: 0 };
   const paused = sc.paused === true;
   const progress = sc.rescan
-    ? `Rescanning ${sc.rescan.asked} addresses · ${sc.rescan.hits} with history`
+    ? 'Rescanning the fixed watch set…'
     : sc.note || (paused ? 'Scanning paused — automatic passes are off.' : 'No scan has run yet.');
   return `
     <div class="settings-grid mt10">
       <label>Source</label><dd>${esc(mode)}</dd>
-      <label>Scan window</label><dd>${sats(sc.gapLimit)} addresses (${sats(builtIn)} built-in + ${sats(sc.gapExtra || 0)})</dd>
+      <label>Watch set</label><dd>ordinals + receive #0 + change #0${watch.staged ? ` + ${sats(watch.staged)} staged state script${watch.staged === 1 ? '' : 's'}` : ''}</dd>
       <label>Last pass</label><dd>${esc(sc.lastPass ? `tip ${sats(sc.lastTip)} · ${scanAge(sc.lastPass)}` : '—')}</dd>
       <label>Next pass</label><dd>${esc(sc.busy || sc.rescan ? 'running' : paused ? 'paused' : sc.nextAt ? scanEta(sc.nextAt) : sc.auto ? 'scheduled' : 'manual')}</dd>
       ${sc.fails ? `<label>Backoff</label><dd>${sats(sc.fails)} failed pass${sc.fails === 1 ? '' : 'es'} — ${paused ? 'paused; no automatic retries' : 'retrying slower'}</dd>` : ''}
@@ -1368,15 +1366,10 @@ export function scanPanel(app) {
       ${paused
         ? logBtn('RESUME SCANNING', 'toggle-scan', { edge: 'accent', cls: 'small' })
         : logBtn('STOP SCANNING', 'toggle-scan', { edge: 'dead', cls: 'small' })}
-      ${sc.rescan
-        ? logBtn('STOP RESCAN', 'stop-rescan', { edge: 'dead', cls: 'small' })
-        : app.scanArmed
-          ? logBtn('RESCAN? TAP AGAIN', 'rescan', { edge: 'dead', cls: 'small' })
-          : logBtn('RESCAN FROM CHAIN', 'rescan', { edge: 'accent', cls: 'small' })}
-      ${logBtn('EXTEND +20', 'extend-gap', { edge: 'dim', cls: 'small' })}
+      ${logBtn('RESCAN FROM CHAIN', 'rescan', { edge: 'accent', cls: 'small' })}
     </div>
     <div class="scan-line ${sc.rescan ? 'accent' : ''}" data-scan-line>${esc(progress)}</div>
-    <div class="hint">STOP SCANNING clears the timer, block subscription and foreground wake; REFRESH and RESCAN still work by hand. A public source is asked for the tip once every 10 minutes while idle, once every 30 seconds only while one of our transactions is confirming, and never for an unchanged block. Failed public passes back off from 1 minute to 30 minutes.</div>`;
+    <div class="hint">STOP SCANNING clears the timer, block subscription and foreground wake; REFRESH and RESCAN still work by hand. The watch set is fixed — ordinals, receive #0, change #0 and any staged state scripts — so there is no address gap to walk. A public source is asked for the tip once every 10 minutes while idle, once every 30 seconds only while one of our transactions is confirming, and never for an unchanged block. Failed public passes back off from 1 minute to 30 minutes.</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1667,7 +1660,7 @@ export function receiveSheet(app) {
   // three-line box: switching tabs must not resize the window.
   const note = tab === 'ord'
     ? 'Fixed Taproot address for Hoppers and inscriptions. Its sats never fund a mint or a send.'
-    : 'Fresh address — rotates after it is paid. Ordinary Bitcoin only; these sats fund mints and sends.';
+    : 'Fixed BIP84 address — it never rotates. Ordinary Bitcoin only; these sats fund mints and sends.';
   return `
     <div class="receive-warning ${warning.cls}" data-warning="${tab}">
       <span>${esc(warning.text)}</span>
@@ -1687,10 +1680,7 @@ export function receiveSheet(app) {
       ${logBtn('⛶ FULL QR', 'full-qr', { edge: 'dim', cls: 'small', attrs: `data-text="${esc(address)}"` })}
     </div>
     <div class="receive-book-row">
-      ${tab === 'btc'
-        ? `${logBtn('✚ NEW ADDRESS', 'new-receive', { edge: 'accent', cls: 'small' })}
-           ${logBtn('USED ADDRESSES', 'receive-book', { edge: 'dim', cls: 'small' })}`
-        : '<span class="receive-book-note">Fixed Taproot address · no rotation</span>'}
+      <span class="receive-book-note">Fixed ${tab === 'btc' ? 'BIP84' : 'Taproot'} address · no rotation</span>
     </div>
     <div class="sep"></div>
     <div class="sub">${tab === 'btc' ? 'BIP84 P2WPKH' : 'BIP86 P2TR'} · ${esc(w.network)}</div>`;
@@ -1704,29 +1694,6 @@ export function qrSheet(app, address) {
     </div>
     <div class="receive-address wrap">${esc(address)}</div>
     <div class="mt14">${logBtn('📋 COPY ADDRESS', 'copy', { edge: 'accent', cls: 'block', attrs: `data-text="${esc(address)}"` })}</div>`;
-}
-
-export function receiveBook(app) {
-  const rows = app.w.receiveAddresses();
-  return `
-    <div class="row"><h2>ADDRESSES THIS WALLET USED</h2><div class="spacer"></div>${logBtn('✖', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
-    <div class="sub">Every Bitcoin receive address this wallet generated — newest first. The frogs' address is one fixed thing and is not in this rotation.</div>
-    <div class="sep"></div>
-    ${rows.length ? rows.map((r) => `
-      <div class="address-row">
-        <div class="row">
-          <span class="tiny strong">BITCOIN #${r.index}${r.current ? ' · CURRENT' : ''}</span>
-          <div class="spacer"></div>
-          <span class="tiny ${r.sats ? 'good' : 'muted'}">${r.sats ? `${sats(r.sats)} sats` : 'empty'}</span>
-        </div>
-        <div class="wrap small">${esc(r.address)}</div>
-        <div class="row tiny muted">
-          <span>${r.used ? 'used' : 'never paid'}</span>
-          <div class="spacer"></div>
-          <button class="copy" data-action="copy" data-text="${esc(r.address)}">COPY</button>
-        </div>
-      </div>`).join('') : '<div class="muted small">no addresses have been generated yet</div>'}
-    <div class="lane-dashes" aria-hidden="true"></div>`;
 }
 
 function feeAge(ts) {

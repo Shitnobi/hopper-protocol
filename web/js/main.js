@@ -48,7 +48,6 @@ const app = {
   frogRefusal: null,
   navChosen: false,
   seenFirstFrog: false,
-  scanArmed: false,
   booted: false,
 };
 
@@ -364,7 +363,7 @@ async function startSession({ mnemonic, network, fingerprint }) {
   sound.startLoop();
 
   // Open the backend, but do not make unlock wait for a chain refresh.
-  // PBKDF2 + AES-GCM is the security boundary; a cold gap walk or a
+  // PBKDF2 + AES-GCM is the security boundary; a cold pass or a
   // rate-limited public Esplora must not hold the lock screen hostage.
   let backendReady = false;
   try {
@@ -481,7 +480,6 @@ async function boot() {
 // ---------------------------------------------------------------------------
 
 function navigate(view, { push = true, chosen = push } = {}) {
-  if (view !== 'settings') app.scanArmed = false;
   app.view = view;
   if (chosen) app.navChosen = true;
   closeDrawer();
@@ -709,22 +707,9 @@ const handlers = {
   },
   rescan() {
     if (!app.w?.startRescan || app.w.scan?.rescan) return;
-    // Two taps: a walk of the whole gap is minutes on a public server.
-    if (!app.scanArmed) {
-      app.scanArmed = true;
-      toast('This walks every address in the gap — tap RESCAN again.', 'ok');
-      render();
-      return;
-    }
-    app.scanArmed = false;
     app.w.startRescan()
       .then((ok) => { if (ok) toast('Rescan finished', 'ok'); })
       .catch((e) => toast(e.message || String(e), 'err'));
-    render();
-  },
-  'stop-rescan'() {
-    app.scanArmed = false;
-    app.w?.cancelRescan?.();
     render();
   },
   'toggle-scan'() {
@@ -738,14 +723,6 @@ const handlers = {
     }
     if (app.view === 'settings') refreshScanPanel();
     else render();
-  },
-  'extend-gap'() {
-    if (!app.w?.extendGap) return;
-    app.scanArmed = false;
-    app.w.extendGap(20)
-      .then((n) => toast(`Gap limit is now ${n} addresses`, 'ok'))
-      .catch((e) => toast(e.message || String(e), 'err'));
-    render();
   },
   'on-road'() {
     app.frogRefusal = 'finish (or die on) the road first — sending mid-crossing would retreat it';
@@ -938,18 +915,10 @@ const handlers = {
     app.receiveTab = el.dataset.tab === 'ord' ? 'ord' : 'btc';
     openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
   },
-  'new-receive'() {
-    if (!app.w) return;
-    app.w.newReceiveAddress();
-    app.receiveTab = 'btc';
-    openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
-    toast('new receive address', 'ok');
-  },
   'full-qr'(el) {
     const address = el.dataset.text || app.w?.receiveAddress() || '';
     openOverlay(screens.qrSheet(app, address), { lily: 'home' });
   },
-  'receive-book'() { openOverlay(screens.receiveBook(app), { lily: 'home' }); },
   'sheet-send'() {
     openOverlay(screens.sendSheet(app), { type: 'sheet' });
     ensureFeeQuote();
@@ -1514,22 +1483,6 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('hopper:scan', () => {
   if (!app.w) return;
   if (app.view === 'settings') refreshScanPanel();
-});
-
-// A paid receive address is retired by the wallet. If the receive window is
-// open on BITCOIN, repaint it with the next address instead of leaving a QR
-// that is no longer the wallet's fresh receive address. The HOPPERS tab is a
-// fixed Taproot address and must not be repainted by BTC rotation.
-window.addEventListener('hopper:receive-address', () => {
-  if (!app.w) return;
-  const node = document.getElementById('overlay');
-  if (!node || node.hidden) return;
-  const sheet = node.querySelector('.sheet');
-  if (!sheet || !sheet.querySelector('.receive-tabs')) return;
-  if (app.receiveTab !== 'btc') return;
-  const shown = sheet.querySelector('.receive-address')?.textContent.trim() || '';
-  if (shown === app.w.receiveAddress()) return;
-  openOverlay(screens.receiveSheet(app), { type: 'sheet', lily: 'home' });
 });
 
 // Keep settings in sync if another tab edits them.

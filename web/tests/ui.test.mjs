@@ -21,7 +21,7 @@ const settings = (mode) => ({
   mute: false,
 });
 const scanState = () => ({
-  gapLimit: 20, gapExtra: 0, publicSource: true, lastPass: 0, lastTip: 0,
+  watch: { ord: true, receive: 0, change: 0, staged: 0 }, publicSource: true, lastPass: 0, lastTip: 0,
   nextAt: 0, auto: false, fails: 0, pending: 0, rescan: null, note: '',
 });
 const wallet = (mode) => ({ network: 'mainnet', settings: settings(mode), scanState });
@@ -43,17 +43,19 @@ ok(!demoDrawer.includes('test-sound') && !demoDrawer.includes('TEST SOUND'), 'th
 ok(demoDrawer.includes('data-sound-line') && demoDrawer.includes('menu-mute'), 'the drawer still shows sound state and mute');
 
 const live = wallet('live');
-const liveSettings = screens.settings({ w: live, settings: live.settings, scanArmed: false });
+const liveSettings = screens.settings({ w: live, settings: live.settings });
 ok(!liveSettings.includes('test-sound'), 'settings has no TEST SOUND button');
 ok(!liveSettings.includes('FAUCET') && !liveSettings.includes('data-action="mine"') && !liveSettings.includes('RESET DEMO'),
   'live settings hide the demo chain controls');
 ok(liveSettings.includes('data-sound-line'), 'settings still shows the soundtrack state');
 ok(!liveSettings.includes('data-input="fee-rate"') && !/Fee rate/.test(liveSettings),
   'the global fee-rate setting is gone; fee choice lives in each action');
+ok(liveSettings.includes('Watch set') && !liveSettings.includes('EXTEND'),
+  'settings names the fixed watch set without a gap control');
 ok(liveSettings.includes('AUTO RECOVERY PACKS') && liveSettings.includes('data-action="export-recovery"'),
   'settings offers the automatic recovery packs');
 
-const demoSettings = screens.settings({ w: demo, settings: demo.settings, scanArmed: false });
+const demoSettings = screens.settings({ w: demo, settings: demo.settings });
 ok(demoSettings.includes('FAUCET') && demoSettings.includes('MINE 1') && demoSettings.includes('MINE 6')
   && demoSettings.includes('RESET DEMO'), 'demo settings keep the demo chain controls');
 
@@ -123,7 +125,7 @@ ok(hopSheet.includes('33.33%') && hopSheet.includes('one of three'),
 ok(hopSheet.includes('review the destination, change and fee'), 'the chooser says what the signed preview will show');
 ok(!hopSheet.includes('Death at target'), 'the v6 death table is gone');
 
-const settingsHtml = screens.settings({ w: live, settings: live.settings, scanArmed: false });
+const settingsHtml = screens.settings({ w: live, settings: live.settings });
 ok(settingsHtml.includes('HOPPER v7') && settingsHtml.includes('WIRE 0x07'), 'the footer names v7');
 ok(settingsHtml.includes('data-input="spendUnconfirmed"'), 'settings offers the unconfirmed-spend control');
 ok(settingsHtml.includes('DOWNLOAD HISTORY TXT'), 'settings hosts the history download');
@@ -142,7 +144,7 @@ ok(rulesText.includes('Every hop is in one of three directions that cars could d
 ok(!rulesText.includes('picks one direction for the whole block') && !rulesText.includes('against a block that picks one'),
   'the old block-wide direction wording is gone');
 
-const emergencySettings = screens.settings({ w: demo, settings: demo.settings, scanArmed: false });
+const emergencySettings = screens.settings({ w: demo, settings: demo.settings });
 ok(emergencySettings.includes('EXPORT EMERGENCY DESCRIPTORS')
   && emergencySettings.includes('data-action="export-emergency"'),
   'settings offers the emergency descriptor export');

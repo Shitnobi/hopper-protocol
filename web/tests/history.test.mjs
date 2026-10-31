@@ -213,8 +213,6 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   w.receives = [];
   w.receivesVersion = 0;
   w._receiveBackfillFailedAt = 0;
-  w.used = { [receive.address]: true };
-  w.receiveHistory = [receive.address];
   w.actions = [];
   w.backend.addressHistory = async () => [{ txid, height: 77 }];
   w.backend.getTx = async () => ({

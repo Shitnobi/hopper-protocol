@@ -1,7 +1,7 @@
 // Wallet session: keys, discovery, balances, and action orchestration.
 //
 // Public state is re-derivable: the ledger file on disk holds only what
-// makes the UI fast (address gaps, imported sats, history). A fresh device
+// makes the UI fast (staged scripts, imported sats, history). A fresh device
 // unlocks with the 12 words and rebuilds everything from the chain.
 
 import {
@@ -32,20 +32,13 @@ import {
   RBF_POLICY, buildReplacement, buildSendRbfEnvelope, safeBumpFunding,
 } from './rbf.js';
 
-// The FROGGER scan policy, ported to the browser wallet.
-//
-// A settled chain answer can change only with a block, so a warm pass asks
-// about a handful of scripts (the ordinals address, the next unused index
-// per branch plus one guard, and the indices that held coins last pass).
-// The full gap walk is a COLD-only cost: boot, RESCAN, EXTEND. A public
-// source gets one tip probe every ten minutes while idle, and a 30 s
-// cadence only while something of ours is in flight.
-export const GAP_LIMIT = 20;
-export const SCAN_WAVE = 8;
-export const WATCH_AHEAD = 2;
+// The watch set is fixed. BIP84 receive and change both live at index 0;
+// the ordinals key lives at /2/0; every staged Hopper adds one derived state
+// script. There is no HD gap to walk and no address rotation. A public
+// source gets one tip probe every ten minutes while idle, and a 30 s cadence
+// only while something of ours is in flight.
 export const PUBLIC_IDLE_TICK_MS = 10 * 60 * 1000;
 export const PUBLIC_BUSY_TICK_MS = 30 * 1000;
-export const RESCAN_DELAY_MS = 400;
 export const LOCAL_TICK_MS = 3000;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
@@ -85,53 +78,6 @@ export function settingsPublicSource(settings = {}) {
   if (settings.mode === 'demo') return false;
   return [settings.esploraUrl, settings.indexerUrl, settings.electrumUrl, settings.ordUrl]
     .some((url) => isPublicEndpoint(url));
-}
-
-/** `next_unused`: what the wallet has SEEN, never a chain walk. */
-export function nextUnusedIndex(lastUsed = {}, receiveFloor = 0, branch = 0) {
-  const seen = Number(lastUsed?.[branch]);
-  const next = Number.isSafeInteger(seen) && seen >= 0 ? seen + 1 : 0;
-  return branch === 0 ? Math.max(next, Number(receiveFloor) || 0) : next;
-}
-
-/**
- * The WARM plan: 6–10 scripts, not every address up to the gap limit.
- * `next - 1` is included because that is where this wallet's change (and
- * the coin a mint/reveal left behind) actually sits.
- */
-export function buildWatchPlan({ lastUsed = {}, receiveFloor = 0, hot = [] } = {}) {
-  const plan = new Map();
-  const add = (branch, index) => {
-    const b = Number(branch);
-    const i = Number(index);
-    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return;
-    plan.set(`${b}:${i}`, [b, i]);
-  };
-  add(0, receiveFloor);
-  for (const branch of [0, 1]) {
-    const next = nextUnusedIndex(lastUsed, receiveFloor, branch);
-    add(branch, Math.max(0, next - 1));
-    for (let i = 0; i < WATCH_AHEAD; i += 1) add(branch, next + i);
-  }
-  for (const pair of hot || []) {
-    if (Array.isArray(pair)) add(pair[0], pair[1]);
-  }
-  return [...plan.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-}
-
-/** The COLD plan: every index the gap walk reached, plus the warm plan. */
-export function buildColdPlan(warmPlan, watched = {}) {
-  const plan = new Map((warmPlan || []).map(([b, i]) => [`${b}:${i}`, [b, i]]));
-  for (const branch of [0, 1]) {
-    const end = Number(watched?.[branch]) || 0;
-    for (let i = 0; i < end; i += 1) plan.set(`${branch}:${i}`, [branch, i]);
-  }
-  return [...plan.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-}
-
-/** A fresh wallet need not look at change; a restore/rescan must. */
-export function shouldSkipChange(rescanning, receiveFound, receiveFloor, spendable) {
-  return !rescanning && !receiveFound && !receiveFloor && !spendable;
 }
 
 /** An address query already tells us whether its outputs are settled.
@@ -189,31 +135,20 @@ export const DEFAULT_SETTINGS = {
   deepScan: false,
   scanPaused: false,
   spendUnconfirmed: true,
-  gap: GAP_LIMIT,
-  gapExtra: 0,
   addressBook: [],
 };
 
 export function loadSettings() {
   const saved = loadJson(KEYS.settings, {}) || {};
   const s = { ...DEFAULT_SETTINGS, ...saved };
+  delete s.gap;
+  delete s.gapExtra;
   // Settings are user-editable and survive upgrades. Normalize the values
   // that flow into fee math or the scan loop so a corrupt/empty field can
-  // never become NaN or an unbounded gap.
+  // never become NaN.
   s.mode = s.mode === 'live' ? 'live' : 'demo';
   s.ordUrl = String(s.ordUrl || '').trim();
   s.feeRate = rateOr(s.feeRate);
-  // Compatibility: older files had a user-editable 5–50 gap and no
-  // extension. Keep a wider old setting by turning the part above the
-  // built-in 20 into a persisted extension, never by shrinking it (that
-  // could strand a payment made to an address the old build watched).
-  const legacyGap = Number(s.gap);
-  let extra = Number(saved.gapExtra);
-  if (!Number.isFinite(extra) || extra < 0) {
-    extra = Number.isFinite(legacyGap) ? Math.max(0, Math.trunc(legacyGap) - GAP_LIMIT) : 0;
-  }
-  s.gapExtra = Math.max(0, Math.min(1_000_000, Math.trunc(extra)));
-  s.gap = GAP_LIMIT + s.gapExtra;
   const volume = Number(s.volume);
   s.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.55;
   s.mute = s.mute === true;
@@ -260,16 +195,9 @@ export class WalletSession {
     this.staged = {};
     this.tipHeight = null;
     this.tipHash = null;
-    this.receiveIndex = 0;
-    this.receiveFloor = 0;
-    this.receiveHistory = [];
     this.balance = { total: 0n, spendable: 0n, cards: 0n, unspendable: 0n, pending: 0n };
     // Scan state, persisted where it matters and rebuilt by the next cold
-    // pass where it does not. `fullScanTip` is the FROGGER tip gate.
-    this.used = {};
-    this.lastUsed = {};
-    this.hot = [];
-    this.watched = {};
+    // pass where it does not. `fullScanTip` is the tip gate.
     this.fullScanTip = null;
     this.watchTip = null;
     this.forceWatch = false;
@@ -285,7 +213,6 @@ export class WalletSession {
     this._refreshing = null;
     this._wakeQueued = false;
     this._scanAbort = false;
-    this._rescanCancel = false;
     this._stopped = false;
     this._blockUnsub = null;
     this._visHandler = null;
@@ -324,21 +251,7 @@ export class WalletSession {
         Number.isSafeInteger(Number(sat)) && row && typeof row.address === 'string'
           && typeof row.script === 'string'))
       : {};
-    this.used = l.used || {};
-    this.lastUsed = l.lastUsed && typeof l.lastUsed === 'object' ? l.lastUsed : {};
-    this.hot = Array.isArray(l.hot)
-      ? l.hot.filter((p) => Array.isArray(p) && (p[0] === 0 || p[0] === 1) && Number.isSafeInteger(Number(p[1])))
-        .map((p) => [Number(p[0]), Number(p[1])])
-      : [];
     this.fullScanTip = Number.isSafeInteger(l.fullScanTip) ? l.fullScanTip : null;
-    this.receiveFloor = Number.isSafeInteger(l.receiveFloor)
-      ? Math.min(1_000_000, Math.max(0, l.receiveFloor)) : 0;
-    const gap = this.gapLimit();
-    const index = Number(l.receiveIndex);
-    this.receiveIndex = Number.isInteger(index) && index >= 0
-      ? Math.min(1_000_000, index) : 0;
-    this.receiveFloor = Math.max(this.receiveFloor, this.receiveIndex);
-    this.receiveHistory = Array.isArray(l.receiveHistory) ? l.receiveHistory.slice(-gap * 4) : [];
     if (l.balance && typeof l.balance === 'object') {
       const big = (v) => { try { return BigInt(v); } catch { return 0n; } };
       this.balance = {
@@ -363,13 +276,7 @@ export class WalletSession {
       mempool: this.mempool.slice(-50),
       imported: [...this.imported],
       staged: this.staged || {},
-      used: this.used || {},
-      lastUsed: this.lastUsed || {},
-      hot: this.hot || [],
       fullScanTip: this.fullScanTip,
-      receiveFloor: this.receiveFloor || 0,
-      receiveIndex: this.receiveIndex || 0,
-      receiveHistory: this.receiveHistory || [],
       balance: {
         total: String(this.balance.total), spendable: String(this.balance.spendable),
         cards: String(this.balance.cards), unspendable: String(this.balance.unspendable),
@@ -509,9 +416,8 @@ export class WalletSession {
   }
 
   /** A different chain/indexer must not inherit scan pointers from the
-   *  previous backend. A demo tip (H 973,263) is not a live tip and could
-   *  make the first live pass skip its cold gap walk. The next refresh is
-   *  forced, so the caller immediately pays for the cold scan it asked for. */
+   *  previous backend. A demo tip (H 973,263) is not a live tip. The next
+   *  refresh is forced, so the caller immediately pays for the cold pass. */
   resetScan(note = 'backend changed — a cold scan will start') {
     this.fullScanTip = null;
     this.watchTip = null;
@@ -557,7 +463,6 @@ export class WalletSession {
     this._scanAbort = true;
     this._autoSync = false;
     this._teardownAutoSync();
-    if (this.scan.rescan) this._rescanCancel = true;
     this.scan.note = 'scanning paused — automatic passes are off';
     this.dispatch('scan', this.scanState());
     return this.scanState();
@@ -663,16 +568,6 @@ export class WalletSession {
     this._scheduleNext(250);
   }
 
-  gapLimit() { return GAP_LIMIT + (Number(this.settings.gapExtra) || 0); }
-
-  _noteUsed(branch, index) {
-    const b = Number(branch);
-    const i = Number(index);
-    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return;
-    const prev = Number(this.lastUsed?.[b]);
-    if (!Number.isSafeInteger(prev) || i > prev) this.lastUsed = { ...this.lastUsed, [b]: i };
-  }
-
   scanState() {
     return {
       busy: this.scan.busy,
@@ -688,8 +583,10 @@ export class WalletSession {
       pending: (this.pending || []).length,
       tip: this.tipHeight,
       fullScanTip: this.fullScanTip,
-      gapLimit: this.gapLimit(),
-      gapExtra: Number(this.settings.gapExtra) || 0,
+      watch: {
+        ord: true, receive: 0, change: 0,
+        staged: Object.keys(this.staged || {}).length,
+      },
       auto: this._autoSync,
       paused: this.settings.scanPaused === true,
     };
@@ -705,7 +602,11 @@ export class WalletSession {
 
   // --- discovery ---------------------------------------------------------
 
-  _entry(branch, index) {
+  /** Only three HD scripts exist in the watch set. The ordinals address
+   *  covers mints and frogs; receive(0) and change(0) cover ordinary coins.
+   *  Staged state scripts are added separately because they do not live on
+   *  an HD path. */
+  _entry(branch) {
     if (branch === 'ord') {
       return {
         branch: 'ord', index: 0, key: this.keys.ord,
@@ -714,21 +615,11 @@ export class WalletSession {
       };
     }
     const b = Number(branch);
-    const i = Number(index);
-    if ((b !== 0 && b !== 1) || !Number.isSafeInteger(i) || i < 0) return null;
-    const key = b === 0 ? this.keys.receive(i) : this.keys.change(i);
-    return { branch: b, index: i, key, address: key.address, script: key.script, kind: 'p2wpkh' };
+    if (b !== 0 && b !== 1) return null;
+    const key = b === 0 ? this.keys.receive(0) : this.keys.change(0);
+    return { branch: b, index: 0, key, address: key.address, script: key.script, kind: 'p2wpkh' };
   }
 
-  _watchPlan() {
-    const floor = Math.max(Number(this.receiveFloor) || 0, Number(this.receiveIndex) || 0);
-    return buildWatchPlan({ lastUsed: this.lastUsed, receiveFloor: floor, hot: this.hot });
-  }
-
-  _plan(cold) {
-    const plan = this._watchPlan();
-    return cold ? buildColdPlan(plan, this.watched) : plan;
-  }
   async _getTx(txid) {
     if (this._txCache.has(txid)) return this._txCache.get(txid);
     const tx = await this.backend.getTx(txid).catch(() => null);
@@ -785,10 +676,8 @@ export class WalletSession {
       ? `scanning paused — last pass failed: ${why}`
       : `sync failed: ${why} (retry in ${Math.round(this.tickIntervalMs() / 1000)}s)`;
     if (this.scan.rescan) {
-      const { asked } = this.scan.rescan;
       this.scan.rescan = null;
-      this.scan.note = `rescan failed after ${asked} addresses: ${why}`;
-      this._rescanCancel = false;
+      this.scan.note = `rescan failed: ${why}`;
     }
     this._saveLedger();
   }
@@ -841,101 +730,16 @@ export class WalletSession {
     const previousFrogs = this.frogs.slice();
     const previousMempool = this.mempool.slice();
     const previousBalance = this.balance;
-    const previousHot = (this.hot || []).slice();
-    const used = { ...(this.used || {}) };
     const notes = [];
     if (tipNote) notes.push(tipNote);
     const rescanning = !!this.scan.rescan;
-    let readFailed = null;
-    let cancelled = false;
     let pausedMidPass = false;
-    let receiveFound = false;
     let asked = 0;
     let hits = 0;
-    const coldHistory = new Map();
 
-    // 0. COLD GAP WALK. Only boot, RESCAN and EXTEND reach this. Small
-    //    concurrent waves (SCAN_WAVE) keep the user from staring at a
-    //    spinner; a rescan on a public source waits RESCAN_DELAY between
-    //    waves, reports progress, and can be stopped.
-    if (this.cold) {
-      for (const branch of [0, 1]) {
-        if (branch === 1 && shouldSkipChange(
-          rescanning, receiveFound, this.receiveFloor, Number(this.balance.spendable),
-        )) {
-          notes.push('change addresses not scanned (nothing on receive); RESCAN walks them');
-          continue;
-        }
-        let index = 0;
-        let consecutiveEmpty = 0;
-        const floor = branch === 0
-          ? Math.max(Number(this.receiveIndex) || 0, Number(this.receiveFloor) || 0)
-          : 0;
-        const gapLimit = this.gapLimit();
-        while (!(consecutiveEmpty >= gapLimit && index > floor)) {
-          if (this._scanAbort) {
-            pausedMidPass = true;
-            if (rescanning) cancelled = true;
-            break;
-          }
-          if (this._stopped) { cancelled = true; break; }
-          const wave = [];
-          for (let n = 0; n < SCAN_WAVE; n += 1, index += 1) {
-            const entry = this._entry(branch, index);
-            if (entry) wave.push(entry);
-          }
-          const answers = await mapLimit(wave, SCAN_WAVE, async (w) => {
-            try {
-              const hist = this.backend.addressHistory
-                ? await this.backend.addressHistory(w.address, w.script)
-                : await this.backend.addressUtxos(w.address, w.script);
-              return { ok: true, history: Array.isArray(hist) ? hist : [] };
-            } catch (e) {
-              return { ok: false, error: e };
-            }
-          });
-          for (let i = 0; i < wave.length; i += 1) {
-            asked += 1;
-            const answer = answers[i];
-            if (!answer.ok) {
-              readFailed = answer.error?.message || String(answer.error);
-              break;
-            }
-            coldHistory.set(wave[i].address, answer.history);
-            if (answer.history.length === 0) {
-              consecutiveEmpty += 1;
-            } else {
-              consecutiveEmpty = 0;
-              hits += 1;
-              if (branch === 0) {
-                receiveFound = true;
-                used[wave[i].address] = true;
-              }
-              this._noteUsed(branch, wave[i].index);
-            }
-          }
-          if (readFailed) break;
-          if (this._scanAbort) {
-            pausedMidPass = true;
-            if (rescanning) cancelled = true;
-            break;
-          }
-          if (rescanning) {
-            this.scan.rescan = { asked, hits };
-            this.dispatch('scan', this.scanState());
-            if (this._rescanCancel) { cancelled = true; break; }
-            if (this.publicSource) await sleep(RESCAN_DELAY_MS);
-          }
-        }
-        this.watched[branch] = Math.max(Number(this.watched[branch]) || 0, index);
-        if (readFailed || cancelled || pausedMidPass) break;
-      }
-    }
-
-    // 1. WATCH PLAN. A warm pass asks about the ordinals address, the
-    //    next unused index on each branch plus one guard, the last used
-    //    index, and every index that held coins last pass. A cold pass
-    //    asks about everything the walk reached.
+    // 1. WATCH SET. Three fixed HD scripts, plus one derived state script
+    //    for every staged Hopper. Cold and warm passes ask the same set;
+    //    only the history backfills run on a cold pass.
     const entries = [];
     const seenAddresses = new Set();
     const addEntry = (entry) => {
@@ -944,7 +748,8 @@ export class WalletSession {
       entries.push(entry);
     };
     // The ordinals address comes first so a partial failure later in the
-    // plan cannot hide a mint. Known state scripts follow, then the HD plan.
+    // set cannot hide a mint. Known state scripts follow, then the fixed
+    // receive/change scripts.
     addEntry(this._entry('ord'));
     for (const row of Object.values(this.staged || {})) {
       const sat = Number(row?.sat);
@@ -956,15 +761,14 @@ export class WalletSession {
         });
       } catch { /* a corrupt ledger row is not a reason to stop scanning */ }
     }
-    for (const [branch, index] of this._plan(this.cold)) {
-      const entry = this._entry(branch, index);
+    for (const branch of [0, 1]) {
+      const entry = this._entry(branch);
       if (entry) addEntry(entry);
     }
 
     const utxos = [];
     const mempoolByTx = new Map();
     const queriedOk = new Set();
-    let hotNow = [];
     let watchFailed = null;
     let stagedChanged = false;
     const prevByAddress = new Map();
@@ -974,10 +778,11 @@ export class WalletSession {
       prevByAddress.get(u.address).push(u);
     }
 
-    // Sequential on purpose: a warm pass is 6–10 scripts and a public
-    // source must not see them as a burst.
+    // Sequential on purpose: even the fixed set is a handful of requests,
+    // and a public source must not see them as a burst.
     for (const w of entries) {
       if (this._scanAbort) { pausedMidPass = true; break; }
+      asked += 1;
       let list;
       try {
         list = await this.backend.addressUtxos(w.address, w.script);
@@ -1042,23 +847,12 @@ export class WalletSession {
           stagedChanged = true;
         }
       }
-      if (list.length) {
-        if (w.branch === 0) {
-          used[w.address] = true;
-          this._noteReceiveAddress(w.address);
-        }
-        if (typeof w.branch === 'number') {
-          this._noteUsed(w.branch, w.index);
-          if (!hotNow.some(([b, i]) => b === w.branch && i === w.index)) {
-            hotNow.push([w.branch, w.index]);
-          }
-        }
-      }
+      if (list.length) hits += 1;
     }
 
     // A pass that could not name every address keeps the coins it already
-    // knew: absence is not evidence. Only a completed pass may shrink hot.
-    const preserve = !!(readFailed || watchFailed || cancelled || pausedMidPass);
+    // knew: absence is not evidence.
+    const preserve = !!(watchFailed || pausedMidPass);
     if (preserve) {
       const queried = new Set(entries.map((w) => w.address));
       for (const u of previousUtxos) {
@@ -1066,20 +860,14 @@ export class WalletSession {
           if (!utxos.some((x) => x.txid === u.txid && x.vout === u.vout)) utxos.push(u);
         }
       }
-      const merged = new Map();
-      for (const pair of [...previousHot, ...hotNow]) merged.set(`${pair[0]}:${pair[1]}`, pair);
-      hotNow = [...merged.values()];
       for (const row of previousMempool) {
         if (!row?.txid || queriedOk.has(row.address)) continue;
         if (!mempoolByTx.has(row.txid)) mempoolByTx.set(row.txid, { ...row });
       }
     }
-    this.hot = hotNow;
     if (stagedChanged) this._saveLedger();
     this.mempool = [...mempoolByTx.values()].sort((a, b) => b.amount - a.amount);
-    if (readFailed) notes.push(`gap walk stopped: ${readFailed}`);
     if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
-    if (cancelled) notes.push(`scan stopped by user after ${asked} addresses`);
     if (pausedMidPass) notes.push('scanning paused — this pass stopped early');
     // The session was locked/wiped/pointed at another backend while this
     // pass was in flight. Do not write a ledger after the vault is gone.
@@ -1203,17 +991,16 @@ export class WalletSession {
     // only replaces a pack when the state outpoint or tree actually moves;
     // a partial scan never deletes a copy.
     this._reconcileRecoveryPacks({ tipHeight: tip });
-    this.used = used;
     this._recordObservedReceives(this.utxos);
     this._recordObservedChanges(this.utxos);
     this._recordChainMints();
     await this._repairMintCommits();
     this._tagChanges();
-    const recovered = await this._backfillReceives(coldHistory);
+    const recovered = await this._backfillReceives();
     if (recovered) {
       notes.push(`${recovered} earlier receive${recovered === 1 ? '' : 's'} recovered from address history`);
     }
-    const changeRecovered = await this._backfillChanges(coldHistory);
+    const changeRecovered = await this._backfillChanges();
     this._tagChanges();
     if (changeRecovered) {
       notes.push(`${changeRecovered} earlier change output${changeRecovered === 1 ? '' : 's'} recovered from address history`);
@@ -1222,10 +1009,6 @@ export class WalletSession {
     const priorTotal = this.balance.total;
     this._computeBalance();
     if (preserve && this.balance.total < priorTotal) this.balance = previousBalance;
-    // A receive address that has been paid is retired. If the receive window
-    // is open, the receive-address event repaints it with the next one; if it
-    // is closed, the wallet simply opens on a fresh address next time.
-    const rotatedReceive = this._rotatePaidReceive();
 
     try {
       const ev = await this.backend.events(200);
@@ -1251,32 +1034,25 @@ export class WalletSession {
 
     // 3. Scan bookkeeping and the tip gate.
     if (rescanning) {
-      const note = cancelled
-        ? `rescan stopped after ${asked} addresses (${hits} had history) — the rest was not checked`
-        : readFailed
-          ? `rescan failed after ${asked} addresses — the chain source stopped answering`
-          : `rescan complete: ${asked} addresses asked, ${hits} with history`;
-      notes.unshift(note);
+      notes.unshift(watchFailed
+        ? `rescan stopped: ${watchFailed}`
+        : `rescan complete: ${asked} fixed script${asked === 1 ? '' : 's'} checked${hits ? `, ${hits} with coins` : ''}`);
       this.scan.rescan = null;
-      this._rescanCancel = false;
     }
-    if (readFailed || watchFailed || tipFailed) {
+    if (watchFailed || tipFailed) {
       this.fails += 1;
       this.watchTip = null;
     } else if (!pausedMidPass) {
       this.fails = 0;
       this.watchTip = tip;
     }
-    if (this.cold) {
-      if (!readFailed && !cancelled && !pausedMidPass) {
-        this.fullScanTip = tip;
-        this.cold = false;
-      }
+    if (this.cold && !watchFailed && !pausedMidPass) {
+      this.fullScanTip = tip;
+      this.cold = false;
     }
     this.scan.lastPass = Date.now();
     this.scan.lastTip = tip;
-    this.scan.partial = !!(readFailed || watchFailed || cancelled || pausedMidPass
-      || recordFailed || ownershipFailed);
+    this.scan.partial = !!(watchFailed || pausedMidPass || recordFailed || ownershipFailed);
     if (this._stopped) return this;
     if (!notes.length) notes.push(`synced at block ${tip}`);
     this.scan.note = this.settings.scanPaused === true
@@ -1284,11 +1060,10 @@ export class WalletSession {
       : notes.join(' · ');
     this._saveLedger();
     this.dispatch('refresh', this.summary());
-    if (rotatedReceive) this.dispatch('receive-address', rotatedReceive);
     return this;
   }
 
-  // --- manual scan controls (FROGGER's RESCAN / STOP / EXTEND) ----------
+  // --- manual rescan ------------------------------------------------------
 
   async startRescan() {
     if (!this.backend) await this.connect();
@@ -1297,52 +1072,21 @@ export class WalletSession {
       try { await this._refreshing; } catch { /* the rescan can still start */ }
     }
     if (this.scan.rescan) return false;
-    this._rescanCancel = false;
-    // A rescan is also the user's escape hatch if an older ledger has
-    // deposits or change missing from History. Ask address history again.
+    // A rescan is the user's escape hatch if an older ledger has deposits
+    // or change missing from History. It re-asks the fixed scripts and
+    // resets both one-time history backfills.
     this.receivesVersion = 0;
     this._receiveBackfillFailedAt = 0;
     this.changesVersion = 0;
     this._changeBackfillFailedAt = 0;
     this.scan.rescan = { asked: 0, hits: 0 };
-    this.scan.note = 'rescanning from the chain — this walks every address in the gap';
+    this.scan.note = 'rescanning the fixed watch set';
     this.fullScanTip = null;
     this.cold = true;
     this.forceWatch = true;
     this.dispatch('scan', this.scanState());
     await this.refresh({ force: true });
     return true;
-  }
-
-  cancelRescan() {
-    if (!this.scan.rescan) return false;
-    this._rescanCancel = true;
-    this.scan.note = 'stopping after this wave…';
-    this.dispatch('scan', this.scanState());
-    return true;
-  }
-
-  async extendGap(n = GAP_LIMIT) {
-    if (!this.backend) await this.connect();
-    const add = Math.max(1, Math.min(100_000, Math.trunc(Number(n) || GAP_LIMIT)));
-    if (this._refreshing) {
-      try { await this._refreshing; } catch { /* extend anyway */ }
-    }
-    const before = this.gapLimit();
-    this.settings.gapExtra = Math.min(1_000_000, (Number(this.settings.gapExtra) || 0) + add);
-    this.settings.gap = GAP_LIMIT + this.settings.gapExtra;
-    saveSettings(this.settings);
-    this.scan.note = `gap limit extended by ${add}: ${before} → ${this.gapLimit()}`;
-    this.receivesVersion = 0;
-    this._receiveBackfillFailedAt = 0;
-    this.changesVersion = 0;
-    this._changeBackfillFailedAt = 0;
-    this.fullScanTip = null;
-    this.cold = true;
-    this.forceWatch = true;
-    this.dispatch('scan', this.scanState());
-    await this.refresh({ force: true });
-    return this.gapLimit();
   }
 
   /** The state script for one local mint. State outputs sit at scripts that
@@ -1618,36 +1362,12 @@ export class WalletSession {
     if (this.receives.length > 300) this.receives = this.receives.slice(-300);
   }
 
-  /** Change addresses this wallet has actually used. All current builders
-   *  use change index 0, but the ledger follows `lastUsed`/hot/UTXOs so a
-   *  future index does not silently lose its history. */
+  /** The only change script this wallet ever uses. */
   _changeAddressEntries() {
-    let max = Number(this.lastUsed?.[1]);
-    if (!Number.isSafeInteger(max) || max < 0) max = -1;
-    for (const pair of this.hot || []) {
-      if (Array.isArray(pair) && Number(pair[0]) === 1 && Number.isSafeInteger(Number(pair[1]))) {
-        max = Math.max(max, Number(pair[1]));
-      }
-    }
-    for (const u of this.utxos || []) {
-      if (u?.keyRef?.branch === 1 && Number.isSafeInteger(Number(u.keyRef.index))) {
-        max = Math.max(max, Number(u.keyRef.index));
-      }
-    }
-    const activity = (this.actions || []).length
-      || (this.receives || []).some((r) => r && !r.frog)
-      || (this.changes || []).length;
-    if (activity) max = Math.max(max, 0);
-    if (max < 0) return [];
-    max = Math.min(80, max);
-    const entries = [];
-    for (let i = 0; i <= max; i += 1) {
-      try {
-        const key = this.keys.change(i);
-        entries.push({ address: key.address, script: key.script, index: i });
-      } catch { /* keep the addresses that did derive */ }
-    }
-    return entries;
+    try {
+      const key = this.keys.change(0);
+      return [{ address: key.address, script: key.script, index: 0 }];
+    } catch { return []; }
   }
 
   /** The mint context for a transaction. A mint has a commit (which usually
@@ -1866,7 +1586,7 @@ export class WalletSession {
    *  wallet has used, then records every output paying those scripts. This
    *  is what makes a restored wallet show the same internal change as the
    *  device that built the transactions. */
-  async _backfillChanges(known = null) {
+  async _backfillChanges() {
     const entries = this._changeAddressEntries();
     this._migrateChangeReceives(entries);
     if (this.changesVersion >= 1) return 0;
@@ -1880,18 +1600,14 @@ export class WalletSession {
     let sawUnconfirmed = false;
     let asked = 0;
     for (const entry of entries) {
+      if (asked && this.publicSource) await sleep(200);
+      asked += 1;
       let hist;
-      if (known && known.has(entry.address)) {
-        hist = known.get(entry.address);
-      } else {
-        if (asked && this.publicSource) await sleep(200);
-        asked += 1;
-        try {
-          hist = await this.backend.addressHistory(entry.address, entry.script);
-        } catch {
-          failed = true;
-          continue;
-        }
+      try {
+        hist = await this.backend.addressHistory(entry.address, entry.script);
+      } catch {
+        failed = true;
+        continue;
       }
       for (const h of Array.isArray(hist) ? hist : []) {
         const txid = String(h?.txid || '').toLowerCase();
@@ -1945,32 +1661,20 @@ export class WalletSession {
     return added;
   }
 
-  /** Receive addresses this wallet has ever handed out. `used` is only
-   *  written for branch 0, and receiveHistory is branch 0 by construction,
-   *  so neither can pull in a change address. */
+  /** The only ordinary receive script this wallet ever uses. */
   _receiveBackfillEntries() {
-    const hints = new Set([
-      ...(this.receiveHistory || []),
-      ...Object.keys(this.used || {}),
-    ]);
-    const entries = [];
-    for (const address of hints) {
-      try {
-        const decoded = decodeAddress(address, this.network);
-        if (decoded.type !== 'p2wpkh') continue;
-        entries.push({ address, script: decoded.script });
-      } catch { /* an old address from another network cannot be queried here */ }
-    }
-    return entries;
+    try {
+      const key = this.keys.receive(0);
+      return [{ address: key.address, script: key.script, index: 0 }];
+    } catch { return []; }
   }
 
   /** One-time recovery of receives that predate the local receive ledger.
-   *  A deposit whose coin was already spent leaves no UTXO, but the address
-   *  that received it remains in `used`/`receiveHistory`. Ask only those
-   *  receive addresses for their transaction history, and record outputs
-   *  that paid us. This is deliberately versioned: after one successful
-   *  pass the wallet does not touch those addresses again. */
-  async _backfillReceives(known = null) {
+   *  A deposit whose coin was already spent leaves no UTXO, but the fixed
+   *  receive script's history still names its transaction. This is
+   *  deliberately versioned: after one successful pass the wallet does not
+   *  touch that history again. */
+  async _backfillReceives() {
     if (this.receivesVersion >= 2) return 0;
     if (Date.now() - (this._receiveBackfillFailedAt || 0) < 60_000) return 0;
     const entries = this._receiveBackfillEntries();
@@ -1989,18 +1693,14 @@ export class WalletSession {
     let sawUnconfirmed = false;
     let asked = 0;
     for (const entry of entries) {
+      if (asked && this.publicSource) await sleep(200);
+      asked += 1;
       let hist;
-      if (known && known.has(entry.address)) {
-        hist = known.get(entry.address);
-      } else {
-        if (asked && this.publicSource) await sleep(200);
-        asked += 1;
-        try {
-          hist = await this.backend.addressHistory(entry.address, entry.script);
-        } catch {
-          failed = true;
-          continue;
-        }
+      try {
+        hist = await this.backend.addressHistory(entry.address, entry.script);
+      } catch {
+        failed = true;
+        continue;
       }
       for (const h of Array.isArray(hist) ? hist : []) {
         const txid = String(h?.txid || '').toLowerCase();
@@ -2263,101 +1963,16 @@ export class WalletSession {
 
   // --- receive addresses -------------------------------------------------
 
-  /** The address the BITCOIN tab shows: a fresh BIP84 address that rotates. */
+  /** The BITCOIN tab is one fixed BIP84 address. It never rotates. */
   receiveAddress() {
-    if (!Number.isInteger(this.receiveIndex) || this.receiveIndex < 0) this.receiveIndex = 0;
-    const address = this.keys.receive(this.receiveIndex).address;
-    this._noteReceiveAddress(address);
-    return address;
-  }
-
-  _noteReceiveAddress(address) {
-    if (!Array.isArray(this.receiveHistory)) this.receiveHistory = [];
-    if (!this.receiveHistory.includes(address)) {
-      this.receiveHistory.push(address);
-      const max = Math.max(80, this.gapLimit() * 4);
-      if (this.receiveHistory.length > max) this.receiveHistory = this.receiveHistory.slice(-max);
-      this._saveLedger();
-    }
-  }
-
-  /** Rotate to a previously-unused receive address (never the frogs' one).
-   *  The floor only moves forward: every address we ever handed out stays
-   *  covered by the scan. */
-  _advanceReceiveAddress() {
-    const gap = Math.max(1, this.gapLimit());
-    const current = this.receiveIndex || 0;
-    const history = new Set(this.receiveHistory || []);
-    history.add(this.keys.receive(current).address);
-    // Skip addresses this wallet already handed out OR saw funds on. The
-    // latter matters after an upgrade: an old receiveIndex could point at a
-    // paid address that was never rotated.
-    let next = null;
-    for (let step = 1; step <= gap; step += 1) {
-      const candidate = (current + step) % gap;
-      const address = this.keys.receive(candidate).address;
-      if (!history.has(address) && !this.used?.[address]) { next = candidate; break; }
-    }
-    // Every address in the window is spent. Do not reuse one; continue the
-    // derivation beyond the old window and let the scan follow the floor.
-    if (next == null) next = current + 1;
-    this.receiveIndex = next;
-    this.receiveFloor = Math.max(Number(this.receiveFloor) || 0, next);
-    this.forceWatch = true;
-    const address = this.receiveAddress();
-    this._saveLedger();
-    return { address, index: next };
-  }
-
-  newReceiveAddress() {
-    const { address, index } = this._advanceReceiveAddress();
-    this.dispatch('receive-address', { address, index });
-    return address;
-  }
-
-  /** A fresh receive address is the default after the current one is paid.
-   *  This is deliberately silent: refresh() emits one receive-address event
-   *  after the pass, so an open receive window can repaint without races. */
-  _rotatePaidReceive() {
-    const current = this.receiveIndex || 0;
-    const address = this.keys.receive(current).address;
-    if (!this.used?.[address]) return null;
-    return this._advanceReceiveAddress();
-  }
-
-  /** Every bitcoin receive address handed out, newest first. */
-  receiveAddresses() {
-    const history = new Set(this.receiveHistory || []);
-    // The current address is always handed out, even before it is paid.
-    history.add(this.keys.receive(this.receiveIndex || 0).address);
-    const rows = [];
-    const limit = Math.max(
-      this.gapLimit(),
-      Number(this.receiveIndex) + 1 || 0,
-      Number(this.receiveFloor) + 1 || 0,
-      (this.receiveHistory || []).length,
-    );
-    for (let i = 0; i < limit; i += 1) {
-      const key = this.keys.receive(i);
-      if (!history.has(key.address)) continue;
-      const coins = this.utxos.filter((u) => u.address === key.address);
-      rows.push({
-        index: i,
-        address: key.address,
-        current: i === (this.receiveIndex || 0),
-        used: !!this.used?.[key.address],
-        sats: coins.reduce((n, u) => n + Number(u.value || 0), 0),
-        txs: 0,
-      });
-    }
-    return rows.sort((a, b) => b.index - a.index);
+    return this.keys.receive(0).address;
   }
 
   // --- demo faucet -------------------------------------------------------
 
   async demoFund(coins = 8, value = 200000) {
     if (this.settings.mode !== 'demo') throw new Error('the faucet only exists in demo mode');
-    const receive = this.keys.receive(this.receiveIndex || 0);
+    const receive = this.keys.receive(0);
     await this.backend.fund(receive.script, value, coins);
     await this.refresh();
   }
@@ -3053,8 +2668,7 @@ export class WalletSession {
   }
 
   static newAddress(wallet) {
-    const used = Object.keys(wallet.used || {}).length;
-    return { change: wallet.keys.change(used % 20), receive: wallet.keys.receive(used % 20) };
+    return { change: wallet.keys.change(0), receive: wallet.keys.receive(0) };
   }
 }
 

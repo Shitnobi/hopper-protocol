@@ -85,15 +85,14 @@ export class MockChain {
       txid, vout, value: Number(value), scriptHex: bytesToHex(script), ranges, frogs,
       address,
     });
-    // The gap walk asks "has this address EVER been used?", not "does it
-    // hold a coin now?". Record every output address so a spent address
-    // does not look unused and get handed out again.
+    // Address history asks "has this address EVER been used?", not "does
+    // it hold a coin now?". Record every output address so a spent output
+    // still has history for the receive/change backfills.
     if (address) this.seenAddresses.add(address);
   }
 
-  /** Chain history shape for the demo. The wallet's gap walk only needs
-   *  membership, while its receive backfill uses the output detail to
-   *  reconstruct deposits whose coins were later spent. */
+  /** Chain history shape for the demo. The wallet's backfills use the
+   *  output detail to reconstruct deposits whose coins were later spent. */
   addressHistory(address) {
     const rows = [];
     for (const tx of this.txs || []) {
