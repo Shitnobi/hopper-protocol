@@ -159,6 +159,26 @@ if (navigations.length !== 1) {
   errors.push(`fresh boot reloaded itself: ${JSON.stringify(navigations)}`);
 }
 
+// The soundtrack is not wallet-only. A completed touch on the first screen
+// must produce a running context, an unlock source, a loaded score and a
+// transport. This uses a real CDP touch, not programmatic element.click().
+const soundTap = { x: 20, y: 20, id: 1, radiusX: 1, radiusY: 1, force: 1 };
+await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [soundTap] });
+await sleep(40);
+await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+await sleep(120);
+await waitFor(`(() => {
+  const s = window.hopperSound?.status?.();
+  return s && s.state === 'running' && s.notes > 0 && s.timer;
+})()`, 15000, 'soundtrack after the first gesture');
+const bootSound = await evaluate('window.hopperSound?.status?.()');
+console.log('sound at boot:', bootSound);
+if (!bootSound || !bootSound.armed || !bootSound.unlocked
+  || bootSound.state !== 'running' || !bootSound.notes || !bootSound.timer
+  || bootSound.resumeError) {
+  errors.push(`soundtrack did not start on the first gesture: ${JSON.stringify(bootSound)}`);
+}
+
 // The welcome is flavor, not a protocol spec. The three stat fields are
 // gone and the sentence sits centered in their place.
 const welcome = await evaluate(`(() => {

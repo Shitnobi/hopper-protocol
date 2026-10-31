@@ -45,6 +45,81 @@ const player = new Sound({ volume: 0.4, mute: false });
 ok(player.status().wanted, 'the score is wanted before a wallet is unlocked');
 ok(player.status().mute === false && player.status().volume === 0.4, 'the player mirrors its fader and mute');
 
+// iOS starts an AudioContext only from a completed gesture, and needs a real
+// source started inside that gesture. arm() must resume, kick a silent buffer,
+// and rebuild a context whose resume was refused instead of retrying it.
+const param = () => ({ value: 0 });
+const fakeNode = () => ({
+  connect(next) { return next; },
+  gain: param(), threshold: param(), knee: param(), ratio: param(),
+  attack: param(), release: param(), frequency: param(), Q: param(), type: '',
+});
+class FakeAudioContext {
+  constructor() {
+    this.state = 'suspended';
+    this.currentTime = 0;
+    this.sampleRate = 8000;
+    this.destination = {};
+    this.resumes = 0;
+    this.starts = 0;
+    this.closed = 0;
+  }
+  createGain() { return fakeNode(); }
+  createDynamicsCompressor() { return fakeNode(); }
+  createBiquadFilter() { return fakeNode(); }
+  createPeriodicWave() { return {}; }
+  createBuffer() { return {}; }
+  createBufferSource() {
+    const ctx = this;
+    return {
+      buffer: null,
+      connect() { return this; },
+      start() { ctx.starts += 1; },
+      stop() {},
+    };
+  }
+  resume() { this.resumes += 1; this.state = 'running'; return Promise.resolve(); }
+  suspend() { this.state = 'suspended'; return Promise.resolve(); }
+  close() { this.closed += 1; this.state = 'closed'; return Promise.resolve(); }
+}
+const contexts = [];
+const previousWindow = globalThis.window;
+globalThis.window = {
+  AudioContext: class extends FakeAudioContext {
+    constructor() { super(); contexts.push(this); }
+  },
+};
+const gesturePlayer = new Sound({ volume: 0.55, mute: true });
+ok(gesturePlayer.arm() === true, 'a completed gesture opens the audio context');
+ok(contexts.length === 1 && gesturePlayer.status().state === 'running',
+  'the first context is resumed from the gesture');
+ok(contexts[0].resumes === 1 && contexts[0].starts === 1,
+  'arm resumes the context and starts a silent unlock buffer');
+ok(gesturePlayer.status().unlocked === true && gesturePlayer.status().gestures === 1,
+  'the player reports the unlock and the gesture');
+ok(gesturePlayer.master.gain.value === 0.0001,
+  'a muted player keeps its master gain at the mute floor');
+
+// Force the next gesture to see a refused resume, then let a later one build
+// a fresh context. This is the iOS failure mode: the old context is poisoned.
+contexts[0].state = 'suspended';
+contexts[0].resume = () => {
+  contexts[0].resumes += 1;
+  return Promise.reject(new Error('NotAllowedError'));
+};
+gesturePlayer.arm();
+await Promise.resolve();
+await Promise.resolve();
+ok(gesturePlayer.status().resumeError === 'NotAllowedError',
+  'a refused resume is recorded instead of thrown into the app');
+gesturePlayer.arm();
+ok(contexts.length === 2 && contexts[0].closed === 1,
+  'a later gesture replaces a context whose resume was refused');
+ok(gesturePlayer.status().state === 'running' && gesturePlayer.status().resumeError === '',
+  'the replacement context is running and has no stale resume error');
+if (previousWindow === undefined) delete globalThis.window;
+else globalThis.window = previousWindow;
+
 // ---- QR --------------------------------------------------------------
 const address = 'bcrt1qzztk65v4te28ta2uxw7lk994zjzt6ktkm7xtzf';
 const grid = qrModules(address);

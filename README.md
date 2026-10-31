@@ -342,9 +342,17 @@ shows a live line such as `♪ PLAYING · 7635 NOTES`, or names the reason it
 is silent (`MUTED`, `VOLUME 0%`, `SUSPENDED — TAP TO RETRY`, a load
 error). `hopperSound.status()` reports the same state in the console.
 
-Browsers require one gesture before audio may start, so the first
-tap/click/key starts the score (later gestures retry if the browser
-suspended it). A stale service worker is the other common cause:
+Browsers require one completed gesture before audio may start, so the
+first tap, click or key starts the score (later gestures retry if the
+browser suspended it). The player creates/resumes the context on
+`touchend`, `pointerup` or `click`, and starts a silent buffer inside that
+same gesture: iOS does not reliably unlock from `touchstart`/`pointerdown`,
+and the splash hides on pointerdown so the first tap may produce no click.
+If Safari refuses a resume, the next tap builds a fresh context instead of
+retrying the blocked one. On iPhone, WebAudio still follows the hardware
+Ring/Silent switch; if Settings says `PLAYING` and you hear nothing, check
+that switch and the hardware volume. A stale service worker is the other
+common cause:
 `js/build-guard.js` compares the running build with the deployed
 `sw.js`. A page that already runs the deployed build only fills its
 cache in the background. A genuinely stale page waits for every shell

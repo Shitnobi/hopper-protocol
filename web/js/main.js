@@ -75,15 +75,23 @@ app.sound = sound;
 if (typeof window !== 'undefined') window.hopperSound = sound;
 let viewSeq = 0;
 let lastLocation = null;
-// Kept on every gesture on purpose: a context created during the first
-// tap can still be suspended by the browser (autoplay policy, a tab that
-// started hidden). Sound.arm() only builds the graph once and otherwise
-// retries resume(), so later taps can always bring the score back.
+// Kept on every completed gesture on purpose: a context created during the
+// first tap can still be suspended by the browser (autoplay policy, a tab
+// that started hidden). Sound.arm() resumes it and starts a silent unlock
+// buffer, and a refused context is rebuilt on the next gesture.
+//
+// Do not arm from touchstart or pointerdown on iOS: touchstart is not the
+// completed-tap gesture Safari reliably accepts, and the splash hides on
+// pointerdown so no click follows that first tap. touchend/pointerup/click
+// are all inside the same gesture and let a fresh context start there.
 function armSound() {
   sound.arm();
 }
-document.addEventListener('pointerdown', armSound, { passive: true });
-document.addEventListener('touchstart', armSound, { passive: true });
+document.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType === 'mouse') armSound();
+}, { passive: true });
+document.addEventListener('pointerup', armSound, { passive: true });
+document.addEventListener('touchend', armSound, { passive: true });
 document.addEventListener('click', armSound, { passive: true });
 document.addEventListener('keydown', armSound);
 

@@ -192,15 +192,35 @@ export class Sound {
     this.cursor = 0;
     this.step = 0;
     this.armed = false;
+    this.unlocked = false;
+    // Every completed gesture counts. iOS Safari is much stricter than a
+    // desktop browser about which gesture may start an AudioContext.
+    this.gestures = 0;
     // The score is the app's soundtrack, not a wallet-only effect: FROGGER
     // starts it on the first gesture and keeps it across lock/onboarding.
     this.wanted = true;
     this.lastError = '';
+    this.resumeError = '';
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (!this.ctx) return;
-        if (document.hidden) this.ctx.suspend().catch(() => {});
-        else if (!this.mute) this._resume();
+        if (document.hidden) {
+          this.unlocked = false;
+          this.ctx.suspend().catch(() => {});
+        } else if (!this.mute) {
+          this._resume();
+          if (this.song && this.wanted) this._transport();
+        }
+      });
+    }
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      // Coming back through the iOS back/forward cache does not necessarily
+      // fire visibilitychange. Resuming here is harmless if it is refused;
+      // the next completed tap tries again with a real gesture.
+      window.addEventListener('pageshow', () => {
+        if (!this.ctx || this.mute || document.hidden) return;
+        this._resume();
+        if (this.song && this.wanted) this._transport();
       });
     }
   }
@@ -208,39 +228,114 @@ export class Sound {
   // ---- lifecycle ----------------------------------------------------
 
   arm() {
-    if (!this.armed) {
+    this.gestures += 1;
+    const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+    if (!AC) {
       this.armed = true;
-      const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-      if (!AC) return;
-      this.ctx = new AC();
-      this.master = this.ctx.createGain();
+      return false;
+    }
+    // A context created by touchstart (not a completed tap on iOS) or whose
+    // resume() was refused can stay blocked forever. A later tap builds a
+    // fresh context instead of retrying a poisoned one.
+    if (this.ctx && (this.ctx.state === 'closed'
+      || (this.resumeError && this.ctx.state !== 'running'))) {
+      this._discard();
+    }
+    if (!this.ctx && !this._open()) return false;
+    this._resume();
+    this._unlock();
+    if (!this.mute) {
+      this._load();
+      if (this.wanted) this._transport();
+    }
+    return true;
+  }
+
+  _open() {
+    const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+    if (!AC) {
+      this.armed = true;
+      return false;
+    }
+    let ctx = null;
+    try {
+      ctx = new AC();
+      this.ctx = ctx;
+      this.master = ctx.createGain();
       this.master.gain.value = this.mute ? 0.0001 : gainFor(this.volume);
-      const comp = this.ctx.createDynamicsCompressor();
+      const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -16;
       comp.knee.value = 10;
       comp.ratio.value = 3.5;
       comp.attack.value = 0.004;
       comp.release.value = 0.2;
-      const hp = this.ctx.createBiquadFilter();
+      const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
       hp.frequency.value = 45;
       hp.Q.value = 0.7;
-      const shelf = this.ctx.createBiquadFilter();
+      const shelf = ctx.createBiquadFilter();
       shelf.type = 'highshelf';
       shelf.frequency.value = 1500;
       shelf.gain.value = 2.5;
-      this.master.connect(hp).connect(shelf).connect(comp).connect(this.ctx.destination);
+      this.master.connect(hp).connect(shelf).connect(comp).connect(ctx.destination);
       this.wave = this._shape();
+    } catch (e) {
+      this.lastError = e && e.message ? e.message : String(e);
+      try { ctx?.close?.(); } catch (_) { /* ignore */ }
+      this.ctx = null;
+      this.master = null;
+      this.wave = null;
+      this.armed = true;
+      return false;
     }
-    if (!this.ctx) return;
-    // A browser may leave the context suspended (autoplay policy, a tab
-    // that started hidden) or, on iOS, interrupted. Every gesture retries;
-    // only the first creates the graph.
-    this._resume();
-    if (!this.mute) {
-      this._load();
-      if (this.wanted) this._transport();
+    // A replaced context has its own currentTime; clear the old transport so
+    // the score starts from the new context's zero, not minutes in its past.
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
+    this.cycleStart = 0;
+    this.cursor = 0;
+    this.silent = null;
+    this.unlocked = false;
+    this.resumeError = '';
+    this.armed = true;
+    ctx.onstatechange = () => {
+      if (this.ctx !== ctx) return;
+      if (ctx.state === 'running') {
+        this.resumeError = '';
+        if (!this.mute) {
+          this._load();
+          if (this.wanted) this._transport();
+        }
+      } else {
+        this.unlocked = false;
+      }
+    };
+    return true;
+  }
+
+  _discard() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    const old = this.ctx;
+    this.ctx = null;
+    this.master = null;
+    this.wave = null;
+    this.silent = null;
+    this.cycleStart = 0;
+    this.cursor = 0;
+    this.unlocked = false;
+    this.resumeError = '';
+    this.armed = false;
+    if (!old) return;
+    try { old.onstatechange = null; } catch (_) { /* ignore */ }
+    try {
+      const p = old.close();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_) { /* ignore */ }
   }
 
   startLoop() {
@@ -280,9 +375,43 @@ export class Sound {
   }
 
   _resume() {
-    if (!this.ctx) return;
-    const state = this.ctx.state;
-    if (state === 'suspended' || state === 'interrupted') this.ctx.resume().catch(() => {});
+    if (!this.ctx || this.ctx.state === 'closed') return;
+    // Resume every time, not only for suspended/interrupted: iOS can report
+    // "running" while the audio session is actually interrupted. resume()
+    // on an already-running context is harmless.
+    let p;
+    try {
+      p = this.ctx.resume();
+    } catch (e) {
+      this.resumeError = e && e.message ? e.message : String(e);
+      return;
+    }
+    if (p && typeof p.then === 'function') {
+      p.then(() => { this.resumeError = ''; }, (e) => {
+        this.resumeError = e && e.message ? e.message : String(e);
+      });
+    }
+  }
+
+  _unlock() {
+    if (!this.ctx || (this.ctx.state === 'running' && this.unlocked)) return;
+    // iOS needs an actual source started inside the gesture. A silent buffer
+    // is the canonical unlock; it is connected straight to the destination so
+    // the app mute/fader cannot turn the unlock itself into a no-op.
+    try {
+      if (!this.silent) {
+        const rate = this.ctx.sampleRate || 44100;
+        const frames = Math.max(1, Math.round(rate * 0.05));
+        this.silent = this.ctx.createBuffer(1, frames, rate);
+      }
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.silent;
+      src.connect(this.ctx.destination);
+      src.start(0);
+      this.unlocked = true;
+    } catch (_) {
+      // The music can still start on a browser that does not need the kick.
+    }
   }
 
   _apply(initial = false) {
@@ -458,14 +587,18 @@ export class Sound {
   status() {
     return {
       armed: this.armed,
+      unlocked: this.unlocked,
+      gestures: this.gestures,
       wanted: this.wanted,
       mute: this.mute,
       volume: this.volume,
       state: this.ctx ? this.ctx.state : 'none',
+      rate: this.ctx ? this.ctx.sampleRate : 0,
       notes: this.song ? this.song.notes.length : 0,
       dur: this.song ? this.song.dur : 0,
       timer: !!this.timer,
       error: this.lastError,
+      resumeError: this.resumeError,
     };
   }
 
