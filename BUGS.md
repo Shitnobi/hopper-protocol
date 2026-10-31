@@ -1,5 +1,48 @@
 # HOPPER bug log
 
+## 2026-10-31 — iOS 15 Safari: music on, volume 55%, no sound
+
+**Reported:** On Safari for iOS 15 everything worked except the soundtrack. SOUND was ON and VOLUME read 55%, but no music played.
+
+**Build:** `hopper-v7-3-18`, commit `51f6cb2`.
+
+### Root causes
+
+iOS applies much stricter Web Audio gesture rules than desktop Safari/Chrome. Several code paths could leave a valid player silent:
+
+1. **The context was created on `touchstart`/`pointerdown`.** iOS reliably unlocks audio only from a completed tap. The boot splash also hides on `pointerdown`, so the first tap could create the context on `touchstart` and then produce no `click` on the removed splash.
+2. **No source was started inside the gesture.** Some iOS versions mark the context running but keep the audio session silent until a buffer source actually starts within a user gesture.
+3. **A refused resume poisoned the context.** `_resume()` swallowed `NotAllowedError` and every later gesture only retried the same blocked context. It was never rebuilt.
+4. **`resume()` was skipped when Safari reported `running`.** After a call, lock, or audio-session interruption iOS can report `running` while output is inactive. The old code resumed only for `suspended`/`interrupted`.
+5. The iOS back/forward cache did not always fire `visibilitychange`, so a restored page had no resume attempt.
+
+### Fix
+
+- `web/js/sound.js`
+  - `arm()` now counts completed gestures, force-resumes every time, and starts a **silent buffer source directly to `destination`** inside the gesture (bypassing mute/fader) to unlock the audio session.
+  - A context whose `resume()` was refused, or that is `closed`, is discarded and rebuilt on the next completed gesture. Replacing a context also clears the old transport and resets the score clock.
+  - Graph construction is guarded; failures leave an inert player, not an app exception.
+  - `visibilitychange` and `pageshow` resume and restart the transport; hidden pages clear the unlock and suspend.
+  - `status()` now reports `unlocked`, `gestures`, `rate` and `resumeError` alongside the existing state.
+- `web/js/main.js`
+  - Audio arms on **`touchend`, `pointerup`, `click` and `keydown`**, not `touchstart`/`pointerdown`. Mouse only keeps the early `pointerdown` path.
+- `web/tests/media.test.mjs`
+  - Fake AudioContext coverage for resume + silent source, refused-resume rebuilding, and the mute floor.
+- `web/tests/e2e.mjs`
+  - A real CDP touch on the first screen must produce a running 48 kHz context, an unlock, 7,635 loaded notes and a live transport.
+- `README.md`
+  - Documents the completed-tap rule and the iOS Ring/Silent switch.
+
+### Verification
+
+- Full `npm test`: media **48** checks; core 136, game ok, emergency 103, params 7, scan 94, ord 46, ui 102, fees 19, preview 87, localmint 40, chainfrog 45, history 134, rbf 125; v7 fold sync/parity/doc boot pass.
+- Browser E2E with a real touch: `sound at boot: { armed: true, unlocked: true, state: 'running', rate: 48000, notes: 7635, timer: true, resumeError: '' }`; `console errors: none`; `e2e: ok`.
+- Not reproduced on iOS hardware in this environment. The changes cover the iOS Web Audio gesture and poisoned-context failure modes.
+
+### If it is still silent
+
+If Settings/drawer says `♪ PLAYING · 7635 NOTES` after this update, the player is running. iOS also mutes WebAudio with the hardware **Ring/Silent switch**; check that switch and the hardware volume. If the line says `SUSPENDED` or shows a `resumeError`, report that exact line.
+
 ## 2026-10-31 — HOP rows lacked direction; Bio history was empty
 
 **Reported:** Hops were not showing properly in the History tab, and a Hopper's history on its Bio page was empty.
