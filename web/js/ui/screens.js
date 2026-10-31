@@ -427,7 +427,7 @@ export function history(app) {
   const rows = historyRows(app.w).slice(0, 80);
   return `
     ${heading('📜 History')}
-    <div class="sub">Every wallet transaction — sends, receives, change, mints and road actions. Newest first. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
+    <div class="sub">Every wallet transaction — sends, receives, change, mints and road actions. Newest first. A transaction's rows stay together, and every change row names the spend it came from. Faded rows with an IN MEMPOOL label are not confirmed yet.</div>
     <div class="mt14">
       ${rows.length ? rows.map((r) => txRow(app, r)).join('') : '<div class="sub">No transactions yet — they appear here as you use the wallet.</div>'}
     </div>`;
@@ -779,18 +779,88 @@ function historyRows(w) {
     r.groupHeight = groupHeight.get(commit || tx) ?? groupHeight.get(tx) ?? null;
   }
 
-  const seen = new Set();
-  const unique = rows.filter((r) => {
-    // Receives are one row per transaction even when a frog output and
-    // ordinary change were both observed. A mint is still allowed to have
-    // its own MINT row beside the Hopper-arrival row.
-    const k = r.kind === 'receive'
-      ? `receive:${r.txid || ''}`
-      : `${r.kind}:${r.txid || ''}:${r.sat ?? ''}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  // One transaction can arrive from more than one ledger. A local TRAVEL
+  // action and the indexer's `transfer` event describe the same move, and a
+  // local HOP action and the indexer's `cross` event describe the same hop.
+  // Merge those rows instead of painting duplicate transactions. Local rows
+  // contribute the fee, destination and direction; chain rows contribute the
+  // confirmed height. Merging also keeps the local destination on a Hopper
+  // TRANSFER, which the old first-row-wins filter discarded.
+  const mergeKey = (r) => {
+    const tx = String(r.txid || '').toLowerCase();
+    if (r.kind === 'receive') return `receive:${tx}`;
+    if (r.kind === 'change') return `change:${tx}:${r.amount ?? ''}:${r.address ?? ''}`;
+    if (r.kind === 'settle') return `settle:${r.height ?? '?'}:${r.sat ?? ''}`;
+    // PREPARE (local) and TRANSFER (indexer) are the same state move. The
+    // crossing has its own action row; a normal handoff uses TRANSFER.
+    const family = r.kind === 'prepare' || r.kind === 'transfer' ? 'move' : r.kind;
+    const sat = r.sat == null ? '' : String(r.sat);
+    return `${family}:${tx}:${sat}`;
+  };
+  const mergeFields = (into, from) => {
+    for (const field of [
+      'height', 'sat', 'dir', 'seed', 'name', 'amount', 'address', 'to',
+      'commit', 'at', 'outcome', 'fee', 'bumps', 'mintSat', 'mintTxid',
+    ]) {
+      if (into[field] == null && from[field] != null) into[field] = from[field];
+    }
+    if (from.pending) into.pending = true;
+    if (from.bumpable) into.bumpable = true;
+    if (from.frog) into.frog = true;
+    if (from.confirmed === false) into.confirmed = false;
+  };
+  const merged = [];
+  const mergedByKey = new Map();
+  for (const r of rows) {
+    const key = mergeKey(r);
+    const hit = mergedByKey.get(key);
+    if (!hit) {
+      const copy = { ...r };
+      mergedByKey.set(key, { row: copy, index: merged.length });
+      merged.push(copy);
+      continue;
+    }
+    const previous = hit.row;
+    if (previous.kind === 'transfer' && r.kind === 'prepare') {
+      // The wallet knows this was TRAVEL TO ROAD, not an ordinary handoff.
+      const upgrade = { ...r };
+      mergeFields(upgrade, previous);
+      // The indexer's transfer row has the confirmed height. Keep it instead
+      // of the tip height captured when the wallet broadcast TRAVEL.
+      if (previous.height != null) upgrade.height = previous.height;
+      upgrade.kind = 'prepare';
+      merged[hit.index] = upgrade;
+      mergedByKey.set(key, { row: upgrade, index: hit.index });
+    } else {
+      mergeFields(previous, r);
+    }
+  }
+
+  // Name the transaction a CHANGE came from. Without this the change sits
+  // next to the action but a user has to infer which spend produced it.
+  const actionLabelByTx = new Map();
+  for (const r of merged) {
+    const tx = String(r.txid || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(tx)) continue;
+    let label = null;
+    if (r.kind === 'mint') label = 'MINT';
+    else if (r.kind === 'prepare') label = 'TRAVEL TO ROAD';
+    else if (r.kind === 'cross') label = `HOP ${hopDirName(r.dir) || ''}`.trim();
+    else if (r.kind === 'transfer') label = 'TRANSFER';
+    else if (r.kind === 'send') label = 'SEND';
+    if (label) actionLabelByTx.set(tx, label);
+    if (r.kind === 'mint' && r.commit) {
+      const commit = String(r.commit).toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(commit)) actionLabelByTx.set(commit, 'MINT');
+    }
+  }
+  for (const r of merged) {
+    if (r.kind !== 'change') continue;
+    const tx = String(r.txid || '').toLowerCase();
+    r.changeFor = actionLabelByTx.get(tx) || null;
+  }
+
+  const unique = merged;
 
   // Group rows by transaction/mint, order the groups, then order inside
   // each group. A transaction's rows must never be split by a different
@@ -863,6 +933,7 @@ export function historyDebug(w, domOrder = null) {
     height: r.height ?? null,
     groupHeight: r.groupHeight ?? null,
     mintKey: r.mintKey || null,
+    changeFor: r.changeFor || null,
     frog: !!r.frog,
     amount: r.amount ?? null,
     at: r.at ?? null,
@@ -991,10 +1062,17 @@ function txRow(app, r) {
   const shownHeight = r.groupHeight ?? r.height;
   const shownTxid = r.kind === 'mint' && r.commit ? r.commit : r.txid;
   const hopDir = r.kind === 'cross' ? hopDirName(r.dir) : null;
+  const settleDir = r.kind === 'settle' ? hopDirName(r.dir) : null;
+  const settleDead = r.kind === 'settle'
+    && String(r.outcome || '').toLowerCase() === 'dead';
   const label = r.frog
     ? 'HOPPER ARRIVED'
-    : hopDir ? `HOP ${hopDir}` : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
+    : hopDir ? `HOP ${hopDir}`
+      : settleDir ? `${settleDead ? 'DIED' : 'CROSSED'} ${settleDir}`
+        : r.kind === 'settle' ? (settleDead ? 'DIED' : 'CROSSED')
+          : (KIND_LABEL[r.kind] || String(r.kind).toUpperCase());
   const detail = [];
+  if (r.kind === 'change' && r.changeFor) detail.push(`change from ${r.changeFor.toLowerCase()}`);
   if ((r.mempool || r.kind === 'receive' || r.kind === 'change') && r.address) {
     detail.push({
       prefix: 'to ',
@@ -1006,7 +1084,8 @@ function txRow(app, r) {
   }
   if (r.sat != null) detail.push(`sat ${sats(r.sat)}`);
   if (r.kind === 'cross' && hopDir) detail.push(`dir ${Number(r.dir)} · ${hopDir}`);
-  if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
+  if (r.kind === 'settle' && settleDir) detail.push(`dir ${Number(r.dir)} · ${settleDir}`);
+  else if (r.kind === 'settle' && r.outcome) detail.push(String(r.outcome).toUpperCase());
   if (r.to) {
     detail.push({
       prefix: 'to ',
@@ -1016,7 +1095,7 @@ function txRow(app, r) {
       copyLabel: 'address copied',
     });
   }
-  if (r.name && r.kind !== 'send') detail.push(String(r.name));
+  if (name && r.kind !== 'send') detail.push(String(name));
   if (r.fee != null) detail.push(`fee ${sats(r.fee)} sats`);
   if (r.bumps) detail.push(`bumped ×${r.bumps}`);
   const detailHtml = detail.map((part) => {
@@ -1031,12 +1110,20 @@ function txRow(app, r) {
     amount = `<span class="tx-amt dim">${sats(r.amount)} sats</span>`;
   } else if (Number(r.amount) > 0) {
     amount = `<span class="tx-amt in">+${sats(r.amount)} sats</span>`;
-  } else if (r.kind === 'settle' && String(r.outcome || '').toLowerCase() === 'dead') {
+  } else if (settleDead) {
     amount = '<span class="tx-amt out">roadkill is forever</span>';
+  } else if (r.kind === 'settle') {
+    amount = '<span class="tx-amt in">survived the road</span>';
+  } else if (r.kind === 'mint') {
+    amount = '<span class="tx-amt dim">created Hopper</span>';
   } else if (r.kind === 'cross') {
     amount = `<span class="tx-amt dim">${hopDir ? `hopped ${hopDir.toLowerCase()}` : 'road action'}</span>`;
   } else if (r.kind === 'prepare') {
     amount = '<span class="tx-amt dim">moved into custody</span>';
+  } else if (r.kind === 'transfer') {
+    amount = '<span class="tx-amt dim">handed off</span>';
+  } else if (r.kind === 'burn') {
+    amount = '<span class="tx-amt dim">fees swept</span>';
   } else {
     amount = '<span class="tx-amt dim">amount unknown</span>';
   }
@@ -1321,20 +1408,29 @@ export function bio(app, sat) {
 
 function frogEvents(w, sat) {
   const out = [];
-  const seen = new Set();
-  const add = (type, key, event) => {
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(event);
+  const seen = new Map();
+  const add = (key, event) => {
+    const previous = seen.get(key);
+    if (!previous) {
+      seen.set(key, event);
+      out.push(event);
+      return;
+    }
+    // The indexer usually has the confirmed height and the local action has
+    // the direction/destination. Fill gaps without replacing the first row.
+    if (previous.height == null && event.height != null) previous.height = event.height;
+    if (previous.dir == null && event.dir != null) previous.dir = event.dir;
+    if (previous.to == null && event.to != null) previous.to = event.to;
   };
   const txKey = (type, txid) => {
     const tx = String(txid || '').toLowerCase();
     return /^[0-9a-f]{64}$/.test(tx) ? `${type}:${tx}` : null;
   };
   // The indexer feed is authoritative when it has a row. A browser without
-  // an indexer still knows its own mints and hops from the local action
-  // ledger, and a restored browser knows its mints from the chain-mint
-  // ledger. Bio is the life story of this Hopper, not an indexer-only view.
+  // an indexer still knows its own mints, TRAVEL and hops from the local
+  // action ledger, and a restored browser knows its mints from the
+  // chain-mint ledger. Bio is the life story of this Hopper, not an
+  // indexer-only view.
   for (const e of w.history || []) {
     const s = e.payload?.frogger_sat ?? e.payload?.sat;
     if (Number(s) !== Number(sat)) continue;
@@ -1343,49 +1439,80 @@ function frogEvents(w, sat) {
     const dir = hopDirName(e.payload?.dir);
     if (kind === 'mint') {
       const key = txKey('mint', e.txid);
-      if (key) add('born', key, { type: 'born', label: 'MINTED', detail: `block ${height}`, color: C.text, height });
+      if (key) add(key, {
+        type: 'born', label: 'MINTED', detail: `block ${height}`,
+        color: C.text, height, dir: null,
+      });
     } else if (kind === 'cross') {
       const key = txKey('cross', e.txid);
-      if (key) add('cross', key, {
-        type: 'cross', label: 'HOPPED ONTO THE ROAD',
-        detail: `block ${height}${dir ? ` · ${dir}` : ''}`, color: C.accent, height,
+      if (key) add(key, {
+        type: 'cross', label: dir ? `HOPPED ${dir}` : 'HOPPED ONTO THE ROAD',
+        detail: `block ${height} · on the road`,
+        color: C.accent, height, dir,
       });
     } else if (kind === 'settle') {
       const dead = String(e.payload?.outcome || '').toLowerCase() === 'dead';
       const key = `settle:${height ?? '?'}:${Number(sat)}`;
-      add('settle', key, dead
-        ? { type: 'died', label: 'DIED', detail: `block ${height} — roadkill is forever`, color: '#d98a80', height }
-        : { type: 'crossed', label: 'CROSSED THE ROAD', detail: `block ${height}${dir ? ` · ${dir}` : ''}`, color: C.home, height });
+      add(key, dead
+        ? {
+          type: 'died', label: 'DIED', height, dir,
+          detail: `block ${height}${dir ? ` · ${dir}` : ''} — roadkill is forever`,
+          color: '#d98a80',
+        }
+        : {
+          type: 'crossed', label: 'CROSSED THE ROAD', height, dir,
+          detail: `block ${height}${dir ? ` · ${dir}` : ''}`, color: C.home,
+        });
     }
+  }
+  // On a restored device, chain-mint rows carry the confirmed height while
+  // the local action may only remember the tip it was broadcast at.
+  for (const m of w.chainMints || []) {
+    if (Number(m?.sat) !== Number(sat)) continue;
+    const key = txKey('mint', m.txid);
+    if (key) add(key, {
+      type: 'born', label: 'MINTED',
+      detail: m.height != null ? `block ${m.height}` : 'on-chain mint',
+      color: C.text, height: m.height,
+    });
   }
   for (const a of w.actions || []) {
     if (Number(a?.sat) !== Number(sat)) continue;
     const kind = String(a.kind || '').toLowerCase();
     if (kind === 'mint') {
       const key = txKey('mint', a.txid);
-      if (key) add('born', key, {
+      if (key) add(key, {
         type: 'born', label: 'MINTED',
-        detail: a.height != null ? `block ${a.height}` : 'local mint', color: C.text, height: a.height,
+        detail: a.height != null ? `block ${a.height}` : 'local mint',
+        color: C.text, height: a.height,
+      });
+    } else if (kind === 'prepare') {
+      const key = txKey('prepare', a.txid);
+      if (key) add(key, {
+        type: 'prepare', label: 'TRAVELED TO THE ROAD',
+        detail: a.height != null ? `block ${a.height} · moved into custody` : 'moved into custody',
+        color: C.accent, height: a.height,
       });
     } else if (kind === 'cross') {
       const key = txKey('cross', a.txid);
       const dir = hopDirName(a.dir);
-      if (key) add('cross', key, {
-        type: 'cross', label: 'HOPPED ONTO THE ROAD',
-        detail: a.height != null ? `block ${a.height}${dir ? ` · ${dir}` : ''}` : 'local crossing',
-        color: C.accent, height: a.height,
+      if (key) add(key, {
+        type: 'cross', label: dir ? `HOPPED ${dir}` : 'HOPPED ONTO THE ROAD',
+        detail: a.height != null ? `block ${a.height} · on the road` : 'local crossing',
+        color: C.accent, height: a.height, dir,
+      });
+    } else if (kind === 'transfer') {
+      const key = txKey('transfer', a.txid);
+      if (key) add(key, {
+        type: 'transferred', label: 'TRANSFERRED',
+        detail: a.height != null ? `block ${a.height}${a.to ? ` · to ${a.to.slice(0, 12)}…` : ''}` : 'left this wallet',
+        color: C.textDim, height: a.height, to: a.to,
       });
     }
   }
-  for (const m of w.chainMints || []) {
-    if (Number(m?.sat) !== Number(sat)) continue;
-    const key = txKey('mint', m.txid);
-    if (key) add('born', key, {
-      type: 'born', label: 'MINTED',
-      detail: m.height != null ? `block ${m.height}` : 'on-chain mint', color: C.text, height: m.height,
-    });
-  }
-  return out.sort((a, b) => (a.height ?? 0) - (b.height ?? 0));
+  const rank = { born: 0, prepare: 1, cross: 2, transferred: 3, crossed: 4, died: 4 };
+  return out.sort((a, b) => (a.height ?? 0) - (b.height ?? 0)
+    || (rank[a.type] ?? 9) - (rank[b.type] ?? 9));
 }
 
 

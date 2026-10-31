@@ -92,7 +92,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   ok(after.includes(`HOPPER ARRIVED ${shortTx(reveal)}`),
     'the arrival carries the reveal txid');
   ok(!/sat 0\b/.test(after), 'a row without a sat is not shown as sat 0');
-  const mintRows = (after.match(/\bMINT\b/g) || []).length;
+  const mintRows = (history({ w }).match(/class="kind">MINT</g) || []).length;
   eq('the global NPC mint feed is filtered out', mintRows, 1);
   ok(!/\bPip\b/.test(after), 'an NPC name from the global event feed is absent');
   ok(!/\bBogart\b/.test(after), 'another NPC name from the global event feed is absent');
@@ -434,8 +434,8 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
   const life = plain(bio({ w, frogRecord: frog }, frog.sat));
   eq('bio renders the mint once', (life.match(/MINTED/g) || []).length, 1);
-  eq('bio renders the hop once', (life.match(/HOPPED ONTO THE ROAD/g) || []).length, 1);
-  ok(/HOPPED ONTO THE ROAD block \d+ · STRAIGHT/.test(life),
+  eq('bio renders the hop once', (life.match(/HOPPED STRAIGHT/g) || []).length, 1);
+  ok(/HOPPED STRAIGHT block \d+ · on the road/.test(life),
     'bio names the direction of the local hop');
 
   // Same wallet, no indexer feed. The local action and chain-mint ledgers
@@ -443,9 +443,63 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const noIndexer = { ...w, history: [], frogBySat: w.frogBySat.bind(w) };
   const fallback = plain(bio({ w: noIndexer, frogRecord: frog }, frog.sat));
   eq('an indexer-less bio still has one mint', (fallback.match(/MINTED/g) || []).length, 1);
-  eq('an indexer-less bio still has one hop', (fallback.match(/HOPPED ONTO THE ROAD/g) || []).length, 1);
+  eq('an indexer-less bio still has one travel', (fallback.match(/TRAVELED TO THE ROAD/g) || []).length, 1);
+  eq('an indexer-less bio still has one hop', (fallback.match(/HOPPED STRAIGHT/g) || []).length, 1);
   ok(fallback.includes('STRAIGHT'), 'the fallback keeps the local direction');
   ok(/MINTED block \d+/.test(fallback), 'the fallback mint names its action height');
+}
+
+{
+  // The exact user journey: deposit -> mint -> TRAVEL TO ROAD -> HOP RIGHT.
+  // History is newest first, so reading the non-CHANGE rows bottom-up must
+  // spell the causal chain. The local TRAVEL action and the indexer's
+  // transfer event are one move, not two rows.
+  store.clear();
+  const w = await wallet();
+  await w.mint({ seed: 0x51515151, name: 'Journey', feeRate: 2 });
+  const minted = w.frogs.find((f) => f.name === 'Journey');
+  ok(minted, 'the journey mint is in the pond');
+  await w.prepare(minted);
+  const frog = w.frogBySat(minted.sat);
+  const hop = await w.previewCross(frog, { dir: 2, feeRate: 2 });
+  await w.broadcastPreview(hop);
+
+  const html = history({ w });
+  const text = plain(html);
+  const kinds = [...html.matchAll(/class="kind">([^<]+)/g)].map((m) => m[1]);
+  eq('the journey has one row for every logical transaction',
+    kinds, ['CHANGE', 'HOP RIGHT', 'CHANGE', 'TRAVEL TO ROAD', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'RECEIVE']);
+  eq('the journey reads as a dependency chain bottom-up',
+    kinds.filter((k) => k !== 'CHANGE').reverse(),
+    ['RECEIVE', 'MINT', 'HOPPER ARRIVED', 'TRAVEL TO ROAD', 'HOP RIGHT']);
+  ok(text.includes('change from mint'), 'the mint change names its transaction');
+  ok(text.includes('change from travel to road'), 'the travel change names its transaction');
+  ok(text.includes('change from hop right'), 'the hop change names its transaction');
+  ok(!text.includes('TRANSFER'), 'TRAVEL is not painted twice as a raw indexer transfer');
+  ok(!text.includes('amount unknown'), 'every journey row says what the transaction did');
+
+  const lifeHtml = bio({ w, frogRecord: frog }, frog.sat);
+  const life = [...lifeHtml.matchAll(/class="timeline-label"[^>]*>([^<]+)/g)].map((m) => m[1]);
+  eq('bio tells the same journey in order',
+    life, ['MINTED', 'TRAVELED TO THE ROAD', 'HOPPED RIGHT']);
+  const offlineHtml = bio({ w: { ...w, history: [], frogBySat: w.frogBySat.bind(w) }, frogRecord: frog }, frog.sat);
+  const offline = [...offlineHtml.matchAll(/class="timeline-label"[^>]*>([^<]+)/g)]
+    .map((m) => m[1]);
+  eq('bio tells the journey without an indexer',
+    offline, ['MINTED', 'TRAVELED TO THE ROAD', 'HOPPED RIGHT']);
+
+  await w.mine(6);
+  await w.refresh({ force: true });
+  const settledHtml = history({ w });
+  const settledKinds = [...settledHtml.matchAll(/class="kind">([^<]+)/g)].map((m) => m[1]);
+  eq('the settled journey adds one result above the hop',
+    settledKinds, ['CROSSED RIGHT', 'CHANGE', 'HOP RIGHT', 'CHANGE',
+      'TRAVEL TO ROAD', 'HOPPER ARRIVED', 'CHANGE', 'MINT', 'RECEIVE']);
+  const settledLife = bio({ w, frogRecord: w.frogBySat(frog.sat) }, frog.sat);
+  const settledLabels = [...settledLife.matchAll(/class="timeline-label"[^>]*>([^<]+)/g)]
+    .map((m) => m[1]);
+  eq('bio finishes the journey with the road result',
+    settledLabels, ['MINTED', 'TRAVELED TO THE ROAD', 'HOPPED RIGHT', 'CROSSED THE ROAD']);
 }
 
 console.log(`history: ${checks} checks passed`);

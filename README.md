@@ -163,33 +163,42 @@ so explicitly.
 
 History is wallet-scoped. It merges local actions, indexer events for this
 wallet's Hoppers, settled outputs observed on our addresses, internal change,
-and faded mempool rows. A local HOP row names its direction (`HOP LEFT`,
-`HOP STRAIGHT`, `HOP RIGHT`) and the spent leaf (`dir 0/1/2`), so a hop is
-legible even when no indexer is configured.
+and faded mempool rows. The same event from both ledgers is merged rather
+than painted twice: a local TRAVEL TO ROAD and the indexer's `transfer` for
+that tx are one row, and a local HOP and the indexer's `cross` are one row.
+A local HOP row names its direction (`HOP LEFT`, `HOP STRAIGHT`,
+`HOP RIGHT`) and the spent leaf (`dir 0/1/2`), so a hop is legible even when
+no indexer is configured. Each `CHANGE` says which spend produced it
+(`change from mint`, `change from travel to road`, `change from hop right`).
+History is newest first, so the journey for one Hopper reads bottom-up as
+`RECEIVE` → `MINT` → `HOPPER ARRIVED` → `TRAVEL TO ROAD` → `HOP RIGHT` →
+`CROSSED RIGHT`/`DIED RIGHT`. Rows for one transaction stay together and use
+its best-known block height.
 
-The Bio page is the same ledger, viewed as one Hopper's life story. It reads
-indexer `mint`, `cross` and `settle` events when they exist, then fills any
-gap from the local action ledger and the chain-mint ledger. Without an
-indexer it still shows the mint and each locally broadcast hop (with its
-direction) instead of an empty timeline. That is how an initial deposit and a Hopper arrival
-appear alongside the mint; the indexer's global mint feed is filtered so
-unrelated NPC mints are not shown. A MINT row is also reconstructed from the
-owned mint output when the local action ledger is absent, so restoring the
-same seed on another browser shows the same mint. Internal change is a
-separate `CHANGE` row, never a fake incoming `RECEIVE`. Rows for one
-transaction stay together and use its best-known block height, with the
-authoring row first (`MINT` before `CHANGE` before `HOPPER ARRIVED`, `SEND`
-before `CHANGE`). A restored device therefore cannot show an arrival above
-the mint that made it.
+The Bio page is the same ledger, viewed as one Hopper's life story in
+chronological order: `MINTED` → `TRAVELED TO THE ROAD` → `HOPPED
+LEFT/STRAIGHT/RIGHT` → `CROSSED THE ROAD`/`DIED`, plus `TRANSFERRED` if the
+Hopper left the wallet. It reads indexer `mint`, `cross` and `settle` events
+when they exist, then fills any gap from the local action ledger and the
+chain-mint ledger. Without an indexer it still shows the mint, TRAVEL and
+each locally broadcast hop (with its direction) instead of an empty
+timeline. That is how an initial deposit and a Hopper arrival appear
+alongside the mint; the indexer's global mint feed is filtered so unrelated
+NPC mints are not shown. A MINT row is also reconstructed from the owned mint
+output when the local action ledger is absent, so restoring the same seed on
+another browser shows the same mint. Internal change is a separate `CHANGE`
+row, never a fake incoming `RECEIVE`.
+
 A mint's change usually comes from its commit transaction, while HOPPER
-ARRIVED comes from the reveal. History labels the commit `MINT`, puts its
-change next, and then the reveal's arrival: `MINT` → `CHANGE` → `HOPPER
-ARRIVED`. All three are grouped by the minted sat as well as txid, so the
-order holds even when heights are missing or the commit confirmed earlier.
-Older action rows without a stored sat recover it from the arrival; if they
-also lack the commit txid, it is read back once from input 0 of the reveal so
-the commit's change stays in the same mint group. Even with no sat anywhere,
-the reveal and commit txids form one cluster, so those rows cannot drift apart.
+ARRIVED comes from the reveal. Because History is newest first, the mixed
+transaction group reads `HOPPER ARRIVED` → `CHANGE` → `MINT`: the arrival is
+the latest row, the commit is the earliest. All three are grouped by the
+minted sat as well as txid, so the order holds even when heights are missing
+or the commit confirmed earlier. Older action rows without a stored sat
+recover it from the arrival; if they also lack the commit txid, it is read
+back once from input 0 of the reveal so the commit's change stays in the
+same mint group. Even with no sat anywhere, the reveal and commit txids form
+one cluster, so those rows cannot drift apart.
 Settings → **HISTORY DATA** downloads a plain-text snapshot of the public
 txids, sats, heights and the grouping keys History used, with no seed or
 private material. Shortened txids and addresses in History are copy controls:
@@ -493,7 +502,7 @@ node tests/media.test.mjs       # score, QR, pixel marks, crossing-pip layout
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 27 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/history.test.mjs     # 99 checks: deposits, copy targets, mint/change/arrival grouping
+node tests/history.test.mjs     # 131 checks: deposits, copy targets, causal journey, change labels
 node tests/ui.test.mjs          # no sound-test button; demo chain controls are demo-only
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks

@@ -1085,10 +1085,10 @@ console.log('cross owner hint:', crossOwnerHint);
 if (crossOwnerHint !== 'leave empty to keep in this wallet') {
   errors.push(`cross owner placeholder: ${JSON.stringify(crossOwnerHint)}`);
 }
-await evaluate(`document.querySelector('[data-action=preview-hop][data-dir="1"]').click()`);
+await evaluate(`document.querySelector('[data-action=preview-hop][data-dir="2"]').click()`);
 await waitFor('document.querySelector("[data-action=do-approve-tx]")', 15000, 'signed hop preview');
 const hopPreview = await evaluate(`document.querySelector('.overlay').innerText`);
-if (!/HOP STRAIGHT/.test(hopPreview) || !/Leaf spent/.test(hopPreview)
+if (!/HOP RIGHT/.test(hopPreview) || !/Leaf spent/.test(hopPreview)
   || !/Destination address/.test(hopPreview) || !/Actual fee/.test(hopPreview)
   || !/APPROVING BROADCASTS THIS EXACT SIGNED TRANSACTION/.test(hopPreview)) {
   errors.push(`hop preview: ${JSON.stringify(hopPreview.slice(0, 600))}`);
@@ -1125,8 +1125,8 @@ const hopHistory = await evaluate(`(() => {
   return { text: row?.innerText || '', sat: row?.dataset.sat || '' };
 })()`);
 console.log('history after hop:', hopHistory);
-if (!/HOP STRAIGHT/.test(hopHistory.text) || !/dir 1/.test(hopHistory.text)
-  || !/hopped straight/.test(hopHistory.text)) {
+if (!/HOP RIGHT/.test(hopHistory.text) || !/dir 2/.test(hopHistory.text)
+  || !/hopped right/.test(hopHistory.text)) {
   errors.push(`HOP history row is not legible: ${JSON.stringify(hopHistory)}`);
 }
 if (!hopHistory.sat) {
@@ -1138,9 +1138,9 @@ if (!hopHistory.sat) {
   await waitFor('location.hash.startsWith("#/bio/")', 10000, 'Bio after HOP');
   const hopBio = await evaluate(`document.body.innerText`);
   console.log('bio after hop:', hopBio.split('\n').filter(Boolean).slice(0, 18).join(' | '));
-  if (!/MINTED/.test(hopBio) || !/HOPPED ONTO THE ROAD/.test(hopBio)
-    || !/STRAIGHT/.test(hopBio)) {
-    errors.push(`Bio is missing the local mint/hop: ${JSON.stringify(hopBio.slice(0, 500))}`);
+  if (!/MINTED/.test(hopBio) || !/TRAVELED TO THE ROAD/.test(hopBio)
+    || !/HOPPED RIGHT/.test(hopBio)) {
+    errors.push(`Bio is missing the mint/travel/hop journey: ${JSON.stringify(hopBio.slice(0, 500))}`);
   }
 }
 
@@ -1151,6 +1151,54 @@ await evaluate(`document.querySelector('[data-action=mine][data-n="6"]').click()
 await sleep(2500);
 const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
+
+// The whole journey must read as one dependency chain. History is newest
+// first, so the non-CHANGE labels read bottom-up as
+// RECEIVE -> MINT -> HOPPER ARRIVED -> TRAVEL TO ROAD -> HOP RIGHT,
+// followed by exactly one road result. TRAVEL must not be painted a second
+// time as a raw indexer transfer, and every CHANGE must name its spend.
+await evaluate(`document.querySelector('[data-action=nav][data-view=history]').click()`);
+await waitFor('document.querySelector("#app .card-row .tx-top .kind")', 10000, 'history after settle');
+const journey = await evaluate(`(() => {
+  const rows = [...document.querySelectorAll('#app .card-row')];
+  return {
+    labels: rows.map((r) => r.querySelector('.tx-top .kind')?.textContent.trim() || ''),
+    text: document.querySelector('#app').innerText,
+  };
+})()`);
+console.log('history journey:', journey.labels.slice(0, 10));
+const expected = ['CHANGE', 'HOP RIGHT', 'CHANGE', 'TRAVEL TO ROAD',
+  'HOPPER ARRIVED', 'CHANGE', 'MINT'];
+if (journey.labels.slice(1, 8).join('|') !== expected.join('|')) {
+  errors.push(`journey order is not causal: ${JSON.stringify(journey.labels.slice(0, 12))}`);
+}
+const firstSettle = journey.labels[0];
+if (!/^(CROSSED|DIED) RIGHT$/.test(firstSettle)) {
+  errors.push(`journey result is not above the hop: ${JSON.stringify(firstSettle)}`);
+}
+if (journey.labels.includes('TRANSFER')) {
+  errors.push(`TRAVEL was duplicated as TRANSFER: ${JSON.stringify(journey.labels.slice(0, 12))}`);
+}
+for (const phrase of ['change from mint', 'change from travel to road', 'change from hop right']) {
+  if (!journey.text.toLowerCase().includes(phrase)) {
+    errors.push(`CHANGE does not name its transaction (${phrase})`);
+  }
+}
+if (/amount unknown/.test(journey.text)) {
+  errors.push('a journey row still says amount unknown');
+}
+
+await evaluate(`document.querySelector('#app .card-row[data-action="open-frog"]').click()`);
+await waitFor('document.querySelector("[data-action=bio]")', 10000, 'Hopper detail after settle');
+await evaluate(`document.querySelector("[data-action=bio]").click()`);
+await waitFor('location.hash.startsWith("#/bio/")', 10000, 'Bio after settle');
+const settledBio = await evaluate('document.body.innerText');
+console.log('bio after settle:', settledBio.split('\n').filter(Boolean).slice(0, 20).join(' | '));
+if (!/MINTED/.test(settledBio) || !/TRAVELED TO THE ROAD/.test(settledBio)
+  || !/HOPPED RIGHT/.test(settledBio)
+  || !/(CROSSED THE ROAD|DIED)/.test(settledBio)) {
+  errors.push(`Bio is missing the completed journey: ${JSON.stringify(settledBio.slice(0, 600))}`);
+}
 
 // The automatic recovery pack must already exist from PREPARE and must
 // have followed the HOP to the new state outpoint.
