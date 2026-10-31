@@ -162,6 +162,17 @@ ok(sendHtml.includes('PREVIEW TRANSACTION') && !sendHtml.includes('data-action="
   'send offers PREVIEW TRANSACTION, not a direct SEND');
 ok(sendHtml.includes('data-input="send-fee"'), 'send has an editable fee rate');
 ok(sendHtml.includes('data-send-spendable'), 'the send sheet marks its live spendable line');
+
+const receive = screens.receiveSheet({
+  w: {
+    network: 'mainnet',
+    keys: { frogAddress: () => 'bc1p-test' },
+    receiveAddress: () => 'bc1q-test',
+  },
+  receiveTab: 'ord',
+});
+ok(receive.includes('Fixed Taproot address for Hoppers only. Do not send other inscriptions here. Its sats never fund a mint or a send.'),
+  'the HOPPERS receive note is the approved copy');
 ok(['FAST', 'MEDIUM', 'SLOW'].every((x) => sendHtml.includes(`>${x}<`)), 'send shows Fast/Medium/Slow');
 ok(sendHtml.includes('2.72 sat/vB') && sendHtml.includes('1.86 sat/vB') && sendHtml.includes('0.2 sat/vB'),
   'send displays fastestFee, halfHourFee and economyFee');
@@ -291,6 +302,36 @@ const stagedRoadHtml = screens.road({ w: stagedLily, settings: stagedLily.settin
 ok(stagedRoadHtml.includes('data-action="sheet-cross"')
   && !stagedRoadHtml.includes('data-action="travel-to-road"'),
 'a staged Hopper still offers HOP on The Road');
+
+const stateAddress = 'bcrt1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqstate';
+const stateAddressMock = { _frogUtxo: () => ({ kind: 'state', address: stateAddress }) };
+ok(WalletSession.prototype.stateAddress.call(stateAddressMock, lilyFrog) === stateAddress,
+  'a staged Hopper reports its tapscript state address');
+ok(WalletSession.prototype.stateAddress.call(
+  { _frogUtxo: () => ({ kind: 'mint', address: 'bc1p-mint' }) }, lilyFrog,
+) === null, 'an unstaged mint output has no gameplay state address');
+const stagedBio = screens.bio({
+  w: {
+    ...demo,
+    frogs: [lilyFrog],
+    frogBySat: () => lilyFrog,
+    stateAddress: () => stateAddress,
+  },
+  settings: demo.settings,
+}, lilyFrog.sat);
+ok(stagedBio.includes('data-frog-state-address') && stagedBio.includes(stateAddress),
+  'Bio shows the state address of a Hopper staged for gameplay');
+const unstagedBio = screens.bio({
+  w: {
+    ...demo,
+    frogs: [lilyFrog],
+    frogBySat: () => lilyFrog,
+    stateAddress: () => null,
+  },
+  settings: demo.settings,
+}, lilyFrog.sat);
+ok(!unstagedBio.includes('data-frog-state-address'),
+  'Bio omits the state address until the Hopper is staged');
 
 const mintLily = { ...demo, frogs: [lilyFrog], _frogUtxo: () => ({ kind: 'mint' }) };
 const mintPondHtml = screens.pond({ w: mintLily, settings: mintLily.settings });

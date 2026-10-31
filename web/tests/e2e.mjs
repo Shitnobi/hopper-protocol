@@ -265,6 +265,10 @@ await waitFor('document.querySelector(".receive-tabs")', 5000, 'receive window')
     errors.push(`receive: the window resized on tab switch ${JSON.stringify({ btc: first.sheet, ord: ord.sheet })}`);
   }
   if (!ord.warning.includes('ONLY SEND HOPPERS')) errors.push('receive: missing the hoppers warning');
+  const ordNote = await evaluate(`document.querySelector('.overlay .receive-note')?.textContent.trim()`);
+  if (ordNote !== 'Fixed Taproot address for Hoppers only. Do not send other inscriptions here. Its sats never fund a mint or a send.') {
+    errors.push(`receive: unexpected hoppers note ${JSON.stringify(ordNote)}`);
+  }
   if (ord.hasNew || ord.hasBook) errors.push('receive: the fixed hoppers tab must not offer rotation');
   if (ord.address === first.address) errors.push('receive: the two tabs show the same address');
   await evaluate(`document.querySelector('[data-action=receive-tab][data-tab=btc]').click()`);
@@ -1189,6 +1193,11 @@ if (!hopHistory.sat) {
   if (!/MINTED/.test(hopBio) || !/TRAVELED TO THE ROAD/.test(hopBio)
     || !/HOPPED RIGHT/.test(hopBio)) {
     errors.push(`Bio is missing the mint/travel/hop journey: ${JSON.stringify(hopBio.slice(0, 500))}`);
+  }
+  const hopStateAddress = await evaluate(`document.querySelector('[data-frog-state-address]')?.textContent.trim() || ''`);
+  console.log('bio state address:', hopStateAddress || '(missing)');
+  if (!/^bcrt1p[0-9a-z]+$/i.test(hopStateAddress)) {
+    errors.push(`Bio is missing the staged state address: ${JSON.stringify(hopStateAddress)}`);
   }
 }
 

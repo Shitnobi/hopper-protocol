@@ -1404,6 +1404,7 @@ export function bio(app, sat) {
     || (app.frogRecord && Number(app.frogRecord.sat) === Number(sat) ? app.frogRecord : null);
   if (!f) return `${backButton()}<div class="sub mt14">No frog at sat ${esc(sat)}.</div>`;
   const target = targetOf(f, w.tipHeight || 0);
+  const stateAddress = ownedStateAddress(w, f);
   const events = frogEvents(w, Number(sat));
   const iconFor = (e) => {
     if (e.type === 'born') return '<canvas class="timeline-icon" data-tadpole width="44" height="30"></canvas>';
@@ -1424,6 +1425,9 @@ export function bio(app, sat) {
         <div class="row mt6">${chip(rarityOf(f), rarityClass(f))}${lifeChip(f.state)}</div>
       </div>
     </div>
+    ${stateAddress ? `<div class="stat-grid mt10">
+      <dt>State address</dt><dd class="tiny wrap" data-frog-state-address>${esc(stateAddress)}</dd>
+    </div>` : ''}
     <div class="mt14">
       <div style="font-weight:700">LIFE STORY</div>
       <div class="timeline mt6">
@@ -1437,6 +1441,13 @@ export function bio(app, sat) {
           </div>`).join('') : '<div class="sub">No history on record yet — this Hopper is a mystery.</div>'}
       </div>
     </div>`;
+}
+
+function ownedStateAddress(w, f) {
+  // Only the wallet that owns the staged output can derive this address. A
+  // public frogger record has no owner path, so the field stays absent.
+  if (!w || typeof w.stateAddress !== 'function') return null;
+  try { return w.stateAddress(f) || null; } catch { return null; }
 }
 
 function frogEvents(w, sat) {
@@ -1923,10 +1934,10 @@ export function receiveSheet(app) {
   const warning = tab === 'ord'
     ? { cls: 'green', text: '🐸 ONLY SEND HOPPERS HERE' }
     : { cls: 'red', text: "DON'T SEND HOPPERS HERE" };
-  // Both notes are deliberately the same length and live in a fixed
-  // three-line box: switching tabs must not resize the window.
+  // Both notes live in a fixed-height box: switching tabs must not resize
+  // the window. The longer HOPPERS copy scrolls inside it at narrow widths.
   const note = tab === 'ord'
-    ? 'Fixed Taproot address for Hoppers and inscriptions. Its sats never fund a mint or a send.'
+    ? 'Fixed Taproot address for Hoppers only. Do not send other inscriptions here. Its sats never fund a mint or a send.'
     : 'Fixed BIP84 address — it never rotates. Ordinary Bitcoin only; these sats fund mints and sends.';
   return `
     <div class="receive-warning ${warning.cls}" data-warning="${tab}">

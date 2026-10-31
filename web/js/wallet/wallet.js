@@ -2213,6 +2213,19 @@ export class WalletSession {
     return this.utxos.find((u) => frog.location && u.txid === frog.location.txid && u.vout === frog.location.vout) || null;
   }
 
+  /** The derived tapscript address a Hopper pays while it is staged for
+   *  gameplay. A mint or an ordinary-output Hopper has no state address yet;
+   *  return null rather than showing a misleading destination. */
+  stateAddress(frog) {
+    if (!frog) return null;
+    const utxo = this._frogUtxo(frog);
+    if (!utxo || utxo.kind !== 'state') return null;
+    if (utxo.address) return utxo.address;
+    try {
+      return scriptToAddress(stateScripts(frog, this.keys.ord.ownerXonly).script, this.network);
+    } catch { return null; }
+  }
+
   _recordAction(action) {
     this.forceWatch = true;
     this.actions.unshift({ ...action, at: new Date().toISOString(), height: this.tipHeight });
