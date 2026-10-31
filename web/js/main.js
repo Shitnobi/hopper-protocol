@@ -410,9 +410,31 @@ async function startSession({ mnemonic, network, fingerprint }) {
 // The boot splash runs once per page load (the egui app plays it every
 // boot); the rules walkthrough follows the first splash until the visitor
 // asks never to see them again.
+function consumeIntroSkip() {
+  let skip = false;
+  try {
+    skip = sessionStorage.getItem('hopper.introSkip') === '1';
+    if (skip) sessionStorage.removeItem('hopper.introSkip');
+  } catch { /* storage can be denied */ }
+  const url = new URL(location.href);
+  const build = url.searchParams.get('build');
+  if (build && build !== globalThis.HOPPER_BUILD) skip = true;
+  if (skip) {
+    let changed = false;
+    for (const key of ['build', 'guard', 'repair']) {
+      if (url.searchParams.has(key)) { url.searchParams.delete(key); changed = true; }
+    }
+    if (changed) history.replaceState(null, '', url.toString());
+  }
+  return skip;
+}
+
 function beginBootIntro() {
   const host = document.getElementById('intro');
   if (!host) { maybeShowRules(); render(); return; }
+  // A shell update reload starts a new page load, but the splash is not a
+  // progress bar for the deploy. Do not replay it into an apparent loop.
+  if (consumeIntroSkip()) { maybeShowRules(); render(); return; }
   app.intro = true;
   playIntro(host, () => {
     app.intro = false;
@@ -1428,14 +1450,10 @@ document.getElementById('drawer-backdrop')?.addEventListener('click', () => { cl
 
 // The shell is static; a service worker makes the demo (and the UI over a
 // flaky link) work offline. Live chain calls are always network-only.
+// build-guard owns shell updates. Reloading on controllerchange here raced
+// that guard: an update could take control while the boot splash was still
+// playing and restart it, which looked like a crash loop.
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  let reloadedForWorker = false;
-  const hadController = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || reloadedForWorker) return;
-    reloadedForWorker = true;
-    location.reload();
-  });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
       .catch((e) => console.warn('service worker', e.message));

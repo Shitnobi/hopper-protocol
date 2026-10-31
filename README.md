@@ -303,7 +303,10 @@ its pond lily pad keeps the name and art but drops SEND and TRAVEL TO ROAD;
 the HOP that spends the state leaf lives on The Road. Approving that HOP
 moves the Hopper out of the direction picker into **Crossings in flight**
 immediately, labelled in mempool until a block gives the indexer a real
-settlement height. While it is out there, the card is a small treadmill:
+settlement height. Shell updates are handled before the app starts: a
+same-build load never reloads, and a stale-build reload suppresses the
+splash, so a new deploy cannot look like a boot loop. While it is out
+there, the card is a small treadmill:
 the lane dashes scroll left and the Hopper arcs to the right in a one-second
 hop, landing with a squash and a dust puff. A `DEAD SEALED` card is a still
 dead sprite, not a hopping one. `prefers-reduced-motion` gets a still frame
@@ -339,12 +342,13 @@ error). `hopperSound.status()` reports the same state in the console.
 
 Browsers require one gesture before audio may start, so the first
 tap/click/key starts the score (later gestures retry if the browser
-suspended it). A stale service worker is the other common cause: scripts
-are cache-first, so an old worker can keep serving the old player. Each
-shell now checks for its own cache on load and, if it is missing,
-unregisters the old worker and reloads once (`js/shell-reset.js`); after
-an update without that file, use DevTools → Application → Service
-Workers → Unregister once.
+suspended it). A stale service worker is the other common cause:
+`js/build-guard.js` compares the running build with the deployed
+`sw.js`. A page that already runs the deployed build only fills its
+cache in the background. A genuinely stale page waits for every shell
+file to be cached, reloads once, and skips the boot splash on that
+reload. If the cache never completes, the tab keeps the working page
+instead of spinning.
 
 The Rust implementation is normative for this repository. The JS core is
 pinned to it by machine-generated vectors (`web/tests/rust-vectors.json`):

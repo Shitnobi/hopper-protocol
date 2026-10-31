@@ -72,7 +72,14 @@ export function playIntro(host, onDone) {
     if (done) return;
     const elapsed = (now - start) / 1000;
     if (elapsed >= INTRO_SECONDS) { finish(false); return; }
-    drawIntro(canvas, elapsed);
+    try {
+      drawIntro(canvas, elapsed);
+    } catch (e) {
+      // A canvas failure must not leave the splash covering the app forever.
+      console.warn('boot intro', e.message || String(e));
+      finish(false);
+      return;
+    }
     raf = requestAnimationFrame(frame);
   };
   raf = requestAnimationFrame(frame);

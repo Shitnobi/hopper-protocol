@@ -17,6 +17,7 @@ let seq = 0;
 const pending = new Map();
 const errors = [];
 const logs = [];
+const navigations = [];
 
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
@@ -34,6 +35,9 @@ ws.onmessage = (event) => {
     const text = msg.params.args.map((a) => a.value ?? a.description ?? '').join(' ');
     logs.push(`${msg.params.type}: ${text}`);
     if (msg.params.type === 'error') errors.push(text);
+  }
+  if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) {
+    navigations.push(msg.params.frame.url);
   }
 };
 
@@ -146,6 +150,14 @@ await call('Emulation.setDeviceMetricsOverride', {
 await call('Page.navigate', { url: base });
 await clearTourChrome();
 await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboarding');
+
+// A fresh load already runs the deployed shell. build-guard must fill the
+// cache in the background rather than reloading the boot screen.
+await sleep(900);
+console.log('boot navigations:', navigations);
+if (navigations.length !== 1) {
+  errors.push(`fresh boot reloaded itself: ${JSON.stringify(navigations)}`);
+}
 
 // The welcome is flavor, not a protocol spec. The three stat fields are
 // gone and the sentence sits centered in their place.
@@ -1374,6 +1386,33 @@ if (!/Never contains/i.test(emergencyWarn) || !/seed/i.test(emergencyWarn)) {
 await evaluate(`document.querySelector('.overlay [data-action=close-overlay]').click()`);
 await sleep(150);
 console.log('emergency: confirmation shown');
+
+// A stale build query is the shape of a build-guard reload. The new build
+// must skip the splash, clean the query, and not start another reload.
+const navBeforeStale = navigations.length;
+await call('Page.navigate', { url: `${base}/?build=hopper-v7-3-0` });
+await waitFor('document.querySelector(".rules-screen") || document.querySelector(".topbar") || document.querySelector("[data-input=lock-password]")', 30000, 'app after stale-build load');
+await sleep(900);
+const staleBoot = await evaluate(`({
+  introHidden: document.getElementById('intro')?.hidden,
+  search: location.search,
+  build: globalThis.HOPPER_BUILD,
+  rules: Boolean(document.querySelector('.rules-screen')),
+})`);
+console.log('stale build boot:', staleBoot);
+if (staleBoot.rules) {
+  await evaluate(`document.querySelector('[data-action=rule-skip]')?.click()`);
+  await sleep(250);
+}
+if (staleBoot.introHidden !== true) {
+  errors.push(`a stale-build reload replayed the splash: ${JSON.stringify(staleBoot)}`);
+}
+if (staleBoot.search.includes('build=')) {
+  errors.push(`a stale-build reload kept the build query: ${staleBoot.search}`);
+}
+if (navigations.length !== navBeforeStale + 1) {
+  errors.push(`a stale-build load reloaded itself: ${JSON.stringify(navigations.slice(navBeforeStale))}`);
+}
 
 // Persist a screenshot path for inspection.
 await call('Page.captureScreenshot', { format: 'png' }).then(async (shot) => {
