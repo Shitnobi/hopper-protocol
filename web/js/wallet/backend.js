@@ -34,6 +34,13 @@ function retryableNetworkError(err) {
   return name === 'TypeError' || /failed to fetch|network|socket|econn|fetch failed/i.test(message);
 }
 
+function corsOriginHint() {
+  const origin = typeof location !== 'undefined' && location.origin
+    ? location.origin
+    : 'this page';
+  return `the API must send Access-Control-Allow-Origin for ${origin}; curl does not enforce CORS`;
+}
+
 export class EsploraClient {
   /**
    * `metered` turns on a small client-side request queue and one retry.
@@ -67,9 +74,12 @@ export class EsploraClient {
         if (wait > 0) await sleep(wait);
       }
       try {
+        // GETs must stay a CORS *simple* request. A content-type header is
+        // only needed on the broadcast POST; adding it to every read made
+        // some self-hosted Esplora proxies preflight or reject the request.
         const res = await timedFetch(this.base + path, {
           ...opts,
-          headers: { 'content-type': 'text/plain', ...(opts.headers || {}) },
+          headers: { ...(opts.headers || {}) },
         });
         this._last = Date.now();
         if (!res.ok) {
@@ -93,7 +103,7 @@ export class EsploraClient {
           continue;
         }
         if (retryableNetworkError(err)) {
-          throw new Error(`cannot reach ${this.base}${path}: the browser blocked the request (extension/NoScript?) or the host is offline`);
+          throw new Error(`cannot reach ${this.base}${path}: the browser blocked the request (CORS, extension/NoScript, or offline) — ${corsOriginHint()}`);
         }
         throw err;
       }

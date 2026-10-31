@@ -120,9 +120,11 @@ eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
 // --- mempool.space-compatible transport ----------------------------------
 {
   let calls = 0;
+  let getOpts = null;
   const saved = globalThis.fetch;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url, opts) => {
     calls += 1;
+    getOpts = opts;
     if (calls === 1) throw new TypeError('Failed to fetch');
     return new Response('973911', { status: 200 });
   };
@@ -131,6 +133,7 @@ eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
   const tip = await (await client.req('/blocks/tip/height')).text();
   eq('a public Esplora network failure is retried once', calls, 2);
   eq('the retry returns the tip', tip, '973911');
+  eq('a GET does not add a content-type header', getOpts.headers?.['content-type'], undefined);
 
   calls = 0;
   globalThis.fetch = async () => { calls += 1; return new Response('nope', { status: 503 }); };
@@ -138,6 +141,11 @@ eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
   failing.minIntervalMs = 0;
   await assert.rejects(() => failing.req('/blocks/tip/height'), /esplora .*: 503 nope/);
   eq('a 5xx is retried before it is reported', calls, 2);
+
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  const blocked = new EsploraClient(MEMPOOL_ESPLORA, { metered: true });
+  blocked.minIntervalMs = 0;
+  await assert.rejects(() => blocked.req('/blocks/tip/height'), /CORS/);
 
   let seen = null;
   globalThis.fetch = async (url, opts) => { seen = opts; return new Response('txid', { status: 200 }); };

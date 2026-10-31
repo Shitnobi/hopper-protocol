@@ -57,10 +57,14 @@ eq('public WSS is metered', isPublicEndpoint('wss://electrum.example.org'), true
 eq('malformed URL is treated as metered', isPublicEndpoint('not a url'), true);
 
 // --- failure backoff ------------------------------------------------------
-eq('backoff 1', failureBackoffMs(1), 5_000);
-eq('backoff 2', failureBackoffMs(2), 10_000);
-eq('backoff 7', failureBackoffMs(7), 300_000);
-eq('backoff clamps high counts', failureBackoffMs(99), 300_000);
+eq('local backoff 1', failureBackoffMs(1), 5_000);
+eq('local backoff 2', failureBackoffMs(2), 10_000);
+eq('local backoff 7', failureBackoffMs(7), 300_000);
+eq('local backoff clamps high counts', failureBackoffMs(99), 300_000);
+eq('public backoff starts at a minute', failureBackoffMs(1, { publicSource: true }), 60_000);
+eq('public backoff climbs', failureBackoffMs(2, { publicSource: true }), 120_000);
+eq('public backoff reaches 30 minutes', failureBackoffMs(7, { publicSource: true }), 1_800_000);
+eq('public backoff clamps high counts', failureBackoffMs(99, { publicSource: true }), 1_800_000);
 
 // --- integration: cold walk, tip gate, warm pass --------------------------
 class FakeBackend {
@@ -213,13 +217,77 @@ wallet.publicSource = true;
 wallet.fails = 0;
 wallet._recordAction({ kind: 'send', txid: 'aa'.repeat(32) });
 eq('a broadcast is in flight', wallet._inFlight(), true);
-eq('public source polls a wallet while in flight', wallet.tickIntervalMs(), 15_000);
+eq('public source polls a wallet while in flight', wallet.tickIntervalMs(), 30_000);
 fake.getTx = async () => ({ status: { confirmed: true, block_height: 101 } });
 await wallet._reconcilePending(101);
 eq('a confirmed broadcast leaves the pending set', wallet.pending.length, 0);
 eq('an idle public source drops to 10 minutes', wallet.tickIntervalMs(), 600_000);
 wallet.fails = 2;
-eq('a failed public pass backs off', wallet.tickIntervalMs(), 10_000);
+eq('a failed public pass backs off to two minutes', wallet.tickIntervalMs(), 120_000);
+
+// --- pause / resume -------------------------------------------------------
+const pauseWallet = new WalletSession({
+  mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  network: 'regtest',
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+});
+pauseWallet.backend = new FakeBackend(100);
+pauseWallet.publicSource = true;
+pauseWallet._autoSync = false;
+eq('scanning starts unpaused', pauseWallet.scanState().paused, false);
+pauseWallet.pauseScan();
+eq('pause is persisted', pauseWallet.settings.scanPaused, true);
+eq('pause clears the timer', pauseWallet._timer, null);
+eq('pause stops auto scheduling', pauseWallet._autoSync, false);
+eq('pause is visible in scan state', pauseWallet.scanState().paused, true);
+eq('pause says no automatic passes', /scanning paused/i.test(pauseWallet.scan.note), true);
+pauseWallet.resumeScan();
+eq('resume is persisted', pauseWallet.settings.scanPaused, false);
+eq('resume restores auto scheduling', pauseWallet._autoSync, true);
+eq('resume schedules the next pass', pauseWallet.scan.nextAt > Date.now(), true);
+eq('resume is visible in scan state', pauseWallet.scanState().paused, false);
+pauseWallet.stop();
+eq('stop after resume clears the timer', pauseWallet._timer, null);
+
+// --- a failed tip stops a background pass before address queries ----------
+const dead = new WalletSession({
+  mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  network: 'regtest',
+  settings: { ...DEFAULT_SETTINGS, mode: 'demo', gap: GAP_LIMIT, gapExtra: 0 },
+});
+const deadBackend = new FakeBackend(100);
+deadBackend.tipHeight = async () => { deadBackend.tipCalls += 1; throw new Error('tip down'); };
+dead.backend = deadBackend;
+dead.publicSource = true;
+dead.fullScanTip = 100;
+dead.watchTip = 100;
+dead._autoSync = false;
+let tipThrew = false;
+try { await dead.refresh({ force: false, auto: true }); } catch { tipThrew = true; }
+eq('a background tip failure aborts the pass', tipThrew, true);
+eq('a background tip failure makes no address requests',
+  deadBackend.historyCalls + deadBackend.utxoCalls, 0);
+eq('a background tip failure counts one failed pass', dead.fails, 1);
+eq('a failed public pass retries in a minute', dead.tickIntervalMs(), 60_000);
+
+// --- scan panel says STOP, then RESUME ------------------------------------
+const { scanPanel } = await import('../js/ui/screens.js');
+const panelState = {
+  gapLimit: 20, gapExtra: 0, lastPass: null, lastTip: null, busy: false,
+  rescan: null, note: '', nextAt: null, auto: false, fails: 0, pending: 0,
+  publicSource: true, paused: false,
+};
+const panelApp = (paused) => ({
+  w: { settings: { mode: 'live' }, scanState: () => ({ ...panelState, paused }) },
+  scanArmed: false,
+});
+const runningPanel = scanPanel(panelApp(false));
+eq('scan panel offers STOP', />STOP SCANNING</.test(runningPanel), true);
+eq('scan panel does not offer RESUME while running', />RESUME SCANNING</.test(runningPanel), false);
+const pausedPanel = scanPanel(panelApp(true));
+eq('paused scan panel offers RESUME', />RESUME SCANNING</.test(pausedPanel), true);
+eq('paused scan panel does not offer STOP', />STOP SCANNING</.test(pausedPanel), false);
+eq('paused scan panel says paused', /paused/i.test(pausedPanel), true);
 
 // --- STOP a paced public rescan ------------------------------------------
 wallet.fails = 0;

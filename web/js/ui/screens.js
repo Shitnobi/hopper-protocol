@@ -1331,19 +1331,23 @@ export function scanPanel(app) {
     ? 'DEMO — in-browser chain'
     : sc.publicSource ? 'PUBLIC — metered' : 'LOCAL NODE — free';
   const builtIn = Math.max(0, sc.gapLimit - (sc.gapExtra || 0));
+  const paused = sc.paused === true;
   const progress = sc.rescan
     ? `Rescanning ${sc.rescan.asked} addresses · ${sc.rescan.hits} with history`
-    : sc.note || 'No scan has run yet.';
+    : sc.note || (paused ? 'Scanning paused — automatic passes are off.' : 'No scan has run yet.');
   return `
     <div class="settings-grid mt10">
       <label>Source</label><dd>${esc(mode)}</dd>
       <label>Scan window</label><dd>${sats(sc.gapLimit)} addresses (${sats(builtIn)} built-in + ${sats(sc.gapExtra || 0)})</dd>
       <label>Last pass</label><dd>${esc(sc.lastPass ? `tip ${sats(sc.lastTip)} · ${scanAge(sc.lastPass)}` : '—')}</dd>
-      <label>Next pass</label><dd>${esc(sc.busy || sc.rescan ? 'running' : sc.nextAt ? scanEta(sc.nextAt) : sc.auto ? 'scheduled' : 'manual')}</dd>
-      ${sc.fails ? `<label>Backoff</label><dd>${sats(sc.fails)} failed pass${sc.fails === 1 ? '' : 'es'} — retrying slower</dd>` : ''}
+      <label>Next pass</label><dd>${esc(sc.busy || sc.rescan ? 'running' : paused ? 'paused' : sc.nextAt ? scanEta(sc.nextAt) : sc.auto ? 'scheduled' : 'manual')}</dd>
+      ${sc.fails ? `<label>Backoff</label><dd>${sats(sc.fails)} failed pass${sc.fails === 1 ? '' : 'es'} — ${paused ? 'paused; no automatic retries' : 'retrying slower'}</dd>` : ''}
       ${sc.pending ? `<label>Confirming</label><dd>${sats(sc.pending)} transaction${sc.pending === 1 ? '' : 's'} — polling faster until confirmed</dd>` : ''}
     </div>
     <div class="actions mt10">
+      ${paused
+        ? logBtn('RESUME SCANNING', 'toggle-scan', { edge: 'accent', cls: 'small' })
+        : logBtn('STOP SCANNING', 'toggle-scan', { edge: 'dead', cls: 'small' })}
       ${sc.rescan
         ? logBtn('STOP RESCAN', 'stop-rescan', { edge: 'dead', cls: 'small' })
         : app.scanArmed
@@ -1352,7 +1356,7 @@ export function scanPanel(app) {
       ${logBtn('EXTEND +20', 'extend-gap', { edge: 'dim', cls: 'small' })}
     </div>
     <div class="scan-line ${sc.rescan ? 'accent' : ''}" data-scan-line>${esc(progress)}</div>
-    <div class="hint">A public source is asked for the tip once every 10 minutes while idle. Address lookups happen only when a block changes the answer, while one of our transactions is confirming, or when you RESCAN. RESCAN takes two taps, walks the gap one wave at a time, and can be stopped.</div>`;
+    <div class="hint">STOP SCANNING clears the timer, block subscription and foreground wake; REFRESH and RESCAN still work by hand. A public source is asked for the tip once every 10 minutes while idle, once every 30 seconds only while one of our transactions is confirming, and never for an unchanged block. Failed public passes back off from 1 minute to 30 minutes.</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,7 +1407,7 @@ export function settings(app) {
         ${logBtn('TEST', 'test-backend', { edge: 'dim', cls: 'small' })}
         ${logBtn('APPLY', 'apply-backend', { edge: 'accent', cls: 'small' })}
       </div>
-      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet. Both public hosts speak Esplora; mempool.space can be slower on busy addresses and is subject to browser-extension blocking (allowlist it in NoScript).</div>
+      <div class="hint">Defaults: Esplora empty on mainnet uses blockstream.info/api (unless an Electrum URL is set), and Ord empty uses ordinals.com on mainnet. Both public hosts speak Esplora; mempool.space can be slower on busy addresses and is subject to browser-extension blocking (allowlist it in NoScript). A self-hosted Esplora must send Access-Control-Allow-Origin for this site — curl does not enforce CORS, so a working curl can still fail in the wallet.</div>
       <div class="hint">An empty Indexer means no HOPPER indexer. A mint paid to this wallet's ordinals address is recovered from its reveal witness; a frog transferred in later, the road and the leaderboard still need an indexer. Sat ranges come from the indexer when it knows the coin; otherwise the Ord server names them.</div>
     </div>
 

@@ -38,19 +38,25 @@ import {
 // about a handful of scripts (the ordinals address, the next unused index
 // per branch plus one guard, and the indices that held coins last pass).
 // The full gap walk is a COLD-only cost: boot, RESCAN, EXTEND. A public
-// source gets one tip probe every ten minutes while idle, and a 15 s
+// source gets one tip probe every ten minutes while idle, and a 30 s
 // cadence only while something of ours is in flight.
 export const GAP_LIMIT = 20;
 export const SCAN_WAVE = 8;
 export const WATCH_AHEAD = 2;
 export const PUBLIC_IDLE_TICK_MS = 10 * 60 * 1000;
-export const PUBLIC_BUSY_TICK_MS = 15 * 1000;
+export const PUBLIC_BUSY_TICK_MS = 30 * 1000;
 export const RESCAN_DELAY_MS = 400;
 export const LOCAL_TICK_MS = 3000;
 
-/** Same bounded backoff as FROGGER: 5, 10, 20, 40, 80, 160, 300 s. */
-export function failureBackoffMs(fails) {
+/** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
+ *  A public source is being rate-limited when it fails, so start at a
+ *  minute and climb to half an hour: 1, 2, 5, 10, 20, 30 min. */
+export function failureBackoffMs(fails, { publicSource = false } = {}) {
   const n = Math.max(1, Math.min(7, Math.trunc(Number(fails) || 1)));
+  if (publicSource) {
+    const ladder = [60_000, 120_000, 300_000, 600_000, 1_200_000, 1_800_000];
+    return ladder[Math.min(n, ladder.length) - 1];
+  }
   return Math.min(300_000, 5_000 * (2 ** (n - 1)));
 }
 
@@ -181,6 +187,7 @@ export const DEFAULT_SETTINGS = {
   mute: false,
   volume: 0.55,
   deepScan: false,
+  scanPaused: false,
   spendUnconfirmed: true,
   gap: GAP_LIMIT,
   gapExtra: 0,
@@ -211,6 +218,7 @@ export function loadSettings() {
   s.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.55;
   s.mute = s.mute === true;
   s.deepScan = s.deepScan === true;
+  s.scanPaused = s.scanPaused === true;
   // Default-on for new and upgraded wallets. Only an explicit off value
   // disables the mempool spend path.
   s.spendUnconfirmed = s.spendUnconfirmed !== false && s.spendUnconfirmed !== '0';
@@ -272,6 +280,7 @@ export class WalletSession {
     this._timer = null;
     this._refreshing = null;
     this._wakeQueued = false;
+    this._scanAbort = false;
     this._rescanCancel = false;
     this._stopped = false;
     this._blockUnsub = null;
@@ -459,7 +468,10 @@ export class WalletSession {
       ordUrl: effectiveOrdUrl(this.settings, this.network),
     };
     this.publicSource = settingsPublicSource(effective);
-    await this._assertParams();
+    // The protocol-params gate belongs at signing time (previewMint /
+    // previewCross), not on unlock. A slow or unreachable indexer must not
+    // delay a vault from opening; the signing paths still refuse a
+    // different params_hash before they build bytes.
     this._setupAutoSync();
     return this;
   }
@@ -503,11 +515,7 @@ export class WalletSession {
     this._saveLedger();
   }
 
-  /** Stop background work (lock/wipe/backend change). Network requests
-   *  already in flight are left to finish; nothing is rescheduled. */
-  stop() {
-    this._autoSync = false;
-    this._stopped = true;
+  _teardownAutoSync() {
     if (this._timer) clearTimeout(this._timer);
     this._timer = null;
     this._wakeQueued = false;
@@ -522,7 +530,52 @@ export class WalletSession {
     }
   }
 
+  /** Stop background work (lock/wipe/backend change). Network requests
+   *  already in flight are left to finish; nothing is rescheduled. */
+  stop() {
+    this._autoSync = false;
+    this._stopped = true;
+    this._teardownAutoSync();
+  }
+
+  /** User-visible pause. Unlike lock/wipe this leaves the session usable:
+   *  no timer, no block/visibility wake, no automatic retries. An explicit
+   *  REFRESH or RESCAN still works, and clears the in-pass stop flag. */
+  pauseScan({ save = true } = {}) {
+    this.settings.scanPaused = true;
+    if (save) saveSettings(this.settings);
+    this._scanAbort = true;
+    this._autoSync = false;
+    this._teardownAutoSync();
+    if (this.scan.rescan) this._rescanCancel = true;
+    this.scan.note = 'scanning paused — automatic passes are off';
+    this.dispatch('scan', this.scanState());
+    return this.scanState();
+  }
+
+  /** Re-arm the timer and subscriptions after a pause. */
+  resumeScan({ save = true } = {}) {
+    this.settings.scanPaused = false;
+    if (save) saveSettings(this.settings);
+    this._scanAbort = false;
+    if (this._stopped) {
+      this._autoSync = false;
+      this.dispatch('scan', this.scanState());
+      return this.scanState();
+    }
+    this._setupAutoSync();
+    this.scan.note = 'scanning resumed — automatic passes are back on';
+    this.dispatch('scan', this.scanState());
+    if (this._autoSync) this._scheduleNext(250);
+    return this.scanState();
+  }
+
   _setupAutoSync() {
+    if (this._stopped || this.settings.scanPaused === true) {
+      this._autoSync = false;
+      this.scan.nextAt = null;
+      return;
+    }
     this._autoSync = true;
     if (typeof document !== 'undefined' && !this._visHandler) {
       this._visHandler = () => { if (!document.hidden) this._wake(); };
@@ -536,7 +589,9 @@ export class WalletSession {
   /** FROGGER's `tick_interval`: failure backoff, then public idle/busy,
    *  then the local node's own cadence. */
   tickIntervalMs() {
-    if (this.fails > 0) return failureBackoffMs(this.fails);
+    if (this.fails > 0) {
+      return failureBackoffMs(this.fails, { publicSource: this.publicSource });
+    }
     if (!this.publicSource) return LOCAL_TICK_MS;
     return this._inFlight() ? PUBLIC_BUSY_TICK_MS : PUBLIC_IDLE_TICK_MS;
   }
@@ -567,7 +622,7 @@ export class WalletSession {
   }
 
   _scheduleNext(ms = this.tickIntervalMs()) {
-    if (!this._autoSync || this._stopped) return;
+    if (!this._autoSync || this._stopped || this.settings.scanPaused === true) return;
     if (this._timer) clearTimeout(this._timer);
     this.scan.nextAt = Date.now() + ms;
     this._timer = setTimeout(() => {
@@ -578,7 +633,7 @@ export class WalletSession {
   }
 
   _tick() {
-    if (!this._autoSync || this._stopped) return;
+    if (!this._autoSync || this._stopped || this.settings.scanPaused === true) return;
     if (typeof document !== 'undefined' && document.hidden) {
       this._scheduleNext();
       return;
@@ -589,7 +644,7 @@ export class WalletSession {
   }
 
   _wake() {
-    if (!this._autoSync || this._stopped) return;
+    if (!this._autoSync || this._stopped || this.settings.scanPaused === true) return;
     this._wakeQueued = true;
     if (this._refreshing) return;
     this._wakeQueued = false;
@@ -626,6 +681,7 @@ export class WalletSession {
       gapLimit: this.gapLimit(),
       gapExtra: Number(this.settings.gapExtra) || 0,
       auto: this._autoSync,
+      paused: this.settings.scanPaused === true,
     };
   }
 
@@ -671,8 +727,14 @@ export class WalletSession {
   }
 
   /** A user-facing refresh is forced; the scheduler calls with force:false
-   *  so an unchanged tip can pass without a single address query. */
-  async refresh({ deep = null, force = true } = {}) {
+   *  and auto:true so an unchanged tip can pass without a single address
+   *  query. A manual refresh is also the escape hatch while paused. */
+  async refresh({ deep = null, force = true, auto = false } = {}) {
+    if (!auto) this._scanAbort = false;
+    if (auto && this.settings.scanPaused === true) {
+      this.scan.note = 'scanning paused — automatic passes are off';
+      return this;
+    }
     if (!this.backend) await this.connect();
     if (this._refreshing) {
       if (force) this.forceWatch = true;
@@ -681,7 +743,7 @@ export class WalletSession {
     const wantedForce = force || this.forceWatch;
     this.scan.busy = true;
     this.dispatch('scan', this.scanState());
-    const job = this._refreshInner({ deep, force: wantedForce });
+    const job = this._refreshInner({ deep, force: wantedForce, auto });
     this._refreshing = job;
     try {
       await job;
@@ -709,7 +771,9 @@ export class WalletSession {
     this.fails += 1;
     this.watchTip = null;
     this.scan.partial = true;
-    this.scan.note = `sync failed: ${why} (retry in ${Math.round(this.tickIntervalMs() / 1000)}s)`;
+    this.scan.note = this.settings.scanPaused === true
+      ? `scanning paused — last pass failed: ${why}`
+      : `sync failed: ${why} (retry in ${Math.round(this.tickIntervalMs() / 1000)}s)`;
     if (this.scan.rescan) {
       const { asked } = this.scan.rescan;
       this.scan.rescan = null;
@@ -719,23 +783,31 @@ export class WalletSession {
     this._saveLedger();
   }
 
-  async _refreshInner({ deep: deepOpt = null, force: forceOpt = false } = {}) {
+  async _refreshInner({ deep: deepOpt = null, force: forceOpt = false, auto = false } = {}) {
     let tip;
     let tipNote = null;
+    let tipFailed = false;
     try {
       tip = Number(await this.backend.tipHeight());
       if (!Number.isFinite(tip)) throw new Error('chain returned no tip height');
     } catch (e) {
-      // The balance does not need the height. Fall back to the last height
-      // this wallet saw, but a cold start has no previous answer to use.
+      // A background pass stops at the first failed request. Continuing to
+      // address lookups while the backend is rate-limiting or down is what
+      // turns a short outage into a long ban. A manual/action refresh may
+      // reuse the last height so the user can still see its balance.
       const last = [this.watchTip, this.fullScanTip, this.tipHeight]
         .find((h) => Number.isSafeInteger(h));
-      if (last == null) throw e;
+      if (last == null || auto) throw e;
       tip = last;
+      tipFailed = true;
       tipNote = `tip height unavailable (${e.message || String(e)}) — using ${last}`;
     }
     this.tipHeight = tip;
     await this._reconcilePending(tip);
+    if (this._scanAbort) {
+      this.scan.note = 'scanning paused — automatic passes are off';
+      return this;
+    }
 
     let force = !!forceOpt || this.forceWatch;
     this.forceWatch = false;
@@ -766,6 +838,7 @@ export class WalletSession {
     const rescanning = !!this.scan.rescan;
     let readFailed = null;
     let cancelled = false;
+    let pausedMidPass = false;
     let receiveFound = false;
     let asked = 0;
     let hits = 0;
@@ -790,6 +863,11 @@ export class WalletSession {
           : 0;
         const gapLimit = this.gapLimit();
         while (!(consecutiveEmpty >= gapLimit && index > floor)) {
+          if (this._scanAbort) {
+            pausedMidPass = true;
+            if (rescanning) cancelled = true;
+            break;
+          }
           if (this._stopped) { cancelled = true; break; }
           const wave = [];
           for (let n = 0; n < SCAN_WAVE; n += 1, index += 1) {
@@ -827,6 +905,11 @@ export class WalletSession {
             }
           }
           if (readFailed) break;
+          if (this._scanAbort) {
+            pausedMidPass = true;
+            if (rescanning) cancelled = true;
+            break;
+          }
           if (rescanning) {
             this.scan.rescan = { asked, hits };
             this.dispatch('scan', this.scanState());
@@ -835,7 +918,7 @@ export class WalletSession {
           }
         }
         this.watched[branch] = Math.max(Number(this.watched[branch]) || 0, index);
-        if (readFailed || cancelled) break;
+        if (readFailed || cancelled || pausedMidPass) break;
       }
     }
 
@@ -865,16 +948,19 @@ export class WalletSession {
     // Sequential on purpose: a warm pass is 6–10 scripts and a public
     // source must not see them as a burst.
     for (const w of entries) {
+      if (this._scanAbort) { pausedMidPass = true; break; }
       let list;
       try {
         list = await this.backend.addressUtxos(w.address, w.script);
         if (!Array.isArray(list)) list = [];
         queriedOk.add(w.address);
       } catch (e) {
+        // One failed address is enough: stop the pass rather than fire the
+        // rest of the plan into a backend that is rate-limiting us.
         watchFailed = e.message || String(e);
         list = prevByAddress.get(w.address) || [];
         for (const u of list) utxos.push(u);
-        continue;
+        break;
       }
       const dtos = await mapLimit(list, 2, async (u) => {
         try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
@@ -926,7 +1012,7 @@ export class WalletSession {
 
     // A pass that could not name every address keeps the coins it already
     // knew: absence is not evidence. Only a completed pass may shrink hot.
-    const preserve = !!(readFailed || watchFailed || cancelled);
+    const preserve = !!(readFailed || watchFailed || cancelled || pausedMidPass);
     if (preserve) {
       const queried = new Set(entries.map((w) => w.address));
       for (const u of previousUtxos) {
@@ -947,6 +1033,7 @@ export class WalletSession {
     if (readFailed) notes.push(`gap walk stopped: ${readFailed}`);
     if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
     if (cancelled) notes.push(`scan stopped by user after ${asked} addresses`);
+    if (pausedMidPass) notes.push('scanning paused — this pass stopped early');
     // The session was locked/wiped/pointed at another backend while this
     // pass was in flight. Do not write a ledger after the vault is gone.
     if (this._stopped) return this;
@@ -1110,25 +1197,28 @@ export class WalletSession {
       this.scan.rescan = null;
       this._rescanCancel = false;
     }
-    if (readFailed || watchFailed) {
+    if (readFailed || watchFailed || tipFailed) {
       this.fails += 1;
       this.watchTip = null;
-    } else {
+    } else if (!pausedMidPass) {
       this.fails = 0;
       this.watchTip = tip;
     }
     if (this.cold) {
-      if (!readFailed && !cancelled) {
+      if (!readFailed && !cancelled && !pausedMidPass) {
         this.fullScanTip = tip;
         this.cold = false;
       }
     }
     this.scan.lastPass = Date.now();
     this.scan.lastTip = tip;
-    this.scan.partial = !!(readFailed || watchFailed || cancelled || recordFailed || ownershipFailed);
+    this.scan.partial = !!(readFailed || watchFailed || cancelled || pausedMidPass
+      || recordFailed || ownershipFailed);
     if (this._stopped) return this;
     if (!notes.length) notes.push(`synced at block ${tip}`);
-    this.scan.note = notes.join(' · ');
+    this.scan.note = this.settings.scanPaused === true
+      ? `scanning paused — automatic passes are off · ${notes.join(' · ')}`
+      : notes.join(' · ');
     this._saveLedger();
     this.dispatch('refresh', this.summary());
     if (rotatedReceive) this.dispatch('receive-address', rotatedReceive);

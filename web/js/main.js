@@ -362,9 +362,14 @@ async function startSession({ mnemonic, network, fingerprint }) {
   sound.setVolume(app.settings.volume);
   sound.setMute(app.settings.mute);
   sound.startLoop();
+
+  // Open the backend, but do not make unlock wait for a chain refresh.
+  // PBKDF2 + AES-GCM is the security boundary; a cold gap walk or a
+  // rate-limited public Esplora must not hold the lock screen hostage.
+  let backendReady = false;
   try {
     await app.w.connect();
-    await app.w.refresh();
+    backendReady = true;
   } catch (e) {
     // Keep the wallet shell alive so Settings (where the endpoint can be
     // fixed) is reachable. A half-configured live backend must not trap the
@@ -372,12 +377,7 @@ async function startSession({ mnemonic, network, fingerprint }) {
     console.warn('session backend unavailable', e.message || String(e));
     toast('Chain unavailable — open Settings to fix the endpoint', 'err');
   }
-  if (app.settings.mode === 'demo' && app.w.balance.total === 0n && !app.w.actions.length) {
-    try {
-      await app.w.demoFund(8, 200000);
-      toast('Demo faucet: 8 coins funded', 'ok');
-    } catch (e) { /* faucet is optional */ }
-  }
+
   resetMintDraft();
   app.seenFirstFrog = false;
   app.navChosen = false;
@@ -388,6 +388,24 @@ async function startSession({ mnemonic, network, fingerprint }) {
     app.booted = true;
     beginBootIntro();
   }
+
+  if (!backendReady) return;
+  const session = app.w;
+  session.refresh().then(async () => {
+    if (app.w !== session) return;
+    if (app.settings.mode === 'demo' && session.balance.total === 0n && !session.actions.length) {
+      try {
+        await session.demoFund(8, 200000);
+        toast('Demo faucet: 8 coins funded', 'ok');
+      } catch (e) { /* faucet is optional */ }
+    }
+    // The first render happened before this pass. Repaint remote-backed
+    // views (pond/road/frog) with the newly discovered records.
+    if (['pond', 'leaders', 'road', 'frog', 'bio'].includes(app.view)) ensureViewData(app.view);
+  }).catch((e) => {
+    console.warn('session refresh unavailable', e.message || String(e));
+    if (app.w === session) toast('Chain unavailable — open Settings to fix the endpoint', 'err');
+  });
 }
 
 // The boot splash runs once per page load (the egui app plays it every
@@ -708,6 +726,18 @@ const handlers = {
     app.scanArmed = false;
     app.w?.cancelRescan?.();
     render();
+  },
+  'toggle-scan'() {
+    if (!app.w?.scanState) return;
+    if (app.w.scanState().paused) {
+      app.w.resumeScan();
+      toast('Automatic scanning resumed', 'ok');
+    } else {
+      app.w.pauseScan();
+      toast('Automatic scanning paused — REFRESH still works', 'ok');
+    }
+    if (app.view === 'settings') refreshScanPanel();
+    else render();
   },
   'extend-gap'() {
     if (!app.w?.extendGap) return;

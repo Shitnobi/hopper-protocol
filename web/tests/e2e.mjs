@@ -112,6 +112,23 @@ async function skipTour() {
   }
   throw new Error('tour did not finish');
 }
+// A first visit shows the splash/intro and the rules before onboarding.
+// The old test assumed the intro had already been dismissed; on a fresh
+// Chromium profile it has not, so clear that chrome explicitly.
+async function clearTourChrome() {
+  for (let i = 0; i < 60; i += 1) {
+    const state = await evaluate(`(() => {
+      const intro = document.querySelector('#intro');
+      if (intro && !intro.hidden) { intro.click(); return 'intro'; }
+      const skip = document.querySelector('[data-action=rule-skip]');
+      if (skip) { skip.click(); return 'rules'; }
+      return document.querySelector('[data-action=ob-create]') ? 'done' : 'wait';
+    })()`);
+    if (state === 'done') return;
+    await sleep(200);
+  }
+}
+
 const fill = (input, value) => evaluate(`(() => {
   const el = document.querySelector('[data-input="${input}"]');
   el.value = ${JSON.stringify(value)};
@@ -127,6 +144,7 @@ await call('Emulation.setDeviceMetricsOverride', {
   width: 360, height: 780, deviceScaleFactor: 2, mobile: true,
 });
 await call('Page.navigate', { url: base });
+await clearTourChrome();
 await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboarding');
 
 // The welcome is flavor, not a protocol spec. The three stat fields are
@@ -572,10 +590,32 @@ const scanPanel = await evaluate(`({
   text: document.querySelector('[data-scan-panel]')?.innerText || '',
   hasRescan: Boolean(document.querySelector('[data-action=rescan]')),
   hasExtend: Boolean(document.querySelector('[data-action=extend-gap]')),
+  hasPause: Boolean(document.querySelector('[data-action=toggle-scan]')),
 })`);
 console.log('scan policy:', scanPanel.text.replace(/\n/g, ' | '));
-if (!scanPanel.hasRescan || !scanPanel.hasExtend || !/SCAN|Scan window/i.test(scanPanel.text)) {
+if (!scanPanel.hasRescan || !scanPanel.hasExtend || !scanPanel.hasPause
+    || !/SCAN|Scan window/i.test(scanPanel.text)) {
   errors.push(`settings: scan policy is incomplete ${JSON.stringify(scanPanel)}`);
+}
+const pauseState = await evaluate(`(async () => {
+  const btn = () => document.querySelector('[data-action=toggle-scan]');
+  const line = () => document.querySelector('[data-scan-panel]')?.innerText || '';
+  btn().click();
+  await new Promise(r => setTimeout(r, 200));
+  const paused = { label: btn()?.textContent.trim() || '', text: line() };
+  btn().click();
+  await new Promise(r => setTimeout(r, 200));
+  const resumed = { label: btn()?.textContent.trim() || '', text: line() };
+  return { paused, resumed };
+})()`);
+console.log('scan pause:', JSON.stringify({
+  paused: pauseState.paused.label, resumed: pauseState.resumed.label,
+  pausedLine: /paused/i.test(pauseState.paused.text),
+}));
+if (pauseState.paused.label !== 'RESUME SCANNING'
+    || pauseState.resumed.label !== 'STOP SCANNING'
+    || !/paused/i.test(pauseState.paused.text)) {
+  errors.push(`settings: scan pause/resume failed ${JSON.stringify(pauseState)}`);
 }
 // The seed is behind a warning gate. It must not be in the DOM until the
 // explicit approval button is pressed.

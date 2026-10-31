@@ -219,6 +219,47 @@ outputs and is slower on busy addresses; a local node is faster. If the
 browser reports `Failed to fetch` while `curl` works, allowlist the host in
 NoScript (or the extension blocking cross-origin requests).
 
+### Custom Esplora and CORS
+
+A browser wallet can only read an Esplora API that sends
+`Access-Control-Allow-Origin` for this page. **`curl` does not enforce CORS**,
+so a working command line is not proof that the browser can connect. Test the
+same question the browser asks:
+
+```sh
+curl -sS -D - -o /dev/null \
+  -H 'Origin: https://shitnobi.github.io' \
+  https://your-esplora.example/api/blocks/tip/height | grep -i access-control
+```
+
+If that header is missing, the API is fine for `curl` and unusable from the
+PWA. On a self-hosted mempool/Esplora proxy, add it at the reverse proxy, for
+example nginx:
+
+```nginx
+location /api/ {
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Content-Type" always;
+    if ($request_method = OPTIONS) { return 204; }
+    proxy_pass http://127.0.0.1:8999/;
+}
+```
+
+or Caddy:
+
+```caddy
+header Access-Control-Allow-Origin "*"
+```
+
+`*` is safe here because the wallet sends no cookies or credentials; use the
+exact `https://shitnobi.github.io` origin if you prefer. The wallet's GETs are
+simple requests (no `Content-Type` header), and broadcast is a `text/plain`
+POST, so the browser should not need a preflight; the `OPTIONS` line is
+defence in depth. A static GitHub Pages app cannot bypass a missing CORS
+header — a third-party CORS proxy would be a man-in-the-middle for wallet
+traffic and is deliberately not used.
+
 The browser frontend is a JavaScript reimplementation of the FROGGER
 wallet's egui GUI (the app in `frogger-protocol`): the same dark lily-pad
 palette, pixel text, wooden log buttons, lily-pad floating windows,
@@ -365,18 +406,26 @@ curl -sN localhost:9770/v1/events/stream
 - **Vault**: AES-256-GCM under a PBKDF2-SHA-256 (210,000 rounds)
   non-extractable WebCrypto KEK. The KEK is cached in IndexedDB **only**
   when "keep this device unlocked" is checked; locking deletes it. Wiping
-  removes the vault and local ledger.
+  removes the vault and local ledger. Unlock decrypts and opens the wallet
+  immediately; the first chain refresh runs in the background, so a cold
+  gap walk, a slow public Esplora or an unreachable indexer cannot hold the
+  lock screen. The protocol-params check still runs before mint/hop signing.
 - **Discovery**: the scan policy is ported from FROGGER. A cold boot (or
   RESCAN / EXTEND) walks the 20-address gap on receive and change in waves
   of eight; the change branch is skipped on a brand-new wallet. Every later
   pass watches only the ordinals address, the next unused index per branch
   plus one guard (`next - 1` too), and the indices that held coins last
   pass. A tip gate means an unchanged block asks the chain **nothing**.
-  Public sources get one tip probe every ten minutes while idle, and a 15 s
-  cadence only while one of our transactions is confirming; failures back
-  off 5→300 s. RESCAN takes two taps, walks the gap slowly (400 ms
-  per wave on a public source), reports progress and can be stopped;
-  EXTEND grows the persisted window by 20. An address answer already says
+  Public sources get one tip probe every ten minutes while idle, and a 30 s
+  cadence only while one of our transactions is confirming. A failed tip
+  aborts a background pass before any address query; a failed address
+  stops the pass rather than firing the rest of the plan. Public failures
+  back off 1→30 min (local failures 5→300 s). **STOP SCANNING** in Settings
+  clears the timer, block subscription and foreground wake, persists the
+  pause across reloads, and becomes **RESUME SCANNING**; REFRESH and RESCAN
+  still work by hand while paused. RESCAN takes two taps, walks the gap
+  slowly (400 ms per wave on a public source), reports progress and can be
+  stopped; EXTEND grows the persisted window by 20. An address answer already says
   whether an output is confirmed; mempool outputs are kept as faded History
   rows labelled IN MEMPOOL and counted in the wallet's pending total — no
   extra request is made to find them. A frog is owned when its sat is in a
