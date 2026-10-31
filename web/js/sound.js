@@ -379,16 +379,21 @@ export class Sound {
     // Resume every time, not only for suspended/interrupted: iOS can report
     // "running" while the audio session is actually interrupted. resume()
     // on an already-running context is harmless.
+    const ctx = this.ctx;
     let p;
     try {
-      p = this.ctx.resume();
+      p = ctx.resume();
     } catch (e) {
       this.resumeError = e && e.message ? e.message : String(e);
       return;
     }
     if (p && typeof p.then === 'function') {
-      p.then(() => { this.resumeError = ''; }, (e) => {
-        this.resumeError = e && e.message ? e.message : String(e);
+      p.then(() => {
+        if (this.ctx === ctx) this.resumeError = '';
+      }, (e) => {
+        // A late rejection from a context that was already replaced must not
+        // poison the fresh one.
+        if (this.ctx === ctx) this.resumeError = e && e.message ? e.message : String(e);
       });
     }
   }
