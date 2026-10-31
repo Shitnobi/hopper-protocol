@@ -1248,6 +1248,81 @@ if (!/MINTED/.test(settledBio) || !/TRAVELED TO THE ROAD/.test(settledBio)
   errors.push(`Bio is missing the completed journey: ${JSON.stringify(settledBio.slice(0, 600))}`);
 }
 
+// 5c. A completed scan must repaint the live view that is on screen. Leave a
+// probe in the DOM: a full repaint removes it. BIO used to be excluded from
+// hopper:refresh, so it stayed frozen while History and the pond updated.
+await evaluate(`document.querySelector('#app .bio-head')?.setAttribute('data-scan-probe', 'stale')`);
+await evaluate(`window.dispatchEvent(new CustomEvent('hopper:refresh'))`);
+await sleep(300);
+const bioProbe = await evaluate(`document.querySelector('#app .bio-head')?.getAttribute('data-scan-probe') || ''`);
+if (bioProbe) errors.push('scan did not repaint the open BIO view');
+console.log('scan repaint: bio', bioProbe || 'repainted');
+
+// SETTINGS keeps a URL form alive, but the recovery line is chain-derived.
+await evaluate(`document.querySelector('[data-action=nav][data-view=settings]').click()`);
+await waitFor('document.querySelector("[data-recovery-summary]")', 10000, 'settings recovery line');
+await evaluate(`document.querySelector('[data-recovery-summary]').textContent = 'STALE RECOVERY LINE'`);
+await evaluate(`window.dispatchEvent(new CustomEvent('hopper:refresh'))`);
+await sleep(300);
+const recoveryLine = await evaluate(`document.querySelector('[data-recovery-summary]')?.textContent || ''`);
+if (/STALE RECOVERY LINE/.test(recoveryLine)) errors.push('scan did not refresh the settings recovery line');
+console.log('scan repaint: settings recovery', recoveryLine.slice(0, 70));
+
+// MINT must update in place: a scan may discover the funding coin, but it
+// must not rebuild the form and throw away the seed/name the user is editing.
+await evaluate(`document.querySelector('[data-action=nav][data-view=mint]').click()`);
+await waitFor('document.querySelector("[data-input=mint-name]")', 10000, 'mint form for scan refresh');
+await fill('mint-name', 'SCAN DRAFT');
+await evaluate(`document.querySelector('[data-input=mint-name]').focus()`);
+await evaluate(`document.querySelector('.mint-block')?.setAttribute('data-scan-probe', 'keep')`);
+await evaluate(`window.dispatchEvent(new CustomEvent('hopper:refresh'))`);
+await sleep(300);
+const mintScan = await evaluate(`(() => {
+  const input = document.querySelector('[data-input=mint-name]');
+  return {
+    probe: document.querySelector('.mint-block')?.getAttribute('data-scan-probe') || '',
+    name: input?.value || '',
+    focused: document.activeElement === input,
+    disabled: document.querySelector('[data-mint-button]')?.disabled === true,
+  };
+})()`);
+if (mintScan.probe !== 'keep') errors.push('scan rebuilt the MINT form instead of updating it in place');
+if (mintScan.name !== 'SCAN DRAFT') errors.push(`scan changed the MINT draft: ${JSON.stringify(mintScan)}`);
+if (!mintScan.focused) errors.push(`scan moved focus out of the MINT name: ${JSON.stringify(mintScan)}`);
+if (mintScan.disabled) errors.push(`scan left MINT disabled with a funded wallet: ${JSON.stringify(mintScan)}`);
+console.log('scan repaint: mint', mintScan);
+await fill('mint-name', '');
+
+// A send sheet opened over WALLET has one live balance line. It must update
+// without replacing the recipient or amount the user already typed.
+await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]').click()`);
+await waitFor('document.querySelector("[data-action=sheet-send]")', 10000, 'wallet send action');
+await evaluate(`document.querySelector('[data-action=sheet-send]').click()`);
+await waitFor('document.querySelector("#overlay [data-send-spendable]")', 10000, 'send sheet');
+await evaluate(`document.querySelector('#overlay [data-send-spendable]').textContent = 'STALE SPENDABLE'`);
+await evaluate(`window.dispatchEvent(new CustomEvent('hopper:refresh'))`);
+await sleep(250);
+const sendLive = await evaluate(`document.querySelector('#overlay [data-send-spendable]')?.textContent || ''`);
+if (/STALE SPENDABLE/.test(sendLive)) errors.push('scan did not refresh the send sheet spendable line');
+console.log('scan repaint: send sheet', sendLive.slice(0, 70));
+await evaluate(`document.querySelector('#overlay [data-action=close-overlay]')?.click()`);
+await waitFor('document.getElementById("overlay").hidden', 5000, 'send sheet close');
+
+// The graveyard is also a live, read-only list: a scan that kills a Hopper
+// must refresh it instead of leaving the old cards on screen.
+await evaluate(`document.querySelector('[data-action=nav][data-view=pond]').click()`);
+await waitFor('document.querySelector(".pond-road")', 10000, 'pond graveyard action');
+await evaluate(`document.querySelector('.pond-road').click()`);
+await waitFor('document.querySelector("#overlay [data-dead-frogs]")', 10000, 'graveyard overlay');
+await evaluate(`document.querySelector('#overlay [data-dead-frogs]').setAttribute('data-scan-probe', 'stale')`);
+await evaluate(`window.dispatchEvent(new CustomEvent('hopper:refresh'))`);
+await sleep(300);
+const deadProbe = await evaluate(`document.querySelector('#overlay [data-dead-frogs]')?.getAttribute('data-scan-probe') || ''`);
+if (deadProbe) errors.push('scan did not refresh the open graveyard overlay');
+console.log('scan repaint: graveyard', deadProbe || 'refreshed');
+await evaluate(`document.querySelector('#overlay [data-action=close-overlay]')?.click()`);
+await waitFor('document.getElementById("overlay").hidden', 5000, 'graveyard close');
+
 // The automatic recovery pack must already exist from PREPARE and must
 // have followed the HOP to the new state outpoint.
 const recovery = await evaluate(`(() => {
@@ -1293,6 +1368,7 @@ if (alive) {
   await waitFor('document.querySelector(".overlay [data-action=bio]")', 15000, 'graveyard hopper');
   await evaluate(`document.querySelector('.overlay [data-action=bio]').click()`);
   await waitFor('location.hash.startsWith("#/bio/")', 15000, 'bio route for the dead hopper');
+  await waitFor('document.getElementById("overlay").hidden', 5000, 'graveyard closes on bio navigation');
   await sleep(250);
 }
 const entryHash = await evaluate('location.hash');

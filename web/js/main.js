@@ -177,6 +177,12 @@ function mountVolume() {
 function render() {
   const root = document.getElementById('app');
   if (!root) return;
+  // A refusal belongs to the crossing that caused it. Once a scan has
+  // settled that crossing, do not keep warning about a road that is clear.
+  if (app.frogRefusal && app.w
+      && !(app.w.frogs || []).some((f) => f.state === 'crossing' || f.in_flight)) {
+    app.frogRefusal = null;
+  }
   applyLanding();
   if (app.screen === 'onboard') root.innerHTML = onboarding();
   else if (app.screen === 'lock') root.innerHTML = lockScreen();
@@ -527,7 +533,9 @@ async function ensureFrogRecord(sat, seq) {
   }
   const record = await app.w.backend.frogger(Number(sat)).catch(() => null);
   if (seq !== viewSeq || (app.view !== 'frog' && app.view !== 'bio') || Number(app.frogSat) !== Number(sat)) return;
-  app.frogRecord = record;
+  // A scan-triggered refetch must not blank a public record that is already
+  // on screen just because this one request missed.
+  if (record) app.frogRecord = record;
   render();
 }
 
@@ -639,6 +647,7 @@ function openFrog(sat) {
   // public record. The old await here could navigate after the user had
   // already moved somewhere else.
   app.frogRecord = app.w.frogBySat(n) || null;
+  dismissOverlay();
   navigate('frog');
 }
 
@@ -757,14 +766,18 @@ const handlers = {
     const sat = Number(el.dataset.sat);
     if (!Number.isSafeInteger(sat)) return;
     app.frogSat = sat;
-    app.frogRecord = app.w.frogBySat(sat) || app.frogRecord;
+    app.frogRecord = app.w.frogBySat(sat)
+      || (Number(app.frogRecord?.sat) === sat ? app.frogRecord : null);
+    dismissOverlay();
     navigate('bio');
   },
   detail(el) {
     const sat = Number(el.dataset.sat ?? app.frogSat);
     if (!Number.isSafeInteger(sat)) return;
     app.frogSat = sat;
-    app.frogRecord = app.w.frogBySat(sat) || app.frogRecord;
+    app.frogRecord = app.w.frogBySat(sat)
+      || (Number(app.frogRecord?.sat) === sat ? app.frogRecord : null);
+    dismissOverlay();
     navigate('frog');
   },
   'rule-next'() {
@@ -1473,17 +1486,60 @@ function refreshScanPanel() {
   host.innerHTML = screens.scanPanel(app);
 }
 
+function refreshRecoverySummary() {
+  const host = document.querySelector('[data-recovery-summary]');
+  if (!host || !app.w) return;
+  host.textContent = screens.recoverySummaryText(app.w);
+}
+
+/** Repaint the parts of MINT that a chain scan changes, without rebuilding
+ *  the whole form (or moving focus out of a name the user is typing). */
+function refreshMintLive() {
+  if (!app.w || app.view !== 'mint') return;
+  const live = screens.mintLive(app.w);
+  const button = document.querySelector('[data-mint-button]');
+  if (button) button.disabled = app.busy || !live.coin;
+  const note = document.querySelector('[data-mint-funding]');
+  if (note) note.hidden = !!live.coin;
+  const target = document.querySelector('[data-mint-target]');
+  if (target) target.textContent = live.targetText;
+  const rise = document.querySelector('[data-mint-rise]');
+  if (rise) rise.textContent = live.riseText;
+}
+
+/** The send sheet is a live balance readout, not a signed preview. Update
+ *  its one chain-dependent line without discarding the recipient/amount. */
+function refreshOpenOverlayLive() {
+  if (!app.w) return;
+  const hint = document.querySelector('#overlay [data-send-spendable]');
+  if (hint) {
+    hint.textContent = `Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.`;
+  }
+  // The graveyard is a read-only list. A scan can add a dead Hopper while it
+  // is open, so rebuild that list; signed previews and exports stay frozen.
+  if (document.querySelector('#overlay [data-dead-frogs]')) {
+    openOverlay(screens.deadFrogs(app));
+  }
+}
+
 window.addEventListener('hopper:refresh', () => {
   if (!app.w) return;
-  if (app.busy && app.view !== 'history') return;
-  if (app.view === 'settings') {
+  refreshOpenOverlayLive();
+  const mode = screens.scanRefreshMode(app);
+  if (mode === 'none' || mode === 'defer') return;
+  if (mode === 'settings') {
     // Do not re-render the whole settings form while the user is editing
-    // a URL; the scan window is the only part that changes on a tick.
+    // a URL; the scan and recovery windows are the live parts.
     refreshScanPanel();
+    refreshRecoverySummary();
     return;
   }
-  if (!['wallet', 'pond', 'road', 'history', 'frog', 'leaders'].includes(app.view)) return;
+  if (mode === 'mint') {
+    refreshMintLive();
+    return;
+  }
   render();
+  if (mode === 'data') void ensureViewData(app.view);
 });
 
 

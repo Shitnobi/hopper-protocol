@@ -308,6 +308,22 @@ export function road(app) {
     const sat = Number(c.sat);
     if (!seen.has(sat)) { seen.add(sat); inFlight.push(c); }
   }
+  // A chain scan can rebuild a crossing from the state-address history while
+  // app.road is still the copy fetched when the view opened. Merge the live
+  // frog too, so a restored crossing never disappears until the next indexer
+  // answer arrives.
+  for (const f of w.frogs || []) {
+    if (!f?.in_flight) continue;
+    const sat = Number(f.sat);
+    if (!Number.isSafeInteger(sat) || seen.has(sat)) continue;
+    seen.add(sat);
+    inFlight.push({
+      sat, seed: f.seed, name: f.name, dist: f.dist, gen: f.gen,
+      inFlight: { ...f.in_flight },
+      provisionalDead: f.provisional_dead ?? null,
+      outcomeBlockHash: f.outcome_block_hash ?? null,
+    });
+  }
   const onRoad = new Set(inFlight.map((c) => Number(c.sat)));
   const idle = (w.frogs || []).filter((f) => f.state === 'idle' && !onRoad.has(Number(f.sat)));
   const demo = app.settings.mode === 'demo';
@@ -1167,13 +1183,25 @@ function txRow(app, r) {
 // Mint
 // ---------------------------------------------------------------------------
 
+/** The MINT values that a chain scan can change. Shared with the live
+ *  in-place updater so the form does not need a full re-render. */
+export function mintLive(w) {
+  const tip = Number(w?.tipHeight) || 0;
+  const target = requiredAt(tip + 1);
+  const next = nextIncrement(tip);
+  const coin = (w?._funding?.() || []).find((u) => u.ranges && u.ranges.length) || null;
+  return {
+    tip, target, next, coin,
+    targetText: `${target} hops at H ${sats(tip)}`,
+    riseText: next ? `H ${sats(next[0])} → ${next[1]} hops` : `capped at ${MAX_TARGET}`,
+  };
+}
+
 export function mint(app) {
   const w = app.w;
   const seed = app.mintSeed >>> 0;
-  const tip = w.tipHeight || 0;
-  const target = requiredAt(tip + 1);
-  const next = nextIncrement(tip);
-  const coin = w._funding?.().find((u) => u.ranges && u.ranges.length);
+  const live = mintLive(w);
+  const { coin } = live;
   const traits = deriveTraits(seed);
   const rarity = RARITY_NAMES[traits.rarity];
   const pattern = ['none', 'spots', 'stripes', 'diamond'][traits.pattern] || 'none';
@@ -1192,7 +1220,7 @@ export function mint(app) {
           </label>
           <div class="mint-actions">
             ${logBtn('🎲 Reroll', 'random-seed', { edge: 'dim', cls: '' })}
-            ${logBtn('MINT!', 'preview-mint', { edge: 'accent', cls: '', attrs: `${app.busy || !coin ? 'disabled' : ''}` })}
+            ${logBtn('MINT!', 'preview-mint', { edge: 'accent', cls: '', attrs: `${app.busy || !coin ? 'disabled' : ''} data-mint-button` })}
           </div>
           <div class="hint">Rarity is cosmetic — it never affects the road. Every hop is one of three directions, and the next block decides one for everyone.</div>
         </div>
@@ -1210,15 +1238,15 @@ export function mint(app) {
       <div class="mt14">
         <div style="font-weight:700">The schedule</div>
         <div class="stat-grid">
-          <dt>Next target</dt><dd>${target} hops at H ${sats(tip)}</dd>
-          <dt>Next rise</dt><dd>${next ? `H ${sats(next[0])} → ${next[1]} hops` : `capped at ${MAX_TARGET}`}</dd>
+          <dt>Next target</dt><dd data-mint-target>${live.targetText}</dd>
+          <dt>Next rise</dt><dd data-mint-rise>${live.riseText}</dd>
           <dt>Hop risk</dt><dd>${(hopDeathBps() / 100).toFixed(2)}% — one of three directions</dd>
           <dt>Finality</dt><dd>6 blocks</dd>
           <dt>Params</dt><dd class="tiny wrap">${esc(paramsHashHex())}</dd>
         </div>
       </div>
 
-      ${!coin ? '<div class="notice-bar">⚠ no tracked coin — the mint needs a coin whose ordinal ranges the indexer knows.</div>' : ''}
+      <div class="notice-bar" data-mint-funding ${coin ? 'hidden' : ''}>⚠ no tracked coin — the mint needs a coin whose ordinal ranges the indexer knows.</div>
     </div>`;
 }
 
@@ -1372,7 +1400,8 @@ function verifyLine(f) {
 
 export function bio(app, sat) {
   const w = app.w;
-  const f = w.frogBySat(Number(sat)) || app.frogRecord;
+  const f = w.frogBySat(Number(sat))
+    || (app.frogRecord && Number(app.frogRecord.sat) === Number(sat) ? app.frogRecord : null);
   if (!f) return `${backButton()}<div class="sub mt14">No frog at sat ${esc(sat)}.</div>`;
   const target = targetOf(f, w.tipHeight || 0);
   const events = frogEvents(w, Number(sat));
@@ -1555,6 +1584,21 @@ function scanEta(ts) {
 }
 
 /**
+ * What a completed chain scan should repaint. `defer` means a foreground
+ * action is running; its `run()` finally block will render the final state.
+ * `data` means render now, then refresh the remote rows for that view.
+ */
+export function scanRefreshMode({ screen = 'wallet', view = 'wallet', busy = false } = {}) {
+  if (screen !== 'wallet') return 'none';
+  if (busy && view !== 'history') return 'defer';
+  if (view === 'settings') return 'settings';
+  if (view === 'mint') return 'mint';
+  if (view === 'road' || view === 'leaders' || view === 'frog' || view === 'bio') return 'data';
+  if (view === 'wallet' || view === 'pond' || view === 'history') return 'render';
+  return 'none';
+}
+
+/**
  * The live scan policy, shown in SETTINGS. The watch set is fixed, so the
  * only scan choices are pause/resume and a one-shot rescan of that set.
  */
@@ -1593,16 +1637,22 @@ export function scanPanel(app) {
 // Settings (HOPPER's own controls, in the FROGGER window material)
 // ---------------------------------------------------------------------------
 
+/** Shared by SETTINGS and the live scan refresh, so both name the same
+ *  recovery store without a full form re-render. */
+export function recoverySummaryText(w) {
+  const recovery = typeof w?.recoverySummary === 'function'
+    ? w.recoverySummary()
+    : { count: 0, last_seen_tip: null, updated_at: null };
+  return recovery.count
+    ? `${recovery.count} saved pack${recovery.count === 1 ? '' : 's'} · last seen at tip ${recovery.last_seen_tip == null ? '—' : sats(recovery.last_seen_tip)} · updated ${recovery.updated_at ? new Date(recovery.updated_at).toLocaleString() : '—'}`
+    : 'No packs yet — one is written automatically when a Hopper is staged.';
+}
+
 export function settings(app) {
   const w = app.w;
   const s = app.settings;
   const book = s.addressBook || [];
-  const recovery = typeof w?.recoverySummary === 'function'
-    ? w.recoverySummary()
-    : { count: 0, last_seen_tip: null, updated_at: null };
-  const recoveryLine = recovery.count
-    ? `${recovery.count} saved pack${recovery.count === 1 ? '' : 's'} · last seen at tip ${recovery.last_seen_tip == null ? '—' : sats(recovery.last_seen_tip)} · updated ${recovery.updated_at ? new Date(recovery.updated_at).toLocaleString() : '—'}`
-    : 'No packs yet — one is written automatically when a Hopper is staged.';
+  const recoveryLine = recoverySummaryText(w);
   return `
     ${heading('⚙ Settings')}
     <div class="hint">BUILD ${esc(globalThis.HOPPER_BUILD || 'development')}</div>
@@ -1982,7 +2032,7 @@ export function sendSheet(app) {
     <div class="sub">Ordinary Bitcoin. Never touches a frog card.</div>
     <label class="field"><span>Recipient</span><input type="text" data-input="send-to" placeholder="${esc(app.w.network === 'mainnet' ? 'bc1…' : 'bcrt1… / tb1…')}"></label>
     <label class="field"><span>Amount (sats)</span><input type="number" data-input="send-amount" min="546" value="10000"></label>
-    <div class="hint">Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.</div>
+    <div class="hint" data-send-spendable>Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.</div>
     ${feePicker(app, { input: 'send-fee' })}
     <div class="mt14">${logBtn('PREVIEW TRANSACTION', 'preview-send', { edge: 'accent', cls: 'block' })}</div>`;
 }
@@ -2283,7 +2333,7 @@ export function wordsModal(app) {
 export function deadFrogs(app) {
   const dead = (app.w.frogs || []).filter((f) => f.state === 'dead');
   return `
-    <div class="row"><h2>💀 THE GRAVEYARD</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
+    <div class="row" data-dead-frogs><h2>💀 THE GRAVEYARD</h2><div class="spacer"></div>${logBtn('✕', 'close-overlay', { edge: 'dim', cls: 'icon' })}</div>
     <div class="sub">Dead hoppers are sorted here, off the living pond.</div>
     ${dead.length ? `<div class="pond-grid mt14">${dead.map((f) => `
       <div class="pond-item">

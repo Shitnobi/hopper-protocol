@@ -59,6 +59,89 @@ const demoSettings = screens.settings({ w: demo, settings: demo.settings });
 ok(demoSettings.includes('FAUCET') && demoSettings.includes('MINE 1') && demoSettings.includes('MINE 6')
   && demoSettings.includes('RESET DEMO'), 'demo settings keep the demo chain controls');
 
+// ---- live scan repaint policy -------------------------------------------
+ok(screens.scanRefreshMode({ view: 'wallet' }) === 'render', 'a scan repaints WALLET');
+ok(screens.scanRefreshMode({ view: 'pond' }) === 'render', 'a scan repaints THE POND');
+ok(screens.scanRefreshMode({ view: 'history' }) === 'render', 'a scan repaints HISTORY');
+ok(screens.scanRefreshMode({ view: 'bio' }) === 'data', 'a scan repaints BIO and refreshes its record');
+ok(screens.scanRefreshMode({ view: 'frog' }) === 'data', 'a scan repaints Hopper detail');
+ok(screens.scanRefreshMode({ view: 'road' }) === 'data', 'a scan repaints THE ROAD and its rows');
+ok(screens.scanRefreshMode({ view: 'leaders' }) === 'data', 'a scan repaints the LEADERBOARD');
+ok(screens.scanRefreshMode({ view: 'mint' }) === 'mint', 'a scan updates MINT in place');
+ok(screens.scanRefreshMode({ view: 'settings' }) === 'settings', 'a scan updates only live SETTINGS panels');
+ok(screens.scanRefreshMode({ view: 'wallet', busy: true }) === 'defer',
+  'a foreground action defers the scan repaint until run() finishes');
+ok(screens.scanRefreshMode({ view: 'history', busy: true }) === 'render',
+  'HISTORY still repaints while an action is busy');
+ok(screens.scanRefreshMode({ screen: 'lock', view: 'wallet' }) === 'none',
+  'no wallet repaint happens behind the lock screen');
+
+const recoveryText = screens.recoverySummaryText({
+  recoverySummary: () => ({ count: 1, last_seen_tip: 100, updated_at: '2026-10-31T00:00:00.000Z' }),
+});
+ok(recoveryText.includes('1 saved pack') && recoveryText.includes('tip 100'),
+  'the live recovery line names the saved pack and tip');
+
+// ---- MINT funding comes from a scan, not a route change -----------------
+const mintNoFundApp = {
+  w: { ...demo, tipHeight: GENESIS, _funding: () => [] },
+  settings: demo.settings, mintSeed: 1, previewUri: '', mintName: '', busy: false,
+};
+const mintNoFund = screens.mint(mintNoFundApp);
+ok(mintNoFund.includes('disabled data-mint-button'),
+  'MINT is disabled when the scanned wallet has no range-known coin');
+ok(/data-mint-funding[^>]*>⚠ no tracked coin/.test(mintNoFund),
+  'MINT explains why it cannot sign without a funding coin');
+const mintFundedApp = {
+  ...mintNoFundApp,
+  w: { ...demo, tipHeight: GENESIS, _funding: () => [{ ranges: [[0, 1000]] }] },
+};
+const mintFunded = screens.mint(mintFundedApp);
+ok(!mintFunded.includes('disabled data-mint-button'),
+  'a funding coin discovered by a scan enables MINT');
+ok(/data-mint-funding hidden/.test(mintFunded),
+  'the no-coin notice hides once a funding coin exists');
+ok(!screens.mintLive(mintNoFundApp.w).coin, 'live MINT sees no funding coin');
+ok(!!screens.mintLive(mintFundedApp.w).coin, 'live MINT sees the scanned funding coin');
+ok(screens.mintLive(mintFundedApp.w).targetText.includes(`H ${GENESIS.toLocaleString('en-US')}`),
+  'live MINT names the scanned tip in its schedule');
+
+// ---- a crossing recovered by a chain scan reaches THE ROAD --------------
+const chainCrossFrog = {
+  sat: 9000000002, name: 'Chain Roo', state: 'crossing', seed: 11, gen: 2, dist: 3,
+  in_flight: {
+    txid: 'bb'.repeat(32), height: GENESIS + 19, target_hops: 5,
+    dir: 1, settle_height: GENESIS + 25,
+  },
+  provisional_dead: null, outcome_block_hash: null,
+};
+const chainCrossRoad = screens.road({
+  w: {
+    ...demo,
+    tipHeight: GENESIS + 20,
+    frogs: [chainCrossFrog],
+    _localRoadEntries: () => [],
+    frogBySat(sat) { return Number(sat) === chainCrossFrog.sat ? chainCrossFrog : null; },
+  },
+  settings: demo.settings,
+  road: [],
+});
+ok(chainCrossRoad.includes('Chain Roo') && chainCrossRoad.includes('ON THE ROAD'),
+  'a chain-replayed crossing is painted even when app.road is empty');
+ok(!chainCrossRoad.includes('Choose a direction'),
+  'the chain-replayed crossing leaves the direction picker');
+
+// ---- a stale non-owned record cannot leak into another Bio --------------
+const wrongBio = screens.bio({
+  w: { ...demo, frogBySat: () => null, frogs: [], actions: [], receives: [] },
+  settings: demo.settings,
+  frogRecord: { sat: 1, name: 'WRONG HOPPER' },
+}, 2);
+ok(wrongBio.includes('No frog at sat 2') && !wrongBio.includes('WRONG HOPPER'),
+  'Bio ignores a frogRecord left over from another sat');
+ok(screens.deadFrogs({ w: { frogs: [{ sat: 1, name: 'RIP', seed: 1, state: 'dead' }] } })
+  .includes('data-dead-frogs'), 'the graveyard overlay is marked for live refresh');
+
 const liveRoad = screens.road({ w: live, settings: live.settings, road: [] });
 ok(!liveRoad.includes('data-action="mine"') && !liveRoad.includes('MINE 1'), 'live road has no block-production buttons');
 const demoRoad = screens.road({ w: demo, settings: demo.settings, road: [] });
@@ -78,6 +161,7 @@ const sendHtml = screens.sendSheet(quoteApp);
 ok(sendHtml.includes('PREVIEW TRANSACTION') && !sendHtml.includes('data-action="do-send"'),
   'send offers PREVIEW TRANSACTION, not a direct SEND');
 ok(sendHtml.includes('data-input="send-fee"'), 'send has an editable fee rate');
+ok(sendHtml.includes('data-send-spendable'), 'the send sheet marks its live spendable line');
 ok(['FAST', 'MEDIUM', 'SLOW'].every((x) => sendHtml.includes(`>${x}<`)), 'send shows Fast/Medium/Slow');
 ok(sendHtml.includes('2.72 sat/vB') && sendHtml.includes('1.86 sat/vB') && sendHtml.includes('0.2 sat/vB'),
   'send displays fastestFee, halfHourFee and economyFee');
