@@ -587,3 +587,11 @@ the audit's `MODEL:`/`DECISION:` notes applied. The protocol is now v8
   authority.
 - The BIP84 receive script remains fixed at `…/0/0` in v8 by deliberate
   design; address rotation is a future wallet feature, not a consensus rule.
+
+### Deploy
+
+- Commit `8ab84eb` — “Harden the protocol for v8 and implement the security audit fixes”.
+- Fast-forwarded and pushed `master` and `last_change`.
+- GitHub Pages run `41256158186` completed successfully.
+- Live `hopper-v8-0-0` E2E passed: no console errors, account/recovery/history
+  routes intact, and the stale-build boot reported `hopper-v8-0-0`.
