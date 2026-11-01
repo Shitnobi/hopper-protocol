@@ -53,6 +53,13 @@ snapshot until **RESCAN FROM CHAIN**, and every successful ROAD LOG row said
   “Test Hopper survived”, `console errors: none`, `e2e: ok`.
 - No protocol, wire-version, or consensus change.
 
+### Deployment
+
+- Commit: `f480d0b` — “Fix the scan lag and road-log HOME wording”.
+- Fast-forwarded `master` and `last_change`; Pages run `41269976196` succeeded.
+- Live build `hopper-v8-0-6`; fresh-profile live E2E passed, including the
+  one-hop settle rendering “survived”, with `console errors: none`.
+
 ## 2026-11-01 — v8 regtest E2E found three proof/anchor defects
 
 **Reported:** Full end-to-end run of the v8 consensus patches on regtest: mint, PREPARE, survive/death/HOME, SEND ALL, RBF bump, TRANSFER, recipient recovery, reorg, indexer restart, and the on-chain fold viewer.
