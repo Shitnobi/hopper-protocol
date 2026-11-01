@@ -827,6 +827,10 @@ settle  { frogger_sat, outcome: dead|crossed, dir, wrap }
 burn    { frogger_sat }   # indexer state; wallets SHOULD NOT expose a burn action
 ```
 
+`outcome: crossed` means the Hopper survived that hop, not that it reached
+HOME. HOME is the frog record's `state = home` with `immortal_height = T`
+(§4.4). The road log reads the frog record, not the bare event.
+
 ### 4.7 Reorgs
 
 The indexer keeps a retained window of block headers and undo journals. A
@@ -880,6 +884,26 @@ Discovery comes from the indexer (`/v1/froggers`, `/v1/frogger/{sat}`,
 be spent; an unattributable coin still counts in the balance and is shown as
 unspendable.
 
+**Tip catch-up.** Address scans are gated on the tip `(height, hash)`:
+outside the catch-up window below, an unchanged tip with no wallet
+transaction in flight costs no address queries.
+
+The tip endpoint can publish a block before the address index has that
+block's transactions. After an automatic pass that observes a new tip, the
+wallet therefore MUST run two further full passes at
+`TIP_RECHECK_MS` (about 1.2 s) even though the tip is unchanged. Those passes
+bypass the gate and read the addresses again; only then may the gate skip
+them. Without this grace window, the first pass could record the new tip
+while holding the old UTXO set and the gate would keep the stale view until
+the next block or a forced RESCAN. A manual RESCAN is a forced pass; it does
+not itself create this automatic grace window.
+
+**Scan repaint.** A completed scan is also a UI repaint event. If it lands
+while a foreground action holds the busy overlay, the repaint MUST be queued
+and applied when that action releases the UI, not dropped. Otherwise the
+Road/Pond can stay on the previous snapshot until the next block or a manual
+RESCAN even though the wallet state is current.
+
 A mint reveal is also self-describing: its tapscript witness contains the
 canonical v8 body (or the v7 body for the grandfather), and output 0 pays the wallet's ordinals address. A wallet
 MAY recover an idle mint record from that witness when neither an indexer
@@ -908,6 +932,13 @@ states the rule in one line: the next block picks one direction, and a
 Hopper that picked it dies. A frog's card shows its generation badge
 (`G1`, `G2`, …), its crossing count beside the road mark, and `RIP` before
 the name once it is dead.
+
+Each settled hop gets one road-log row. A crossed row says **survived**;
+it says **came home** only when that settle's
+`immortal_height` is the crossing height for the row (`row.height −
+cross_finality`). A dead row says **died**. If the frog record is absent
+(for example after a transfer out of this wallet), the row is conservative
+and says **survived** rather than claiming HOME.
 
 Settings carries **EXPORT EMERGENCY DESCRIPTORS** (§5.5).
 
@@ -1014,6 +1045,11 @@ These are mandatory before any transaction is signed or broadcast:
 8. **Service bounds.** Public reads are rate-limited (default 300/min per
    caller), diagnostic `/v1/state/root` is not a hot path, and no state lock
    is held across an outbound ord call.
+9. **Scan freshness.** A new automatic tip gets two gate-bypassing catch-up
+   passes (`TIP_RECHECK_MS`, about 1.2 s) so a lagging address index cannot
+   freeze the UTXO view. A completed scan repaints the current view; if a
+   foreground action owns the overlay, the repaint is queued and applied on
+   release, never dropped.
 
 
 ## 6. The standalone indexer
@@ -1170,7 +1206,10 @@ mixed envelope, params mismatch.
    `tip_height` is detected.
 7. **App** — onboarding, keys, addresses, mint, prepare, the three hop
    choices, transfer, history, the generation badge, display of
-   unattributable coins, sound mute/volume persistence.
+   unattributable coins, sound mute/volume persistence; an automatic new
+   tip owes two gate-bypassing catch-up passes, a scan repaint during a busy
+   action is applied when the action releases the UI, and the road log
+   distinguishes **survived** from **came home** using `immortal_height`.
 
 ---
 
