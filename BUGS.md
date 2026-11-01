@@ -38,6 +38,16 @@
   scan 104, ord 50, ui 106, fees 19, preview 119, localmint 40, chainfrog 47,
   history 134, rbf 125; v8 fold sync/parity/boot pass.
 - `cargo test --workspace`: pass.
+- Local headless PWA E2E on `hopper-v8-0-7`: **pass**, `console errors: none`.
+- Live `hopper-v8-0-7` E2E: **pass**, `console errors: none`.
+
+### Deployment
+
+- Code commit: `ad48d6f` — “Fix legacy emergency descriptor export and
+  verify the state tree”.
+- Whitepaper/spec commit: `34e8cda` — “Import the audited v8 whitepaper and
+  align the spec”.
+- Pages run `41282981315` succeeded; live build `hopper-v8-0-7`.
 
 ## 2026-11-01 — UI scan lag and the ROAD LOG's premature HOME
 
