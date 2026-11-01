@@ -96,7 +96,7 @@ function rawTx(dir) {
   return bytesToHex(tx);
 }
 
-function makeEnv({ dir, hash, tip }) {
+function makeEnv({ dir, hash, tip, emptyRecursive = false, missingTx = false }) {
   const content = body(dir);
   const routes = {
     '/r/blockheight': tip,
@@ -106,8 +106,11 @@ function makeEnv({ dir, hash, tip }) {
       height: T, sequence_number: 2, satpoint: `${ID.slice(0, 64)}:0:0`,
       sat: SAT, content_type: 'application/octet-stream',
     },
-    [`/r/content/${CHILD}`]: content,
-    [`/r/tx/${CHILD.slice(0, 64)}`]: { text: rawTx(dir) },
+    [`/r/content/${CHILD}`]: emptyRecursive ? { empty: true } : content,
+    // ord 0.22.2 serves cursed reinscriptions only on the canonical route.
+    [`/content/${CHILD}`]: content,
+    // ord 0.22.2 answers application/json: a quoted hex string, not bare hex.
+    ...(missingTx ? {} : { [`/r/tx/${CHILD.slice(0, 64)}`]: { text: JSON.stringify(rawTx(dir)) } }),
     [`/r/blockhash/${T + 1}`]: hash,
   };
   const window = { crypto: webcrypto, __hopperV8Boot: false };
@@ -135,6 +138,9 @@ function makeEnv({ dir, hash, tip }) {
       if (value instanceof Uint8Array) {
         return { ok: true, arrayBuffer: async () => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) };
       }
+      if (value && value.empty) {
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
       if (value && value.text != null) return { ok: true, text: async () => value.text };
       return { ok: true, json: async () => value };
     },
@@ -144,8 +150,8 @@ function makeEnv({ dir, hash, tip }) {
   return ctx;
 }
 
-async function run(label, { dir, hash, tip }) {
-  const ctx = makeEnv({ dir, hash, tip });
+async function run(label, { dir, hash, tip, emptyRecursive = false, missingTx = false }) {
+  const ctx = makeEnv({ dir, hash, tip, emptyRecursive, missingTx });
   vm.runInContext(
     `V8 = { sat: ${SAT}, genHint: 1, name: "Hopkinson", p: ${JSON.stringify(PARAMS)} };`,
     ctx,
@@ -166,6 +172,28 @@ if (dead.gen !== 'G1') throw new Error(`generation badge wrong: ${dead.gen}`);
 const alive = await run('hop 1, block wraps 2', { dir: 1, hash: DISPLAY_HASH_ALIVE, tip: T + 6 });
 if (alive.state !== 'idle') throw new Error(`another direction must survive (got ${alive.state})`);
 if (!alive.band.startsWith('Hopkinson 🛣 1')) throw new Error(`live band wrong: ${alive.band}`);
+
+// ord 0.22.2 returns 200 + an empty body on /r/content for a cursed
+// reinscription. The canonical /content fallback must still prove the
+// crossing; otherwise every real child renders "unverified".
+const emptyRecursive = await run('hop 1, empty /r/content', {
+  dir: 1, hash: DISPLAY_HASH_ALIVE, tip: T + 6, emptyRecursive: true,
+});
+if (emptyRecursive.state !== 'idle') {
+  throw new Error(`empty /r/content must fall back to /content (got ${emptyRecursive.state})`);
+}
+if (!emptyRecursive.band.startsWith('Hopkinson 🛣 1')) {
+  throw new Error(`empty /r/content band wrong: ${emptyRecursive.band}`);
+}
+
+// No raw transaction = no proof. The fold must fail closed, not count
+// the crossing or print a false HOME.
+const noProof = await run('hop 1, missing /r/tx', {
+  dir: 1, hash: DISPLAY_HASH_ALIVE, tip: T + 6, missingTx: true,
+});
+if (noProof.state !== 'unverified') {
+  throw new Error(`missing /r/tx must be unverified (got ${noProof.state})`);
+}
 
 const pending = await run('hop 1, tip T+5', { dir: 1, hash: DISPLAY_HASH_ALIVE, tip: T + 5 });
 if (pending.state !== 'crossing') throw new Error(`before finality the Hopper is crossing (got ${pending.state})`);

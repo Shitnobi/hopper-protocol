@@ -313,8 +313,14 @@ function getText(url) {
 function no() { return false; }
 
 function verifyChildProof(txid, body, dir) {
-  return getText("/r/tx/" + txid).then(function (hex) {
-    var tx = parseTx(hex.trim());
+  return getText("/r/tx/" + txid).then(function (raw) {
+    // ord's recursive /r/tx answers application/json, i.e. a QUOTED hex
+    // string. Older builds returned bare hex, so accept both.
+    var hex = raw.trim();
+    if (hex.charAt(0) === '"') {
+      try { hex = JSON.parse(hex); } catch (e) { return no("tx json"); }
+    }
+    var tx = parseTx(hex);
     if (tx.version !== 2 || tx.locktime !== 0) return no("version/locktime");
     if (!tx.inputs.length || !tx.outputs.length || tx.outputs[0].value <= 0) return no("io");
     var out0script = tx.outputs[0].script;
@@ -387,13 +393,21 @@ function getJson(url) {
 
 /* Cursed inscriptions (every first state inscription is one: it is a
  * reinscription) are NOT served under /r/ by ord 0.22.2 — the canonical
- * /content path is. Try the recursive endpoint first and fall back. */
+ * /content path is. ord 0.22.2 answers the recursive route with 200 and an
+ * EMPTY body for these, not 404, so an empty body must also fall back.
+ * Without this the fold sees a zero-length child and renders "unverified"
+ * forever. */
 function contentBytes(id) {
-  return fetch("/r/content/" + id, { credentials: "omit" }).then(function (r) {
-    if (r.ok) return r.arrayBuffer();
+  function canonical() {
     return fetch("/content/" + id, { credentials: "omit" }).then(function (r2) {
       if (!r2.ok) throw new Error("content " + r2.status);
       return r2.arrayBuffer();
+    });
+  }
+  return fetch("/r/content/" + id, { credentials: "omit" }).then(function (r) {
+    if (!r.ok) return canonical();
+    return r.arrayBuffer().then(function (body) {
+      return body.byteLength ? body : canonical();
     });
   });
 }

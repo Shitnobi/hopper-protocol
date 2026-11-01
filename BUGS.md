@@ -1,5 +1,48 @@
 # HOPPER bug log
 
+## 2026-11-01 — v8 regtest E2E found three proof/anchor defects
+
+**Reported:** Full end-to-end run of the v8 consensus patches on regtest: mint, PREPARE, survive/death/HOME, SEND ALL, RBF bump, TRANSFER, recipient recovery, reorg, indexer restart, and the on-chain fold viewer.
+
+**Build:** fixed in `hopper-v8-0-5`.
+
+### Root causes
+
+1. **The v8 fold fetched no child body from ord 0.22.2.** `/r/content/{id}` answers `200` with an **empty body** for cursed reinscriptions, not `404`. `contentBytes()` only fell back to `/content` on a non-OK response, so every state child parsed as zero bytes and the card stayed `unverified`.
+2. **The fold treated `/r/tx/{txid}` as bare hex.** ord serves that endpoint as `application/json`, i.e. a quoted JSON string (`"0200…"`). `parseTx` read the leading quote as hex, produced `version: 8192` with zero inputs, and every proof check failed. The unit fixture had supplied bare hex, hiding the mismatch.
+3. **The wallet sorted ordinal ranges instead of preserving FIFO order.** `anchorOffsetOf()` and `assertAnchorFirst()` sorted ranges by start sat. When a Hopper sat (787B-era) shared a state output with a numerically lower coinbase sat (5B-era), the valid anchor was reported at a nonzero offset and PREPARE/HOP refused it as “not the first sat of the coin”. Range order from ord/indexer is the output's FIFO order and is load-bearing.
+
+### Fix
+
+- `rust/crates/hopper-core/src/live_v8.js`
+  - `contentBytes()` now falls back to `/content/{id}` when the recursive body is empty as well as on a non-OK response.
+  - `verifyChildProof()` accepts both bare hex and ord's quoted JSON-string response. A missing/unparseable raw tx still fails closed (`unverified`).
+- `web/js/core/fold_source.js`
+  - regenerated with `web/tools/sync-fold.mjs`.
+- `web/js/wallet/actions.js`
+  - `anchorOffsetOf()` and `assertAnchorFirst()` preserve FIFO range order.
+- Tests
+  - `v7_doc_boot.mjs`: empty `/r/content`, quoted `/r/tx`, and missing `/r/tx` (must be `unverified`).
+  - `preview.test.mjs`: FIFO range-order regression for both anchor helpers.
+  - Golden v8 body digests and `web/tests/rust-vectors.json` regenerated.
+- `web/sw.js`, `web/js/build-guard.js`: `hopper-v8-0-5`.
+
+### Verification
+
+- Full `npm test`: core 142, game ok, emergency 103, params 12, media 48, scan 98, ord 50, ui 104, fees 19, preview **119**, localmint 40, chainfrog 47, history 134, rbf 125; v8 fold sync/parity/boot pass.
+- `cargo test --workspace` and `cargo test --workspace --features redb`: pass.
+- `indexer-e2e` against the current binary at activation height `974034`: pass.
+- Real regtest: five v8 mint/hop journeys, HOME, death, reorg rollback, snapshot restart, SEND ALL (state excluded), RBF, TRANSFER, recipient PREPARE/CROSS, and the **on-chain v8 fold viewer rendered `Fold Valid 🛣 5 HOME`** with no console errors.
+- `SEND ALL` on chain: one output, recipient `total − actual fee`; the home Hopper state output was not spent.
+- The fold now reports `unverified` when `/r/tx` is unavailable instead of claiming HOME.
+
+### Residual observations
+
+- The automatic chain scan sometimes left the Road/Pond on the previous snapshot until **RESCAN FROM CHAIN**; the test harness forced a rescan after each mined block. This is a pre-existing UI refresh delay, not a consensus failure.
+- The ROAD LOG still labels every non-dead settlement “came home”; it should say “survived” unless `dist >= target`.
+- The real regtest chain was at height 227, below the frozen `974034` activation. Enforced v8 mint validation was exercised through the indexer admin seam, which starts its first block at `974034`; the on-chain runs exercised v8 crossings, which are not height-gated.
+- The grandfathered v7 sat was not reproducible on regtest; it is covered by the Rust/JS golden and params tests.
+
 ## 2026-10-31 — iOS 15 Safari: music on, volume 55%, no sound
 
 **Reported:** On Safari for iOS 15 everything worked except the soundtrack. SOUND was ON and VOLUME read 55%, but no music played.

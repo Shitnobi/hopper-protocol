@@ -179,7 +179,10 @@ export function assertAnchorFirst(input, sat, label = 'transaction') {
   if (!input || !Array.isArray(input.ranges) || !input.ranges.length) {
     throw new Error(`${label}: the Hopper coin has no exact ordinal ranges`);
   }
-  const first = [...input.ranges].sort((a, b) => a[0] - b[0])[0][0];
+  // The first sat of the output is the start of the first FIFO range.
+  // Sorting by start would reject a valid anchor when a later range is
+  // numerically lower (mixed coinbase and later-era sats).
+  const first = input.ranges[0][0];
   if (Number(first) !== Number(sat)) {
     throw new Error(`${label}: the Hopper sat is not the first sat of the coin; move it to its own output first`);
   }
@@ -213,7 +216,11 @@ export function anchorSatOf(utxo) {
 // frog at offset 0; reject it before broadcasting an unspendable card.
 export function anchorOffsetOf(utxo, sat) {
   if (!utxo || !utxo.ranges || !utxo.ranges.length) return null;
-  const ranges = [...utxo.ranges].sort((a, b) => a[0] - b[0]);
+  // Range order is the output's FIFO order, not sat order. Sorting here
+  // would report a nonzero offset when the first input's sat is not the
+  // numerically lowest range in the coin (e.g. a 787B-sat Hopper funded
+  // alongside a 5B-sat coinbase coin).
+  const ranges = utxo.ranges;
   let offset = 0;
   const target = Number(sat);
   for (const [start, end] of ranges) {

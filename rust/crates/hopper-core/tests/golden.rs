@@ -346,21 +346,21 @@ fn golden_v7_mint_body() {
             1_000_000_000_000,
             "Hopkinson",
             1,
-            "5424a68c2b7c8fd4b4f5115161518cced6a8eb233c9c45a10626cf96969c7d41",
+            "6ed060bc3186993e284e6655dcd082f4187ddde5b37051d8028a4e03cdea7ecf",
         ),
         (
             0x0000_5EED,
             2_099_999_999_999,
             "",
             1,
-            "cb3fb123c04d7464d4e4fd67fca9929a51db0b88d29bc4a6cce9ec472feb1d7d",
+            "1a3ba825615d0168af07cef7fc5ccf42aed819ef6e67eb868ac099fbc10b0aa5",
         ),
         (
             1,
             2,
             "Ribbit",
             2,
-            "702b502a841c21e4c50b1fa55f89050398388d9a4bee4ff500fd85d059ad6fb6",
+            "2823324eaf83578f38a850d84022ef1ded3e753ff2183c0a3ab46c432e2c1bbf",
         ),
     ];
     for (seed, sat, name, gen_hint, want) in cases {

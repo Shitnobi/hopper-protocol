@@ -2,7 +2,7 @@
 // record an action, or touch the mempool. Approval broadcasts exactly once.
 import assert from 'node:assert/strict';
 import { vsize } from '../js/wallet/tx.js';
-import { buildSend, buildSendAll, isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
+import { anchorOffsetOf, assertAnchorFirst, buildSend, buildSendAll, isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
 
 const store = new Map();
 globalThis.localStorage = {
@@ -276,6 +276,15 @@ function counter(w) {
     status: { confirmed: false },
   };
   eq('default settings allow unconfirmed spending', DEFAULT_SETTINGS.spendUnconfirmed, true);
+  // FIFO order of ranges is load-bearing: the first input's sat is at
+  // offset 0 even when a later range starts at a numerically smaller sat.
+  const fifoRanges = [[787_496_009_717, 787_496_010_492], [5_013_174_268, 5_013_198_491]];
+  eq('anchor offset keeps FIFO range order', anchorOffsetOf({ ranges: fifoRanges }, 787_496_009_717), 0);
+  eq('anchor offset counts earlier ranges in FIFO order', anchorOffsetOf({ ranges: fifoRanges }, 5_013_174_268), 776);
+  assertAnchorFirst({ ranges: fifoRanges }, 787_496_009_717, 'fifo test');
+  try { assertAnchorFirst({ ranges: fifoRanges }, 5_013_174_268, 'fifo test'); throw new Error('accepted non-first sat'); }
+  catch (e) { if (!/not the first/.test(e.message)) throw e; }
+
   eq('a non-exact unconfirmed coin is not strict funding', isFundingUtxo(unknown), false);
   eq('the SEND opt-in still refuses unknown ranges', isFundingUtxo(unknown, { allowUnconfirmed: true }), false);
   eq('strict selection refuses the unknown coin', (() => {

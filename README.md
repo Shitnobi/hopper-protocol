@@ -553,7 +553,7 @@ node tests/chainfrog.test.mjs   # 47 state-address replay checks: TRAVEL, HOP, s
 node tests/history.test.mjs     # 134 checks: deposits, copy targets, causal journey, mempool HOP order, change labels
 node tests/ui.test.mjs          # 104 checks: pond, settled/in-flight road cards, no demo controls in live mode
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
-node tests/preview.test.mjs     # 117 send/send-all/transfer/mint preview and stale-preview checks
+node tests/preview.test.mjs     # 119 send/send-all/transfer/mint preview and stale-preview checks
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```
