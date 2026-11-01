@@ -1,0 +1,201 @@
+\section{Parameters and the road}\label{sec:parameters}
+
+\subsection{Constants}
+
+The protocol is parameterized by a small, compiled-in set. \code{genesis}
+selects the deployment's schedule; every other schedule value is frozen. The
+grandfathered sat is a separate compiled exception, not a schedule parameter.
+The reference deployment uses the values in Table~\ref{tab:constants}.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Protocol constants for wire version \code{0x08}.}
+\label{tab:constants}
+\begin{tabularx}{\linewidth}{@{}p{0.27\linewidth}p{0.23\linewidth}X@{}}
+\toprule
+\textbf{Name} & \textbf{Value} & \textbf{Meaning} \\
+\midrule
+\code{wire version} & \code{0x08} & The current wire version \\
+\code{legacy wire version} & \code{0x07} & Grandfathered sat only \\
+\code{mint magic} & \code{"FRG"} & Mint envelope prefix \\
+\code{mint action} & \code{0x01} & Mint action byte \\
+\code{state magic} & \code{"FRG8CROSS"} & 9-byte crossing body prefix \\
+\code{legacy state magic} & \code{"FRG7CROSS"} & Grandfathered sat only \\
+\code{state body length} & 55 bytes & Fixed crossing body size \\
+\code{grandfathered sat} & \footnotesize\code{1,965,983,893,977,665} & One v7 Hopper; \code{0} = none \\
+\code{activation height} & 974{,}034 & Frozen inscription cutover \\
+\code{direction encoding} & \code{0,1,2} & Left, straight, right \\
+\code{wrap function} & \footnotesize\code{u32LE(H)[0..4] mod 3} & The block's one direction \\
+\code{crossing leaves} & 3 + 1 send & One leaf per direction, plus send \\
+\code{cross_finality} & 6 blocks & Settlement delay after $T$ \\
+\code{card_value} & 25{,}000 sats & Committed card value \\
+\code{anchor output value} & 1{,}000 sats & Value of a frog-bearing output \\
+\code{dust (P2WPKH)} & 546 sats & Dust threshold for change \\
+\code{dust (P2TR)} & 330 sats & Dust threshold for Taproot change \\
+\code{NUMS internal key} & \multicolumn{2}{@{}p{0.66\linewidth}@{}}{\footnotesize\code{50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0}} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Generations and the road's difficulty}
+
+The required number of crossings runs in generations. A generation starts at
+$b$ crossings, adds one every $\mathit{gi}$ blocks, reaches the ceiling $c$,
+holds there for $h_{\rm hold}$ blocks, and then resets to $b$. The values are
+\begin{equation}
+b=5,\qquad \mathit{gi}=144,\qquad c=25,\qquad h_{\rm hold}=3{,}600,
+\end{equation}
+so the generation length is
+\begin{equation}\label{eq:genlen}
+L=(c-b)\mathit{gi}+h_{\rm hold}=(25-5)\cdot144+3{,}600=6{,}480.
+\end{equation}
+Generation $k$ (1-based) starts at
+\begin{equation}
+S(k)=G+(k-1)L,
+\end{equation}
+and owns the half-open interval $[S(k),S(k+1))$. Its number at height $h$ is
+\begin{equation}\label{eq:generation}
+\gamma(h)=
+\begin{cases}
+1, & h<G,\\[2pt]
+1+\left\lfloor\dfrac{h-G}{L}\right\rfloor, & h\ge G,
+\end{cases}
+\end{equation}
+and the requirement is
+\begin{equation}\label{eq:required}
+r(h)=
+\begin{cases}
+b, & h<G,\\[2pt]
+\min\!\left(b+\left\lfloor\dfrac{h-S(\gamma(h))}{\mathit{gi}}\right\rfloor,\;c\right), & h\ge G.
+\end{cases}
+\end{equation}
+
+A generation therefore starts at five required crossings, adds one every 144
+blocks, reaches twenty-five at $S(k)+2{,}880$, holds twenty-five for 3{,}600
+blocks, and restarts at five. The indexer rejects a published parameter block
+whose \code{generation_len} is not
+$(c-b)\mathit{gi}+h_{\rm hold}$.
+
+The function is a \emph{sawtooth}, not monotonic. The reset at a generation
+boundary is deliberate and load-bearing; it must not be ``smoothed''. The
+target used by a crossing is $r(T)$, where $T$ is the crossing's confirmation
+height. It is frozen when the crossing confirms and does not follow a later
+reset.
+
+A Hopper's \emph{generation} is the generation of its mint confirmation
+height, $\mathit{gen}=\gamma(\mathit{mint\_height})$. It is immutable for the
+frog's life and is what the art renders as \code{G1}, \code{G2}, and so on. A
+frog born in G1 can still hop in G3; only its label is fixed, never its
+target.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.97\linewidth, height=6.2cm,
+  xmin=0, xmax=12960, ymin=0, ymax=27,
+  xlabel={Blocks after genesis}, ylabel={Required crossings},
+  xtick={0,2160,4320,6480,8640,10800,12960},
+  xticklabels={0,{2{,}160},{4{,}320},{6{,}480},{8{,}640},{10{,}800},{12{,}960}},
+  scaled x ticks=false,
+  ytick={0,5,10,15,20,25},
+  grid=major,
+  grid style={draw=deepgreen!12},
+  axis lines=left,
+  axis line style={draw=deepgreen!55},
+  tick style={draw=deepgreen!55},
+  label style={font=\small\sffamily, color=ink},
+  tick label style={font=\scriptsize\sffamily, color=muted},
+  legend style={draw=none, fill=none, font=\scriptsize\sffamily}
+]
+\addplot[deepgreen, line width=1.2pt] table[x=rel,y=req,col sep=comma]{figures/generation.csv};
+\addplot[only marks, mark=*, mark size=2.2pt, color=accent] coordinates {
+  (0,5) (2880,25) (6480,5) (9360,25) (12960,5)
+};
+\node[anchor=south west, font=\scriptsize\sffamily, color=midgreen]
+  at (axis cs:2940,25.4) {$+2{,}880$};
+\node[anchor=north west, font=\scriptsize\sffamily, color=midgreen]
+  at (axis cs:6540,4.6) {reset};
+\end{axis}
+\end{tikzpicture}
+\caption{Two generations of the schedule. Each climbs from five to
+twenty-five over 2{,}880 blocks, holds the ceiling for 3{,}600 blocks, then
+resets. The sawtooth is intentional.}
+\label{fig:generation}
+\end{figure}
+
+\subsection{The road's wrap}
+
+There is no per-Hopper death table and no per-Hopper randomness. Each block
+has exactly one direction, and every crossing that confirmed in the previous
+block is judged against it:
+\begin{equation}\label{eq:wrap}
+w(B)=\LE_{32}\!\left(H_B^{\rm int}[0..4]\right)\bmod 3,
+\qquad
+\text{dead}\iff \mathit{dir}=w(T+1).
+\end{equation}
+Here $H_B^{\rm int}$ is the 32-byte block hash in internal byte order --- the
+reverse of the hex an explorer or ord returns --- and $\LE_{32}$ reads its
+first four bytes as a little-endian \code{u32}. $\mathit{dir}$ is the
+direction the player chose, carried in the crossing body
+(Section~\ref{sec:inscriptions}). Direction $0$ is left, $1$ straight, $2$
+right.
+
+Normative consequences:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=0.3em]
+  \item The wrap is \textbf{global}. Every Hopper whose crossing confirmed in
+        block $T$ is judged against the same $w(T+1)$. If the block wraps
+        right, every frog in that block that hopped right dies and every
+        other frog in that block survives.
+  \item The wrap is a function of the block hash alone --- not of the sat, the
+        owner, the name, the target or the number of frogs in the block ---
+        so an ordinary player cannot choose or predict its own outcome. A
+        block producer can influence the candidate hash or withhold a block;
+        that is miner influence, not player agency.
+  \item Since $2^{32}=3\cdot1{,}431{,}655{,}765+1$, the modulo is biased by
+        one part in $2^{32}$ toward left. The bias is accepted. An
+        implementation must use this exact integer; it must not substitute a
+        wider word, a rejection scheme, or a hash of the hash.
+\end{itemize}
+
+\subsection{Parameter commitment}
+
+The parameters are committed to as bytes, so two nodes with different
+schedules cannot share a snapshot or a state root. The fields, in order, are
+\code{genesis}, \code{base}, \code{growth_interval}, \code{ceiling},
+\code{hold}, \code{generation_len}, \code{cross_finality} and
+\code{card_value}. The canonical encoding is the 36-byte concatenation
+\begin{equation}\label{eq:canon}
+\begin{aligned}
+\operatorname{canon}(P)={}&
+\LE_{32}(G)\,\|\,\LE_{32}(b)\,\|\,\LE_{32}(\mathit{gi})\,\|\,
+\LE_{32}(c)\\
+&{}\|\,\LE_{32}(h_{\rm hold})\,\|\,\LE_{32}(L)\,\|\,
+\LE_{32}(6)\,\|\,\LE_{64}(25{,}000),
+\end{aligned}
+\end{equation}
+and the parameter hash is
+\begin{equation}\label{eq:paramhash}
+H_{\rm params}=\SHA\!\left(\operatorname{canon}(P)\right).
+\end{equation}
+For the reference deployment,
+\begin{center}
+\code{d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f}.
+\end{center}
+A wallet refuses to mint or hop when the indexer's published $H_{\rm params}$
+differs from its own. It also refuses an indexer that does not answer the
+parameter gate, or whose \code{network} does not match the wallet's network.
+Missing identity is not permission to sign. ord remains the canonical source
+for sat ranges and inscription validity; the HOPPER indexer is for discovery
+and the leaderboard, never for overriding ord. A snapshot whose stored hash
+differs is a hard error, never a migration.
+
+\subsection{Outcome timing}
+
+$w(T+1)$ is learned when block $T+1$ is mined; the outcome is applied at
+$T+\kappa=T+6$. Nothing about a Hopper's state changes in between, and a
+reorg that replaces $T+1$ replaces the wrap. The wrap is recorded once per
+block and applied to every crossing in the previous block, so the game is
+decided by the chain at block granularity, not by a per-frog draw.

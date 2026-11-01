@@ -1,0 +1,51 @@
+\section{The generation schedule}\label{app:schedule}
+
+The schedule is normative and is reproduced here so the paper is
+self-contained. A generation runs for
+$L=(25-5)\cdot144+3{,}600=6{,}480$ blocks.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Milestones inside every generation $k$, at offset
+$d$ from $S(k)=G+(k-1)L$.}
+\label{tab:generation-milestones}
+\begin{tabular}{@{}rrl@{}}
+\toprule
+\textbf{Offset $d$} & \textbf{Required $r(S(k)+d)$} & \textbf{Phase} \\
+\midrule
+0                    & 5  & generation start \\
+143                  & 5  & last block at the base \\
+144                  & 6  & first growth step \\
+2{,}879              & 24 & last block below the ceiling \\
+2{,}880              & 25 & ceiling reached \\
+6{,}479              & 25 & last block of the generation \\
+6{,}480 (next $k$)   & 5  & reset to the base \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\small
+\caption{The first generations of the reference deployment.}
+\label{tab:generations}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+\textbf{Generation $k$} & \textbf{Start $S(k)$} & \textbf{End $S(k+1)-1$} &
+\textbf{Peak at $S(k)+2{,}880$} \\
+\midrule
+G1 & 974{,}034 & 980{,}513 & 976{,}914 \\
+G2 & 980{,}514 & 986{,}993 & 983{,}394 \\
+G3 & 986{,}994 & 993{,}473 & 989{,}874 \\
+G4 & 993{,}474 & 999{,}953 & 996{,}354 \\
+G5 & 999{,}954 & 1{,}006{,}433 & 1{,}002{,}834 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+A frog's generation label is fixed at mint: a frog minted in G1 is
+\code{G1} forever, even if it hops during G3. The target of a hop is
+$r(T)$ at the hop's confirmation height and is frozen there; a reset while
+the hop is in flight does not change the verdict it will be judged against.

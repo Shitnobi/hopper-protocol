@@ -1,0 +1,144 @@
+\section{Model and notation}\label{sec:model}
+
+\subsection{Bitcoin, sats and ordinal ranges}
+
+A Bitcoin transaction consumes previous outputs and creates new ones. Each
+output has a value in satoshis. Ordinal theory assigns the sats of the inputs
+to the outputs in order, so an output can be described by a list of half-open
+intervals $[a,b)$ of ordinal numbers. A coin's \emph{first sat} is the first
+sat in its first interval. Transfers preserve this order: sats are spent
+first-in-first-out, and a later output cannot jump ahead of an earlier one.
+
+Two properties follow and are used throughout the protocol.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.2em]
+  \item A frog's anchor sat is the first sat of the output that carries it.
+        In a mint, that is the first sat of the commit output; after a spend,
+        it must be at offset zero of output zero.
+  \item A coin that the indexer has never seen move has no true ordinal
+        assignment. It receives a deterministic \emph{shadow} range so that
+        FIFO placement remains well-defined, but a shadow range is not
+        ownership. A mint whose anchor sat is a shadow is rejected as
+        \code{MintAnchorUntracked}.
+\end{enumerate}
+
+The protocol never relies on a floating-point sat number or on a database
+identifier. The sat is the identity, and the satpoint (transaction id and
+output index) is its current location.
+
+\subsection{Taproot and tapscript}
+
+A Taproot output commits to an internal key $P$ and a Merkle root of a script
+tree. The output key is $Q = P + tG$ for a tweak $t$ derived from the tree.
+A key-path spend signs with the tweaked key; a script-path spend reveals one
+leaf, the leaf script, and a control block that proves the leaf's position in
+the tree. BIP-341 \cite{bip341} defines the output key and control block; BIP-342
+\cite{bip342} defines the tapscript signature hash used by
+\code{OP_CHECKSIG}.
+
+HOPPER uses the script path exclusively. The internal key is the fixed
+nothing-up-my-sleeve point \code{NUMS_XONLY}, for which no discrete log is
+known. There is no key-path spend, ever. The tree has four leaves at depth
+two: three \emph{cross} leaves, one per direction, each checking the owner's
+signature and carrying the state envelope for that direction, and one
+\emph{send} leaf that checks only the owner's signature. The exact scripts
+and their branch structure are given in Section~\ref{sec:custody}.
+
+\subsection{The ord envelope}
+
+An ord inscription is a tapleaf containing an envelope of the form
+\begin{center}
+\code{OP_FALSE OP_IF "ord" (tag, value)... 0x00 (body chunks) OP_ENDIF}.
+\end{center}
+The protocol identifier is the three-byte push \code{"ord"}. Tag \code{1} is
+the content type, tag \code{3} is a parent, and the empty push \code{0x00}
+marks the start of the body. Body chunks are limited to 520 bytes and are
+concatenated in order. The indexer's parser mirrors ord's decoder, including
+ord's minimal-index rule for parent tags.
+
+HOPPER writes only the fields it needs: a content type and a body, plus one
+parent tag on a crossing. It never writes a pointer tag. A pointer would move
+the inscription off the anchor sat, which would break the identity between
+the frog and its state; a mint inscription carrying a pointer is rejected.
+
+\subsection{Trust model}
+
+The protocol distinguishes four roles.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{What each component is trusted to do.}
+\label{tab:trust}
+\begin{tabularx}{\linewidth}{@{}p{0.19\linewidth}X X@{}}
+\toprule
+\textbf{Component} & \textbf{Trusted for} & \textbf{Not trusted for} \\
+\midrule
+Bitcoin consensus & Transaction validity, ordering, block hashes, finality &
+Application-level meaning \\
+ord viewer & Parsing ord envelopes and serving \code{/r/} content &
+Knowing HOPPER's rules \\
+HOPPER indexer & Convenience: fast discovery, API, event log &
+Custody, signatures, art truth, the outcome of a future block \\
+Wallet & Key custody, transaction construction, user intent &
+Chain history it has not checked \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The art document is deliberately independent of all four. It embeds the fold
+source and reads only relative endpoints on the viewer's own ord node. The
+static band states only what the mint transaction can prove: the name, a
+generation hint, and an unknown crossing count. It never prints a number.
+The live fold may render a count only after it has verified every body-valid
+child's raw transaction; a missing or false proof yields the
+\emph{unverified} band, which prints no count and never claims \code{HOME}.
+Only a settled frog gets \code{RIP}. If the viewer refuses every fetch or
+runs with JavaScript disabled, the static band stays and does not assert that
+the frog is alive. The indexer can be unavailable without changing what a
+frog is.
+
+The adversary is assumed to control network delivery, to be able to censor or
+reorder transactions before confirmation, and to attempt to spend outputs it
+does not own. It is not assumed to break secp256k1, SHA-256, BIP-340
+signatures or Bitcoin consensus. Reorganizations are treated as a normal
+chain event, not as an attack.
+
+\subsection{Notation}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Notation used in the remainder of the paper.}
+\label{tab:notation}
+\begin{tabularx}{\linewidth}{@{}p{0.20\linewidth}X@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$G$ & Generation genesis height; the only deployment value \\
+$\mathrm{sat}_g$ & The one grandfathered v7 sat, or $0$ when none \\
+$b$ & Required crossings on the first block of a generation \\
+$\mathit{gi}$ & Blocks per extra required crossing \\
+$c$ & Ceiling, the hardest the road ever gets \\
+$h_{\rm hold}$ & Blocks spent at the ceiling before the reset \\
+$L$ & Generation length, $(c-b)\mathit{gi}+h_{\rm hold}$ \\
+$S(k)$ & First height of generation $k$ (1-based) \\
+$\gamma(h)$ & Generation number at height $h$ \\
+$r(h)$ & Required crossings at height $h$ \\
+$w(B)$ & The direction block $B$ wraps to, in $\{0,1,2\}$ \\
+$T$ & Confirmation height of a crossing \\
+$B$ & Outcome block, $B=T+1$ \\
+$H_B$ & 32-byte hash of block $B$, internal byte order \\
+$\kappa$ & Crossing finality, six blocks \\
+$v$ & Wire version: \code{0x08}, or \code{0x07} for the grandfather \\
+$\mathrm{sat}$ & The frog's ordinal number (a \code{u64}) \\
+$\mathit{dir}$ & Chosen direction: $0$ left, $1$ straight, $2$ right \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\noindent
+All integer encodings in this paper are little-endian unless a field is
+explicitly described as display-order hex. Transaction ids and block hashes
+are shown to humans in reversed (display) order, as explorers do; the wrap
+uses the internal order.

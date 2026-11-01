@@ -1,0 +1,220 @@
+% ---------------------------------------------------------------------------
+% HOPPER v8 — Technical Whitepaper
+% Build: tectonic hopper-whitepaper.tex
+% ---------------------------------------------------------------------------
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[a4paper,top=24mm,bottom=26mm,left=24mm,right=24mm,headheight=21pt]{geometry}
+
+\usepackage{fontspec}
+\setmainfont{Liberation Serif}
+\setsansfont{Liberation Sans}
+\setmonofont{DejaVu Sans Mono}[Scale=0.78]
+\usepackage{newtxmath}
+\usepackage{amsmath}
+
+\usepackage{microtype}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,shapes.geometric}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\definecolor{ink}{HTML}{1B2A1F}
+\definecolor{deepgreen}{HTML}{1E3A28}
+\definecolor{midgreen}{HTML}{3F6B4A}
+\definecolor{accent}{HTML}{C9A227}
+\definecolor{accentlight}{HTML}{E8D48B}
+\definecolor{paper}{HTML}{FBF9F2}
+\definecolor{pale}{HTML}{EEF2E9}
+\definecolor{muted}{HTML}{6E7A6C}
+\definecolor{deadred}{HTML}{8C3B32}
+\definecolor{codebg}{HTML}{F4F5EE}
+
+\hypersetup{
+  pdftitle={HOPPER: A Satoshi-Native Game Protocol on Bitcoin},
+  pdfauthor={The HOPPER contributors},
+  pdfsubject={HOPPER v8 protocol, wire version 0x08},
+  pdfkeywords={Bitcoin, ordinals, inscriptions, Taproot, tapscript, protocol, PWA},
+  colorlinks=true,
+  linkcolor=deepgreen,
+  citecolor=deepgreen,
+  urlcolor=midgreen,
+  pdfcreator={XeTeX / Tectonic}
+}
+
+\linespread{1.035}
+\setlength{\parindent}{1.15em}
+\setlength{\parskip}{0.18em}
+\setlength{\emergencystretch}{2.5em}
+\clubpenalty=10000
+\widowpenalty=10000
+
+% ---------------------------------------------------------------------------
+% Macros
+% ---------------------------------------------------------------------------
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\term}[1]{\textbf{#1}}
+\newcommand{\SHA}{\operatorname{SHA256}}
+\newcommand{\LE}{\operatorname{LE}}
+\newcommand{\floor}[1]{\left\lfloor #1 \right\rfloor}
+% The road mark used by the live band (U+1F6E3 in the implementation).
+\newcommand{\roadglyph}{\raisebox{0.08ex}{\tikz[baseline=0pt]{
+  \fill[midgreen] (0,0) rectangle (0.52em,0.10em);
+  \fill[midgreen] (0.06em,-0.16em) rectangle (0.46em,-0.06em);}}}
+\newcommand{\nameband}[1]{\texttt{NAME}\roadglyph\texttt{#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling
+% ---------------------------------------------------------------------------
+\titleformat{\section}
+  {\sffamily\Large\bfseries\color{deepgreen}}
+  {\thesection}{0.72em}{}
+  [\vspace{0.35ex}{\color{accent}\titlerule[0.6pt]}]
+\titleformat{\subsection}
+  {\sffamily\large\bfseries\color{midgreen}}
+  {\thesubsection}{0.65em}{}
+\titleformat{\subsubsection}
+  {\sffamily\normalsize\bfseries\color{ink}}
+  {\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{2.5ex plus .5ex minus .15ex}{1.1ex}
+\titlespacing*{\subsection}{0pt}{1.8ex plus .3ex minus .1ex}{0.6ex}
+\titlespacing*{\subsubsection}{0pt}{1.3ex plus .2ex}{0.4ex}
+
+% ---------------------------------------------------------------------------
+% Header and footer
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\sffamily\scriptsize\color{muted}HOPPER \textperiodcentered{} Technical Whitepaper}
+\fancyhead[R]{\sffamily\scriptsize\color{muted}v8 \textperiodcentered{} wire 0x08}
+\fancyfoot[C]{\sffamily\scriptsize\color{muted}\thepage}
+\renewcommand{\headrulewidth}{0.25pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{accentlight}\leaders\hrule height \headrulewidth\hfill}}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyfoot[C]{\sffamily\scriptsize\color{muted}\thepage}%
+  \renewcommand{\headrulewidth}{0pt}%
+}
+
+% ---------------------------------------------------------------------------
+% Captions
+% ---------------------------------------------------------------------------
+\captionsetup{
+  font=small,
+  labelfont={bf,sf,color=deepgreen},
+  textfont={it},
+  justification=raggedright,
+  singlelinecheck=false,
+  skip=6pt
+}
+
+% ---------------------------------------------------------------------------
+% Boxes
+% ---------------------------------------------------------------------------
+\newtcolorbox{notebox}{
+  enhanced, breakable,
+  colback=pale, colframe=pale, boxrule=0pt,
+  left=5mm, right=5mm, top=3.2mm, bottom=3.2mm,
+  arc=0pt, outer arc=0pt,
+  borderline west={1.2pt}{0pt}{accent}
+}
+\newtcolorbox{invariant}[1]{
+  enhanced, breakable,
+  colback=deepgreen!4, colframe=deepgreen!18, boxrule=0.4pt,
+  left=5mm, right=5mm, top=2.6mm, bottom=2.8mm,
+  arc=0pt, outer arc=0pt,
+  title={\sffamily\bfseries\small #1},
+  coltitle=white, colbacktitle=deepgreen,
+  fonttitle=\sffamily\bfseries\small
+}
+\newtcolorbox{warnbox}[1]{
+  enhanced, breakable,
+  colback=deadred!4, colframe=deadred!22, boxrule=0.4pt,
+  left=5mm, right=5mm, top=2.6mm, bottom=2.8mm,
+  arc=0pt, outer arc=0pt,
+  title={\sffamily\bfseries\small #1},
+  coltitle=white, colbacktitle=deadred,
+  fonttitle=\sffamily\bfseries\small
+}
+
+% ---------------------------------------------------------------------------
+% Listings
+% ---------------------------------------------------------------------------
+\lstdefinestyle{hopper}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{deepgreen}\bfseries,
+  commentstyle=\color{muted}\itshape,
+  stringstyle=\color{deadred},
+  numbers=left,
+  numberstyle=\ttfamily\scriptsize\color{muted},
+  numbersep=8pt,
+  frame=none,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=2,
+  xleftmargin=15pt,
+  framexleftmargin=0pt,
+  aboveskip=8pt,
+  belowskip=7pt,
+  upquote=true
+}
+\lstset{style=hopper}
+
+% ---------------------------------------------------------------------------
+% Algorithm styling
+% ---------------------------------------------------------------------------
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\algrenewcommand\algorithmicwhile{\textbf{while}}
+\algrenewcommand\algorithmicfor{\textbf{for}}
+\algrenewcommand\algorithmicif{\textbf{if}}
+\algrenewcommand\algorithmicthen{\textbf{then}}
+\algrenewcommand\algorithmicelse{\textbf{else}}
+\algrenewcommand\algorithmicreturn{\textbf{return}}
+\floatname{algorithm}{Algorithm}
+\renewcommand{\listalgorithmname}{List of Algorithms}
+
+\begin{document}
+
+\input{frontmatter}
+
+\pagenumbering{arabic}
+
+\input{sections/01-introduction}
+\input{sections/02-model}
+\input{sections/03-parameters}
+\input{sections/04-inscriptions}
+\input{sections/05-game}
+\input{sections/06-custody}
+\input{sections/07-indexer}
+\input{sections/08-wallet}
+\input{sections/09-security}
+\input{sections/10-validation}
+\input{sections/11-related}
+\input{sections/12-conclusion}
+
+\appendix
+\input{sections/appendix-a}
+\input{sections/appendix-b}
+
+\input{references}
+
+\end{document}

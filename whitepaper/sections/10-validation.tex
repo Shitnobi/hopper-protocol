@@ -1,0 +1,117 @@
+\section{Validation}\label{sec:validation}
+
+The implementation is accepted only when the obligations in
+Table~\ref{tab:tests} pass. They are deliberately stated as cross-language
+properties, not as unit-test counts.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Test obligations.}
+\label{tab:tests}
+\begin{tabularx}{\linewidth}{@{}p{0.22\linewidth}X@{}}
+\toprule
+\textbf{Area} & \textbf{Obligation} \\
+\midrule
+Golden vectors & JavaScript and Rust produce identical \code{required}
+across a generation boundary (5, 6, 25 for the whole hold, then 5 again),
+the wrap \code{u32LE(H)[0..4] mod 3}, the 55-byte \code{FRG8CROSS} body,
+the envelope, the parent tag, the v8 mint-body digests and the one v7
+grandfather digest for pinned fixtures. \\
+Wire bytes & The three 161-byte crossing leaves, the send leaf, the 97-byte
+control block for each of the four leaves, the commit leaf and the witnesses
+are byte-exact; parse back with the ord decoder; verify every control block
+against the output key. \\
+Fold parity & The embedded fold and the indexer answer the same
+$(\mathrm{state},\mathrm{dist},\mathrm{gen})$ for the same crossing set,
+including a block where every frog that hopped the wrap dies and every other
+frog survives; a body-valid child with a missing, false or non-canonical raw
+proof yields \emph{unverified}; a body pasted into a funding input or an
+output-only deposit cannot count; duplicate and pre-finality crossings yield
+\emph{unverified}; incomplete pagination is never a lower-bound count. \\
+Consensus & Every acceptance and rejection in Section~\ref{sec:game},
+the frozen activation height and the absence of a lenient mode, the
+grandfathered-sat v7 path, reorgs, snapshots, the parameter hash, and a
+\code{generation_len} that does not match its formula. \\
+Renderers & The static card with JavaScript off shows the name and the
+\code{G} badge but never a number; the proof-checked live fold shows
+\nameband{ N}, \texttt{RIP }\texttt{NAME} and \texttt{HOME} against a mocked
+\code{/r/} server; a missing or false raw proof shows \code{NAME}
+\roadglyph{} \code{---} with no count and no \code{HOME}; no external host in
+the body; the fold derives the outcome from the block hash without asking the
+indexer. \\
+Emergency export & Rebuild every leaf, control block and the output key from
+the exported JSON alone and compare with the staged scriptPubKey; the export
+contains no seed, xprv or private key; a stale \code{tip_height} is
+detected. \\
+App & Onboarding, keys, the fixed receive script, mint, prepare, the three
+hop choices, transfer, ordinary SEND, SEND ALL (one output, no change, fee
+from the swept total), history, the generation badge, display of
+unattributable coins, and sound mute/volume persistence; an automatic new tip
+owes two gate-bypassing catch-up passes, a scan repaint during a busy action
+is applied when the action releases the UI, and the road log distinguishes
+\textbf{survived} from \textbf{came home} using \code{immortal_height}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Reference vectors}
+
+The following values are pinned by the reference deployment. They are
+regression anchors, not additional consensus constants: the consensus
+constants are the parameters in Section~\ref{sec:parameters}.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Reference deployment vectors.}
+\label{tab:vectors}
+\begin{tabularx}{\linewidth}{@{}p{0.33\linewidth}X@{}}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+$G$ & \code{974034} \\
+Generation length $L$ & \code{6480} \\
+$H_{\rm params}$ & \footnotesize\code{d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f} \\
+Mint body digest\newline
+seed \code{0x9058d0fa}, sat \code{1000000000000},\newline
+name \code{Hopkinson}, \code{gen_hint} 1 &
+\footnotesize\code{6ed060bc3186993e284e6655dcd082f4187ddde5b37051d8028a4e03cdea7ecf} \\
+Mint body digest\newline
+seed \code{0x00005eed}, sat \code{2099999999999},\newline
+empty name, \code{gen_hint} 1 &
+\footnotesize\code{1a3ba825615d0168af07cef7fc5ccf42aed819ef6e67eb868ac099fbc10b0aa5} \\
+Grandfathered sat & \code{1,965,983,893,977,665} \\
+v7 grandfather digest\newline
+seed \code{0x9058d0fa}, sat \code{1000000000000},\newline
+name \code{Hopkinson}, \code{gen_hint} 1 &
+\footnotesize\code{18c566cc68856b41f4a71ac9bd0b39e57ed9ef25461798d8677ce490d1ee7dca} \\
+Crossing leaf length & \code{161} bytes at mint index 0 \\
+Send leaf length & \code{34} bytes \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The mint digests are for the single current \code{live_v8_html}. The released
+v7 digest is accepted only for the grandfathered sat, which is itself a
+regression anchor. A v6 body is not an additional accepted value; it is a
+different protocol.
+
+\subsection{Conformance discipline}
+
+Three habits keep the two implementations aligned.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.25em]
+  \item Constants live in one place per language, and the parameter hash is
+        computed from the canonical bytes rather than hard-coded.
+  \item Wire fixtures are generated once and checked into both test suites;
+        no test constructs its own expected bytes from the code under test.
+  \item The fold and the state machine are tested against the same synthetic
+        crossing set, so a disagreement is a protocol bug rather than a UI
+        bug.
+\end{enumerate}
+
+\begin{invariant}{Test the bytes, not the prose}
+A specification claim that is not pinned by a byte fixture is a comment.
+The wire tests are the executable form of this paper.
+\end{invariant}

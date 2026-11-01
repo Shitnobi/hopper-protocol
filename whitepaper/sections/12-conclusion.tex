@@ -1,0 +1,27 @@
+\section{Conclusion}\label{sec:conclusion}
+
+HOPPER makes a satoshi the protagonist of a game whose rules live on
+Bitcoin. A mint inscription gives the sat a name and a face. A four-leaf
+Taproot output gives it custody: three leaves sign a hop, one per direction,
+and the fourth sends it onward. A 55-byte body binds the crossing to the sat,
+the mint and the chosen direction, and the hash of block $T+1$ wraps to one
+direction for the whole block. The v8 fold proves every body-valid crossing
+against the raw transaction that spent the canonical leaf; when it cannot,
+it says \emph{unverified} instead of guessing. The indexer and the wallet
+make this usable, but neither is the referee.
+
+The design is intentionally narrow. There is no token, no bridge, no
+server-side game loop, and no privileged signer. The consensus surface is
+small enough to specify in bytes and to test across two languages: a
+generation sawtooth, a four-byte modulo, a direction comparison, and four
+fixed leaves, backed by a proof check on every counted crossing. The art is a
+self-contained document that can fail closed. The one unavoidable extra
+transaction is a consequence of self-reference on a hash-linked ledger, not
+an accident. The single grandfathered v7 Hopper is a custody exception
+carved out of already-confirmed history; it does not widen the v8 rules.
+
+The remaining work is engineering discipline: keep the byte fixtures
+authoritative, keep the two implementations in lockstep, and keep the
+indexer's conveniences out of the trust path. If those hold, a frog is what
+the chain says it is. \textit{One satoshi. One life. The
+chain is the referee.}

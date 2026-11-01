@@ -1,0 +1,172 @@
+\section{Introduction}\label{sec:introduction}
+
+Bitcoin \cite{bitcoin} is usually described as a ledger of coins. Ordinal theory gives that
+ledger a second reading: every satoshi has a number, sats move through
+transactions in first-in-first-out order, and a particular sat can therefore
+be followed across the chain. HOPPER uses that identity directly. A frog is
+not a token contract, a database row, or an entry in a server's table. A frog
+is one satoshi, and its public life is the sequence of transactions that
+carry that satoshi.
+
+The game is small enough to state in one paragraph. A player mints a frog by
+inscribing a self-contained art document on a sat. A one-time \textsc{prepare}
+may move the frog from its mint output into the custody output. To move the
+frog forward, the owner spends the sat through one of three Taproot leaves and
+publishes a 55-byte state inscription naming the direction it picked: left,
+straight or right. The crossing confirms at height $T$. At block $T+1$ the
+block hash wraps to exactly one direction for the whole block, and every
+frog whose crossing confirmed in $T$ that picked that direction dies at
+$T+\kappa$. A frog that survives enough crossings reaches \emph{home} and
+becomes immortal. A plain transfer moves the sat without publishing anything
+and without changing the frog's state. The chain is the referee, and the
+owner chooses \emph{when} to hop and \emph{which way}, never whether the road
+agrees.
+
+\subsection{Design goals}
+
+The construction is organized around four goals.
+
+\begin{description}[leftmargin=1.4em,style=nextline,itemsep=0.35em]
+  \item[State on the sat, not beside it.]
+  Every state transition is an ord inscription on the frog's own sat. A stock
+  \code{ord} viewer can reconstruct the frog from chain data alone, without a
+  HOPPER server. The indexer accelerates this; it is not the source of truth.
+
+  \item[Custody by Bitcoin Script.]
+  A frog in custody sits in a Taproot output whose internal key is a
+  nothing-up-my-sleeve point. There is no key-path spend. Three leaves sign a
+  crossing, one per direction, each carrying the state envelope; the fourth
+  is a plain owner signature for transfers. A valid crossing is therefore
+  both a signature and a protocol message, and the direction is bound into
+  the leaf that authorized it.
+
+  \item[Outcomes the author cannot choose.]
+  At block $T+1$ the block hash selects one direction for the entire block.
+  A crossing dies exactly when the direction committed in its body equals
+  that wrap. The block hash does not exist when the crossing is signed, and
+  the function is public. No author, owner or indexer can declare an outcome.
+  A block producer can influence the candidate hash or withhold a block;
+  that is miner influence, not player agency, and the protocol does not
+  pretend otherwise.
+
+  \item[An implementation small enough to audit.]
+  The consensus surface is a 55-byte body, a 34-byte send leaf, a 161-byte
+  crossing leaf, a 36-byte parameter encoding, and three integer functions:
+  generation, required crossings, and the block wrap. The reference
+  implementation is split into a pure protocol crate, a pure state machine,
+  and a network-facing API.
+\end{description}
+
+\subsection{Why a satoshi?}
+
+A satoshi is the smallest unit Bitcoin can own, and ordinal theory gives it a
+stable name. This has three consequences that matter for a game.
+
+First, ownership is UTXO ownership. There is no separate balance to reconcile
+and no issuer-controlled registry that can reassign a frog. Second, the sat
+carries its history. A state inscription is not attached to a mutable object;
+it is attached to the same sat as the mint, so the child relationship is
+cryptographically anchored by the satpoint as well as by the parent tag.
+Third, the identity survives transfers. A frog can be sent to an ordinary
+address, held, and later brought back into custody without losing its sat or
+its accumulated history.
+
+The price of this design is that a frog is only as movable as the UTXO that
+contains it. A wallet must know which ordinal ranges a coin carries before it
+spends that coin. The protocol makes this requirement explicit: a coin whose
+ranges cannot be attributed is still counted in the balance, but it is shown
+as unspendable rather than spent blindly.
+
+\subsection{What is new in v8}
+
+The game rules introduced by wire version \code{0x07} still shape
+everything that follows. Wire version \code{0x08} adds a proof-bound
+envelope, a proof-checking fold and a single legacy exception.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.3em]
+  \item \textbf{The road asks a question, not a die roll.} Each crossing body
+        carries a direction: left, straight or right. The next block's hash
+        wraps to one direction and applies it to every crossing in the
+        previous block. There is no per-Hopper death table and no per-Hopper
+        randomness.
+  \item \textbf{Custody has four leaves.} Three crossing leaves, one per
+        direction, plus one send leaf. Choosing a direction selects a leaf
+        whose bytes were fixed when the state output was created.
+  \item \textbf{Difficulty runs in generations.} A generation starts at five
+        required crossings, adds one every 144 blocks up to twenty-five,
+        holds for 3{,}600 blocks, and resets. Each generation stamps its frogs
+        \code{G1}, \code{G2}, and so on; the label is fixed for life, the
+        target is not.
+\end{enumerate}
+
+Version 8 changes the bytes and the verification story, not the road. The
+mint body is now \code{live_v8_html}, the state magic is
+\code{FRG8CROSS}/\code{0x08}, and the embedded fold checks every
+body-valid child against the raw transaction that published it. A proof that
+is missing or false makes the fold report \emph{unverified}, rendered as
+\code{NAME} \roadglyph{} \code{---}; it never prints a count or claims
+\code{HOME} on incomplete evidence. The fold ignores a body-invalid child,
+but a body-valid child with a failed proof is a hard stop.
+
+Exactly one released v7 Hopper is carried across the cut. Its sat is the
+compiled \code{GRANDFATHERED_SAT}. For that sat only, the v7 mint envelope
+and digest, the \code{V7} body and the v7 \code{FRG7CROSS}/\code{0x07}
+state path are accepted, because already-confirmed v7 custody cannot be
+rewritten. Every other sat must use v8. The released v7 card's fold predates
+the proof check; it is grandfathered for custody and play, not as an
+authoritative art oracle. A proof-checked view comes from the v8 app or
+indexer.
+
+The mint reveals a self-contained HTML document whose canonical fold reads
+only relative \code{/r/} and \code{/content/} endpoints on the viewer's own
+ord node. A crossing publishes an \code{application/octet-stream} body
+containing the frog's sat, mint identity and chosen direction, together with
+an ord parent tag. The first state output must be created by a later
+transaction --- the first transfer or a one-time \textsc{prepare} --- because
+the mint transaction cannot embed its own txid; after that, each crossing
+spends the previous state output and creates the next one.
+
+\subsection{Contributions and outline}
+
+This paper makes the following contributions.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.25em]
+  \item A precise inscription format for mint and crossing, including the ord
+        envelope, the parent encoding, the canonical PNG encoder, the single
+        accepted v8 mint-body digest and its one legacy exception
+        (Section~\ref{sec:inscriptions}).
+  \item A consensus state machine for mint, hop, settlement, transfer and
+        burn, with a parameter commitment, a generation schedule and a
+        block-wide wrap (Sections~\ref{sec:parameters} and~\ref{sec:game}).
+  \item A four-leaf Taproot construction that binds the protocol message and
+        the chosen direction to the spend, with exact leaf scripts, control
+        blocks, witnesses and transaction shapes
+        (Section~\ref{sec:custody}).
+  \item A standalone Rust indexer with deterministic state, snapshots, a
+        reorg window and a documented HTTP API
+        (Section~\ref{sec:indexer}).
+  \item A JavaScript wallet/PWA that keeps keys in a WebCrypto vault,
+        reproduces the interface and sound, and exports emergency descriptors
+        for its staged outputs (Section~\ref{sec:wallet}).
+  \item A proof-checking fold, a fail-closed unverified state and the single
+        grandfathered-v7 rule, plus a security analysis and a
+        conformance-oriented test plan
+        (Sections~\ref{sec:inscriptions}, \ref{sec:security} and
+        \ref{sec:validation}).
+\end{enumerate}
+
+Section~\ref{sec:model} fixes notation and the trust model.
+Section~\ref{sec:parameters} states the constants, the generation schedule
+and the wrap. Section~\ref{sec:inscriptions} specifies the envelopes.
+Section~\ref{sec:game} gives the state machine.
+Section~\ref{sec:custody} gives the tapscript tree and transaction shapes.
+Sections~\ref{sec:indexer} and~\ref{sec:wallet} describe the reference
+infrastructure. Section~\ref{sec:security} analyses attacks and limits, and
+Section~\ref{sec:validation} lists the test obligations. The appendices
+reproduce the generation schedule and the deployment constants.
+
+\begin{invariant}{The one-sentence rule}
+A Hopper is a satoshi. Its state is the ordered set of valid HOPPER
+inscriptions on that satoshi. Its fate is a function of the chain, not of
+its owner.
+\end{invariant}

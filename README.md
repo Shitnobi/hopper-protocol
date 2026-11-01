@@ -55,6 +55,7 @@ It persists to `localStorage`. Every broadcast mines one demo block, so
 
 ```
 SPEC.md                    normative v8 rules (wire 0x08; one grandfathered v7 sat)
+whitepaper/                LaTeX source, 43-page PDF, and conformance audit
 rust/
   crates/hopper-core       params, generations, wrap, v8 leaves, sat math,
                            inscription bodies/PNG, fold (the live viewer)

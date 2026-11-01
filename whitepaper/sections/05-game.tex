@@ -1,0 +1,280 @@
+\section{Game semantics}\label{sec:game}
+
+\subsection{The frog record}
+
+The indexer keeps one record per frog. The record is a projection of chain
+events; it is not an independent source of truth.
+
+\begin{table}[H]
+\centering
+\small
+\caption{The frog record.}
+\label{tab:frog-record}
+\begin{tabularx}{\linewidth}{@{}p{0.31\linewidth}X@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning} \\
+\midrule
+\code{sat}, \code{seed}, \code{name} & Identity and display data from the mint \\
+\code{gen} & $\gamma(\mathit{mint\_height})$, immutable, 1-based \\
+\code{state} & \code{idle}, \code{crossing}, \code{home}, \code{dead},
+\code{burned}, or \code{retired} \\
+\code{dist} & Completed crossings \\
+\code{crossings_entered} & Crossings ever accepted, including those in flight \\
+\code{crossings_settled} & Finished attempts: survived, dead, or burned \\
+\code{deaths} & 0 or 1; a dead frog never crosses again \\
+\code{mint_height}, \code{mint_txid}, \code{mint_index}, \code{inscription_id} & Mint identity \\
+\code{wire_version} & \code{0x08}, or \code{0x07} for the grandfathered sat \\
+\code{location} & \code{tracked(outpoint)} or \code{burned} \\
+\code{in_flight} & \code{{txid, height T, dir, target_hops = r(T)}} \\
+\code{outcome_block_hash}, \code{outcome_wrap}, \code{provisional_dead} & Frozen outcome at $T+1$ \\
+\code{last_target_hops} & Target of the most recent crossing \\
+\code{immortal_height}, \code{death_height}, \code{burn_height}, \code{burn_txid} & Terminal history \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The states \code{home}, \code{dead}, \code{burned}, and \code{retired} are
+absorbing. \code{retired} is a reserved absorbing state; the transitions
+described here do not create it. A frog that is \code{idle} can hop,
+transfer, or burn; a frog in \code{crossing} has a direction already
+committed, an outcome fixed at $T+1$, and a settlement pending at
+$T+\kappa$. The generation label \code{gen} is fixed at mint and never
+changes, even across a difficulty reset.
+
+\subsection{Mint}
+
+A transaction is a valid mint if and only if all of the following hold.
+
+\begin{enumerate}[leftmargin=1.7em,itemsep=0.25em]
+  \item The block is at or after the frozen activation height
+        \code{974,034}. There is no lenient production mode.
+  \item Exactly one inscription reveal exists in the transaction, it is on
+        input 0, its ord pointer is absent, its envelope is valid, and its
+        input inscription count is exactly one.
+  \item Its content type is \code{text/html;charset=utf-8}.
+  \item The body is the canonical \code{live_v8_html(...)} for
+        \code{(seed, sat, name, gen_hint)}. For the grandfathered sat only,
+        the canonical \code{live_v7_html(...)} document, its digest and the
+        v7 mint envelope are also accepted.
+  \item The first sat of output 0 exists and is not a shadow; the tracker has
+        seen the inputs that created it.
+  \item That sat carries no frog, live or dead.
+\end{enumerate}
+
+A valid mint creates a record in state \code{idle}, with \code{dist = 0},
+\code{location = tracked(mint txid, 0)} and
+\code{gen} $= \gamma(\code{mint_height})$. The \code{gen_hint} embedded in the
+document is ignored. The mint output is \emph{not} a state output. Its script
+is the wallet's frog address, a BIP86 Taproot output; it does not commit to
+the mint id, because the mint transaction cannot contain its own txid. This
+is the reason for the one-time \textsc{prepare} transaction described in
+Section~\ref{sec:custody}.
+
+\subsection{Hop}
+
+A transaction is a valid crossing (a \textsc{hop}) if and only if all of the
+following hold.
+
+\begin{enumerate}[leftmargin=1.7em,itemsep=0.25em]
+  \item The transaction contains exactly one inscription, in input 0, with
+        no ord pointer and an input inscription count of exactly one.
+  \item Its body decodes as a 55-byte body with magic \code{FRG8CROSS}
+        and version \code{0x08}, with $\mathit{dir}\le2$, and its
+        $(\mathrm{sat},\mathit{mint\_txid},\mathit{mint\_index})$ equals the
+        frog's identity. A legacy body with magic \code{FRG7CROSS} and
+        version \code{0x07} is accepted only when the frog is the
+        grandfathered sat and its recorded \code{wire_version} is
+        \code{0x07}.
+  \item The tag-3 parent equals $(\mathit{mint\_txid},\mathit{mint\_index})$.
+  \item The spent leaf is the \code{dir} leaf of the state output's tree: the
+        script is the 161-byte template of Section~\ref{sec:custody} whose
+        body's last byte is \code{dir}, its hash is the matching leaf hash,
+        and the 97-byte control block commits the output key of the state
+        output (NUMS internal key, \code{0xc0}/\code{0xc1} parity, both
+        siblings in the order of the table in Section~\ref{sec:custody}).
+  \item Input 0 spends the frog's current outpoint.
+  \item The anchor sat lands in output 0 at offset 0.
+  \item No funding input carries a frog, and no \code{FRG} envelope appears
+        in the crossing.
+  \item The frog is \code{idle}: not crossing, home, dead, burned, or
+        retired.
+\end{enumerate}
+
+On acceptance the record becomes \code{state = crossing}, with
+\code{in_flight = {txid, T, dir, r(T)}}. The counter
+\code{crossings_entered} is incremented, \code{last_target_hops} is set to
+$r(T)$, and any previous \code{outcome_block_hash}, \code{outcome_wrap} or
+\code{provisional_dead} is cleared.
+
+The target is frozen at confirmation and never recomputed. This is what makes
+the game fair across a resetting schedule: a frog that hops at height $T$ is
+judged by the road as it existed at $T$, even if a generation boundary resets
+the road while the crossing is in flight. Choosing a direction selects a
+leaf; it cannot change the leaf's bytes, which were fixed when the state
+output was created.
+
+\subsection{Settlement timers}
+
+Timers run before a block's transactions. This ordering matters: a crossing
+that confirms in block $T$ cannot settle in the same block, and the outcome
+block's hash is known before any settlement at $T+\kappa$ is evaluated.
+
+At block $B=T+1$, for every frog whose in-flight height plus one equals $B$,
+\begin{align}
+w &\gets \LE_{32}\!\left(H_B^{\rm int}[0..4]\right)\bmod 3,\\
+\mathit{outcome\_block\_hash} &\gets H_B,\\
+\mathit{outcome\_wrap} &\gets w,\\
+\mathit{provisional\_dead} &\gets (\mathit{in\_flight.dir}=w).
+\end{align}
+The value $w$ is computed once per block and applied to every frog in it: the
+road picks one direction for the block, not one per Hopper.
+
+At block $T+\kappa$, for every due crossing,
+\begin{lstlisting}[language={},caption={Settlement at $T+\kappa$.},label={lst:settle}]
+if location is burned or provisional_dead:
+    state = (burned ? burned : dead)
+    deaths += 1
+    death_height = T
+else:
+    dist += 1
+    state = (dist >= target ? home : idle)
+    if state == home:
+        immortal_height = T
+crossings_settled += 1
+in_flight = None
+provisional_dead = None
+emit Settle event
+\end{lstlisting}
+
+Notice that a burned in-flight frog still settles as \code{burned} at
+finality; it is not converted to \code{dead}. Notice also that
+\code{crossings_settled} counts every settled crossing, including a death.
+The distinction between \code{dist} and \code{crossings_settled} is
+deliberate: \code{dist} counts survived hops, while
+\code{crossings_settled} counts finished attempts.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  state/.style={draw=deepgreen, fill=pale, rectangle, minimum width=21mm,
+                minimum height=9mm, font=\sffamily\small, align=center,
+                inner sep=2pt},
+  terminal/.style={state, draw=deadred!70, fill=deadred!5},
+  arrow/.style={-{Stealth[length=2.2mm]}, draw=deepgreen!75, line width=0.7pt},
+  label/.style={font=\scriptsize\sffamily, color=muted, inner sep=2pt, fill=white}
+]
+\node[state] (mint) at (-3.8,0) {mint};
+\node[state] (idle) at (0,0) {idle};
+\node[state] (crossing) at (4.2,0) {crossing};
+\node[terminal] (home) at (8.4,2.4) {home\\\scriptsize immortal};
+\node[terminal] (dead) at (8.4,-2.4) {dead\\\scriptsize roadkill};
+\node[terminal] (burned) at (4.2,-2.8) {burned};
+
+\draw[arrow] (mint) -- node[label, above] {valid mint} (idle);
+\draw[arrow] (idle) -- node[label, above] {HOP accepted} (crossing);
+\draw[arrow, dashed] (idle.south) to[bend right=18]
+  node[label, below left, pos=0.55] {anchor to fees} (burned.west);
+\draw[arrow] (crossing.north) to[bend right=22]
+  node[label, above, pos=0.5] {$T+\kappa$, alive, $dist<target$} (idle.north);
+\draw[arrow] (crossing.east) to[bend left=10]
+  node[label, above right, pos=0.55] {$T+\kappa$, alive, $dist\ge target$} (home.west);
+\draw[arrow] (crossing.east) to[bend right=10]
+  node[label, below right, pos=0.55] {$T+\kappa$, dead} (dead.west);
+\draw[arrow, dashed] (crossing.south) -- node[label, left] {burned at settle} (burned.north);
+\end{tikzpicture}
+\caption{The v8 frog lifecycle. \code{home}, \code{dead}, and \code{burned}
+are absorbing. The dashed transitions are terminal or exceptional: an idle
+frog whose anchor sat is paid to fees is burned immediately, while an
+in-flight frog that is burned settles as burned at finality.}
+\label{fig:lifecycle}
+\end{figure}
+
+\subsection{Transfer and burn}
+
+A spend of the frog's outpoint without a valid crossing envelope is a
+transfer: the indexer updates \code{location} and leaves the state unchanged.
+No inscription is published, and no state changes. This is the simplest way
+to move a frog, and it is why a transfer is invisible to the fold.
+
+A spend that sends the anchor sat to fees marks \code{location = burned} and
+sets \code{burn_height} and \code{burn_txid}. An idle frog becomes
+\code{burned} immediately, because nothing else will observe the sat again.
+An in-flight crossing keeps its timer and settles as \code{burned} at
+finality. A wallet should not build, offer, or expose \textsc{burn} as a
+feature or operation; the indexer still classifies such a spend if it is
+built elsewhere.
+
+The asymmetry is intentional. A transfer of an idle frog is a normal custody
+move. A burn is irreversible, and the record must say so at the moment the
+sat leaves the tracked set. For an in-flight frog, the outcome at $T+1$ has
+already been frozen; destroying the sat does not undo the crossing, it only
+changes how the settlement is labelled.
+
+\subsection{Events}
+
+The indexer publishes a re-derivable log. Each entry is keyed by
+$(\mathit{block\_hash},\mathit{height},\mathit{txid},\mathit{action})$ and has
+one of four shapes.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Event payloads.}
+\label{tab:events}
+\begin{tabularx}{\linewidth}{@{}p{0.16\linewidth}X@{}}
+\toprule
+\textbf{Action} & \textbf{Payload} \\
+\midrule
+\code{mint} & \code{{frogger_sat, seed, name, gen}} \\
+\code{transfer} & \code{{frogger_sat}} \\
+\code{settle} & \code{{frogger_sat, outcome: dead|crossed, dir, wrap}} \\
+\code{burn} & \code{{frogger_sat}} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The log is not a second consensus. It is a projection of the same events the
+state machine applied, and it can be regenerated from the chain.
+\code{outcome: crossed} means the Hopper survived that hop, not that it
+reached \code{HOME}. \code{HOME} is the frog record's
+\code{state = home} with \code{immortal_height = T}; the road log reads the
+frog record, not the bare event. The \code{burn} action remains an
+indexer/API state, not a wallet feature.
+
+\subsection{Reorganizations}
+
+The indexer keeps a retained window of block headers and undo journals. A
+rollback replays the chain to the fork point. Timers are pure functions of
+height and hash, so a reorg that replaces $T+1$ freezes a new outcome, and a
+reorg that removes $T$ reopens the frog as \code{idle} and restores its card.
+No manual repair is required.
+
+\begin{invariant}{Settlement is monotone before finality}
+Before $T+\kappa$, the only committed fact is the crossing itself. The
+outcome hash, the wrap and the provisional verdict may be replaced by a
+reorg. At $T+\kappa$, the retained window is what allows the indexer to
+replay a fork without losing the ability to settle.
+\end{invariant}
+
+\subsection{A crossing in six acts}
+
+The whole protocol can be read as six steps.
+
+\begin{enumerate}[leftmargin=1.7em,itemsep=0.22em]
+  \item The wallet derives the state output for
+        $(\mathrm{sat},\mathit{mint\_id},\mathit{owner})$.
+  \item The player chooses left, straight or right. The wallet signs the
+        matching cross leaf with the owner key and includes funding and
+        change as needed.
+  \item It broadcasts one transaction. The transaction carries exactly one
+        inscription, in input 0, and sends the anchor sat to output 0 at
+        offset 0.
+  \item The indexer admits the crossing at height $T$, freezes $r(T)$,
+        records the chosen direction, and emits a \code{crossing} state. The
+        art fold reports \textsc{crossing}.
+  \item At $T+1$ the outcome hash is recorded and the block's wrap is
+        computed. No settlement happens yet.
+  \item At $T+\kappa$ the timers run: \code{home} if the distance reached the
+        target, \code{idle} if the frog survived but has more to go, or
+        \code{dead} if its chosen direction equals the block's wrap.
+\end{enumerate}

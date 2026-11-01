@@ -1,0 +1,333 @@
+\section{Inscriptions and the fold}\label{sec:inscriptions}
+
+A frog touches Bitcoin in two kinds of inscription: the mint document and the
+crossing state body. Both use ord's envelope grammar. The mint is a
+self-contained HTML document; the crossing is 55 bytes of binary state. The
+mint envelope in the OP\_RETURN output names the seed and name; the mint
+inscription carries the art. The indexer validates both, because the
+inscription is the part a stock ord viewer can read without HOPPER software.
+
+\subsection{The mint envelope}
+
+The mint transaction carries one OP\_RETURN output whose push is the
+following byte string.
+
+\begin{table}[H]
+\centering
+\small
+\caption{The \code{0x08} mint envelope. The total length is at most 80
+bytes. The \code{0x07} version is accepted only for the grandfathered sat.}
+\label{tab:mint-envelope}
+\begin{tabular}{@{}rrll@{}}
+\toprule
+\textbf{Offset} & \textbf{Length} & \textbf{Field} & \textbf{Value} \\
+\midrule
+0  & 3 & magic & \code{"FRG"} \\
+3  & 1 & version & \code{0x08} (legacy \code{0x07} only for the grandfather) \\
+4  & 1 & action & \code{0x01} (MINT) \\
+5  & 4 & seed & \code{u32} little-endian \\
+9  & 1 & name length & $0$ to $38$ \\
+10 & $n$ & name & UTF-8, $n$ bytes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Exactly one \code{FRG} envelope is allowed per transaction. A malformed or
+duplicated envelope invalidates the protocol message: the transaction still
+moves sats, but it is not a mint. The same seed and name appear in the mint
+inscription reveal; the indexer validates both. This redundancy is
+intentional. The OP\_RETURN makes the mint cheap to index; the inscription
+makes it readable by ord alone.
+
+\subsection{The ord envelope}
+
+The mint reveal's tapleaf contains ord's standard envelope:
+\begin{lstlisting}[language={},caption={Mint inscription envelope (grammar).},label={lst:mint-env}]
+OP_FALSE OP_IF
+  "ord"                              ; 3-byte protocol id
+  0x01 "text/html;charset=utf-8"     ; tag 1: content type
+  0x00                               ; body tag
+  <body, chunked at 520 bytes>       ; the fold document
+OP_ENDIF
+\end{lstlisting}
+The crossing envelope is the same grammar with a binary content type, a
+parent tag and a fixed body:
+\begin{lstlisting}[language={},caption={Crossing inscription envelope (grammar).},label={lst:cross-env}]
+OP_FALSE OP_IF
+  "ord"
+  0x01 "application/octet-stream"
+  0x03 <mint_txid:32 || minimal-LE mint_index>   ; tag 3: parent
+  0x00 <55-byte body>
+OP_ENDIF
+\end{lstlisting}
+
+The parent value is the mint transaction id in internal byte order, followed
+by the mint output index. Index zero is encoded as the bare 32-byte txid; a
+non-zero index is appended as a minimal little-endian integer. Ord's rule is
+strict: a one-to-three-byte index whose last byte is \code{0x00} is
+non-minimal and rejected. The parent tag is mandatory on a crossing; it is
+what makes \code{/r/children} work and what lets a viewer discover the
+crossing history of a mint.
+
+\subsection{The mint body: a self-contained proof-checking fold document}
+
+The mint body is the fold document returned by
+\code{live_v8_html} for a \code{(seed, sat, name, gen_hint)} tuple, with
+content type \code{text/html;charset=utf-8}. It has five properties:
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.25em]
+  \item \textbf{No external origin.} There is no \code{http://},
+        \code{https://}, bare host, or protocol-relative URL anywhere in the
+        document. This is grep-enforced in the implementation.
+  \item \textbf{Two inline sprites.} The document embeds two
+        \code{data:image/png;base64,...} 16$\times$16 images, one idle and
+        one dead.
+  \item \textbf{A static name band.} The card carries the Hopper's name, its
+        generation badge (\code{G1}, \code{G2}, \ldots) and the road mark with
+        an unknown crossing count, for example \code{NAME}
+        \textperiodcentered{} \roadglyph{} \code{—}. It never prints a number.
+  \item \textbf{An embedded parameter block.} The document contains
+        \begin{center}{\scriptsize\code{V8={sat, genHint, name,
+        [grandfatheredSat,] p:{g,b,gi,cap,hold,gl,fin}}}}\end{center}
+        where \code{g} is the genesis height, \code{b} the base, \code{gi}
+        the growth interval, \code{cap} the ceiling, \code{gl} the generation
+        length and \code{fin} the finality. \code{grandfatheredSat} is
+        emitted only when the compiled value is non-zero.
+  \item \textbf{The canonical fold source.} The embedded \code{live_v8.js}
+        reads only relative \code{/r/...} and \code{/content/...} endpoints
+        on the viewer's own ord node.
+\end{enumerate}
+
+There is no \code{STATE FROM THE CHAIN} caption in v8. The static band
+states only what the mint transaction itself can prove: the name, the
+generation hint from the intended mint height, and that the count is unknown.
+The live band is authoritative only when the fold has verified every
+body-valid child against the raw transaction that published it. If a proof is
+missing or false, the band is \code{NAME} \textperiodcentered{}
+\roadglyph{} \code{—} and no count or \code{HOME} is claimed. When the proof
+holds:
+\begin{center}
+\small
+\code{alive}:\quad \nameband{ 12}\qquad
+\code{dead}:\quad \texttt{RIP }\nameband{ 12}\\[1mm]
+\code{home}:\quad \nameband{ 25 HOME}
+\end{center}
+The count is \code{dist}, the number of completed crossings, and it is shown
+for the dead as well. \code{RIP } (with its trailing space) is prepended to
+the name only when the fold has settled the frog as \code{dead}. The road
+glyph is illustrative; the canonical text form is \nameband{ N}, and that
+is what tests compare. The implementation uses the road emoji U+1F6E3
+between the name and the count; this paper draws the mark instead, because
+the body font carries no emoji glyph.
+
+\code{gen_hint} is the generation of the height the wallet expects the mint
+to confirm at. It is a display hint, never consensus: the indexer derives
+\code{gen} from the confirmed \code{mint_height} and ignores \code{gen_hint}.
+The live fold shows the authoritative \code{G} when it can read the mint
+inscription's height and falls back to the hint when it cannot.
+
+The PNG encoder is canonical and deterministic. It emits a PNG signature, an
+IHDR chunk (8-bit RGBA, no interlace), exactly one IDAT chunk, and IEND. The
+zlib stream begins with \code{78 01}, uses \emph{stored} deflate blocks of at
+most 65{,}535 bytes with BFINAL set on the last, and ends with an Adler-32
+checksum. Every scanline begins with filter byte zero. CRC-32 is computed by
+hand per chunk. Two encoders that follow these rules produce the same bytes
+for the same sprite.
+
+\begin{sloppypar}
+\paragraph{One accepted digest.}
+The indexer accepts exactly one v8 mint-body digest per
+$(\mathrm{seed},\mathrm{sat},\mathrm{name},\mathit{gen\_hint})$: the SHA-256
+of \code{live_v8_html(seed, sat, name, gen_hint)}. The released v7 document
+and digest are accepted only when the anchor sat equals
+\code{GRANDFATHERED_SAT} (Section~\ref{sec:grandfather}). Version 6 bodies
+(\code{0x06}) and every other v7 mint are rejected.
+\end{sloppypar}
+
+The fold source must not declare \code{var V8} in the same scope as the
+document's \code{V8={...}}. The v6.0 hoisting bug is the reason the document
+assigns the object first and the fold only reads it, never re-declares it.
+
+\subsection{The crossing body}
+
+The crossing body is exactly 55 bytes.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{The \code{FRG8CROSS} state body. The legacy \code{FRG7CROSS}
+spelling is accepted only for the grandfathered sat.}
+\label{tab:state-body}
+\begin{tabular}{@{}rrll@{}}
+\toprule
+\textbf{Offset} & \textbf{Length} & \textbf{Field} & \textbf{Encoding} \\
+\midrule
+0  & 9  & magic & \code{"FRG8CROSS"} (legacy \code{"FRG7CROSS"}) \\
+9  & 1  & version & \code{0x08} (legacy \code{0x07}) \\
+10 & 8  & sat & \code{u64} little-endian \\
+18 & 32 & mint txid & internal byte order \\
+50 & 4  & mint index & \code{u32} little-endian \\
+54 & 1  & dir & $0$ left, $1$ straight, $2$ right \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$(\mathrm{sat},\mathit{mint\_txid},\mathit{mint\_index})$ identify the frog
+and are immutable for its life. \code{dir} is per crossing: it names the
+direction the player committed to and therefore the leaf that was spent
+(Section~\ref{sec:custody}). A body with \code{dir > 2} is malformed and
+rejected.
+
+The mint inscription id
+\[
+\text{\code{{reversed_mint_txid}i{mint_index}}},
+\]
+is the ordinal parent of every crossing inscription. The body stores the
+same identity in binary, with the txid in internal order. A crossing body
+therefore binds four things at once: the sat, the mint transaction, the mint
+output and the chosen direction. A witness copied from another frog cannot
+be replayed, because the body would not match.
+
+\subsection{The fold algorithm}
+
+The fold is the canonical state reconstruction. It is stateless with respect
+to heights: it asks the viewer's ord node for the current tip, walks the
+crossing children of the mint, verifies each body-valid child against its raw
+transaction, and replays the children in confirmation order. The children
+endpoint is followed as \code{{"ids":[...],"more":bool,"page":n}} until
+\code{more} is false. A reorganization is handled by asking again; no local
+history is authoritative.
+
+For a candidate child $c$ with decoded direction $\mathit{dir}$, the fold
+uses three predicates. The first is the body check:
+\begin{lstlisting}[language={},caption={Body, raw-transaction and proof predicates.},label={lst:fold-predicates}]
+bodyOk(c) = content(c) is exactly 55 bytes,
+            starts FRG8CROSS || 0x08 || sat || mint_txid || mint_index,
+            has dir <= 2, and the content type is octet-stream
+
+raw(c)    = GET /r/tx/{c.txid}
+
+proofOk(c)= raw(c) is version 2, locktime 0, all input sequences 0xffffffff,
+            has exactly one envelope in input 0 and no pointer or extra
+            envelope, output 0 has value > 0, the input-0 tapscript is the
+            canonical 161-byte leaf for body(c).dir, and its 97-byte control
+            block has NUMS as internal key and the canonical sibling path.
+            A confirmed Bitcoin transaction is already consensus-valid; the
+            fold only has to check that the spent leaf is the canonical one.
+\end{lstlisting}
+A body-valid child whose proof is missing or false makes the fold
+\emph{unverified}; it is never silently skipped. A body-invalid child (wrong
+magic, wrong sat, wrong mint, malformed direction) is ignored. Incomplete
+pagination, with \code{more} still true after the bounded cursor, is also
+\code{unverified}, never a lower-bound count.
+
+\begin{algorithm}[htbp]
+\caption{The canonical proof-checking fold}\label{alg:fold}
+\begin{algorithmic}[1]
+\Require $\mathrm{sat}$, own inscription id, and the embedded parameters
+\State $\mathit{id}\gets$ own inscription id from \code{location.pathname}
+\State $\mathit{mint}\gets$ parent of $\mathit{id}$ (the mint document is its own mint)
+\State $\mathit{tip}\gets \textsc{Get}$\code{(/r/blockheight)}
+\State $\mathit{last}\gets \textsc{Get}$\code{(/r/inscription/{id})}
+\State $C\gets [\,]$
+\For{each page of \textsc{Get}\code{(/r/children/{id})} until \code{more} is false}
+  \For{each $c$ in the page's \code{ids}}
+    \State $d\gets \textsc{Get}$\code{(/r/inscription/{c})}
+    \If{$d.\mathit{sat}=\mathrm{sat}$ and
+        $d.\mathit{satpoint}=\mathit{last}.\mathit{satpoint}$ and
+        $d.\mathit{height}$ is set}
+      \If{$\textsc{BodyOk}(c)$}
+        \If{not $\textsc{ProofOk}(c)$}
+          \State \Return \textsc{unverified}(\text{``proof''})
+        \EndIf
+        \State append $(c,\mathit{dir})$ to $C$
+      \EndIf
+    \EndIf
+  \EndFor
+\EndFor
+\If{\textsc{More} is still true after the bounded cursor}
+  \State \Return \textsc{unverified}(\text{``pagination''})
+\EndIf
+\State sort $C$ by $(\mathit{height},\mathit{sequence\_number})$
+\State $\mathit{state}\gets \textsc{idle}$;\quad
+       $\mathit{dist}\gets 0$;\quad
+       $\mathit{lastT}\gets \text{null}$;\quad $\mathit{txids}\gets \varnothing$
+\For{each $(c,\mathit{dir})$ in $C$}
+  \If{$c.\mathit{id}\in\mathit{txids}$}
+    \State \Return \textsc{unverified}(\text{``duplicate crossing''})
+  \EndIf
+  \If{$\mathit{lastT}\ne\text{null}$ and
+      $c.\mathit{height}-\mathit{lastT}<\kappa$}
+    \State \Return \textsc{unverified}(\text{``crossing before finality''})
+  \EndIf
+  \State $T\gets c.\mathit{height}$
+  \If{$T+\kappa>\mathit{tip}$}
+    \State \Return \textsc{crossing}$(\mathit{dist},\mathit{dir})$
+  \EndIf
+  \If{$\mathit{dir}=w(T+1)$}
+    \State \Return \textsc{dead}$(\mathit{dist})$
+  \EndIf
+  \State $\mathit{dist}\gets \mathit{dist}+1$;\quad
+         $\mathit{lastT}\gets T$;\quad
+         $\mathit{txids}\gets\mathit{txids}\cup\{c.\mathit{id}\}$
+  \If{$\mathit{dist}\ge r(T)$}
+    \State \Return \textsc{home}$(\mathit{dist})$
+  \EndIf
+\EndFor
+\State \Return \textsc{idle}$(\mathit{dist},\,
+       r(\mathit{tip}+1))$
+\end{algorithmic}
+\end{algorithm}
+
+Three details are consensus-critical. First, a child is admitted only when
+its sat and satpoint equal the mint's, its body is the canonical 55-byte body
+for this frog and mint, and its raw transaction proves the canonical state
+leaf was spent. A parent tag alone is never trusted. Second, the outcome is
+recomputed from the block hash and the direction in the body: the fold never
+asks the HOPPER indexer what happened; it verifies the spend from ord's raw
+transaction endpoint. Third, the finality check rejects a second crossing
+before $\kappa$ blocks even when both transactions are already confirmed at
+the current tip. A transfer remains invisible to \code{dist}, but it cannot
+create a false \code{HOME}: the next crossing lacks a canonical state leaf
+and fails the proof.
+
+\subsection{The one grandfathered v7 Hopper}\label{sec:grandfather}
+
+Exactly one released Hopper is carried across the v8 cut. Its sat is the
+global \code{GRANDFATHERED_SAT} value:
+\begin{itemize}[leftmargin=1.4em,itemsep=0.2em]
+  \item Rust: \code{hopper_core::params::GRANDFATHERED_SAT};
+  \item JavaScript: \code{GRANDFATHERED_SAT} in
+        \code{web/js/core/params.js}.
+\end{itemize}
+The production value is \code{1_965_983_893_977_665}; \code{0} means none.
+It is the only value to edit when the sat changes, and it is embedded into
+new v8 mint documents as \code{grandfatheredSat} so the fold does not need a
+second copy.
+
+For that sat only:
+\begin{itemize}[leftmargin=1.4em,itemsep=0.2em]
+  \item the v7 mint envelope (\code{0x07}), the v7 document digest and the
+        \code{V7} body are accepted;
+  \item the v7 state body (\code{FRG7CROSS}/\code{0x07}) and the v7
+        161-byte leaf and control path are accepted;
+  \item the wallet uses the released leaf and version and can recover or
+        migrate the sat on the legacy Taproot derivation
+        (Section~\ref{sec:wallet}).
+\end{itemize}
+Every other sat must use v8. A v7 crossing for a non-grandfathered sat is
+rejected by the indexer and is not counted by a v8 fold; the app and indexer
+report it as \code{unverified}. The grandfathered Hopper is not a precedent
+for a second legacy frog.
+
+The released v7 card's embedded fold is immutable and predates the
+proof-checking algorithm. It is grandfathered for custody and play, not as an
+authoritative art oracle; a viewer that needs the proof-checked state must
+use the v8 app or indexer, or a new v8 card.
+
+\begin{invariant}{No hidden state}
+Everything the fold needs is in the mint document, the crossing bodies, the
+raw transactions, the block hashes and the ord node's satpoint answers. There
+is no HOPPER database in the trust path, and a body is never believed merely
+because it is attached to the right parent.
+\end{invariant}

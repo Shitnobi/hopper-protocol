@@ -1,0 +1,412 @@
+\section{Custody: the Taproot tree that plays the game}\label{sec:custody}
+
+\subsection{The state output}
+
+A frog in custody is a Taproot output with the fixed internal key
+\code{NUMS_XONLY}:
+\begin{center}
+\footnotesize\code{50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0}.
+\end{center}
+No discrete log of this point is known, so there is no key-path spend. The
+output can only be spent through one of four leaves. The tree is balanced at
+depth two: three crossing leaves $L,S,R$ (left, straight, right) and one send
+leaf $X$ (transfer).
+
+\begin{align}
+h_L&=\mathrm{leaf\_hash}(L), & h_S&=\mathrm{leaf\_hash}(S),\notag\\
+h_R&=\mathrm{leaf\_hash}(R), & h_X&=\mathrm{leaf\_hash}(X),\notag\\
+h_{LS}&=\mathrm{branch}(h_L,h_S), & h_{RX}&=\mathrm{branch}(h_R,h_X),\notag\\
+\mathit{root}&=\mathrm{branch}(h_{LS},h_{RX}), & Q&=\mathrm{taproot\_output\_key}(\text{NUMS},\mathit{root}),\notag
+\end{align}
+where
+\begin{equation}
+\mathrm{branch}(a,b)=\mathrm{tagged\_hash}(\text{``TapBranch''},
+  \min(a,b)\,\|\,\max(a,b)),
+\end{equation}
+and
+\begin{equation}
+\mathrm{leaf\_hash}(s)=\mathrm{tagged\_hash}(\text{``TapLeaf''},
+  \text{\code{0xc0}}\,\|\,\mathrm{compact\_size}(|s|)\,\|\,s).
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  leaf/.style={draw=deepgreen, fill=pale, rectangle, align=center,
+               text width=23mm, minimum height=11mm, inner sep=3pt,
+               font=\scriptsize\sffamily},
+  branch/.style={draw=midgreen, fill=white, rectangle, align=center,
+                 inner sep=4pt, font=\scriptsize\sffamily},
+  root/.style={draw=deepgreen, fill=deepgreen!8, rectangle, align=center,
+               inner sep=5pt, font=\scriptsize\sffamily, text width=56mm},
+  edge/.style={draw=deepgreen!70, line width=0.7pt},
+  lbl/.style={font=\tiny\sffamily, color=muted, fill=white, inner sep=1pt}
+]
+\node[root] (root) at (0,3)
+  {output key $Q$\\\code{taproot_output_key(NUMS, root)}};
+\node[branch] (ls) at (-4.4,1) {$h_{LS}=\mathrm{branch}(h_L,h_S)$};
+\node[branch] (rx) at (4.4,1) {$h_{RX}=\mathrm{branch}(h_R,h_X)$};
+\node[leaf] (L) at (-6.7,-1.3) {\textbf{$L$ — left}\\body dir $=0$};
+\node[leaf] (S) at (-2.1,-1.3) {\textbf{$S$ — straight}\\body dir $=1$};
+\node[leaf] (R) at (2.1,-1.3) {\textbf{$R$ — right}\\body dir $=2$};
+\node[leaf] (X) at (6.7,-1.3) {\textbf{$X$ — send}\\no envelope};
+\draw[edge] (root.south) -- node[lbl, midway, above left] {root} (ls.north);
+\draw[edge] (root.south) -- node[lbl, midway, above right] {root} (rx.north);
+\draw[edge] (ls.south) -- node[lbl, midway, left] {$h_L$} (L.north);
+\draw[edge] (ls.south) -- node[lbl, midway, right] {$h_S$} (S.north);
+\draw[edge] (rx.south) -- node[lbl, midway, left] {$h_R$} (R.north);
+\draw[edge] (rx.south) -- node[lbl, midway, right] {$h_X$} (X.north);
+\end{tikzpicture}
+\caption{The four-leaf state output. The internal key is a nothing-up-my-sleeve
+point; all leaves sit at depth two. $L$, $S$ and $R$ are the crossing leaves,
+identical except for the direction byte in the body they push. $X$ is the
+send leaf. There is no key-path spend.}
+\label{fig:taproot}
+\end{figure}
+
+Every control block is 97 bytes:
+\begin{equation}\label{eq:control}
+\begin{aligned}
+&[\mathit{parity}\mid\text{\code{0xc0}}]\;\|\;\text{\code{NUMS_XONLY}}\\
+&\qquad\|\;\langle\text{sibling leaf hash}\rangle\;\|\;
+\langle\text{sibling subtree hash}\rangle.
+\end{aligned}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Control-block siblings by spent leaf.}
+\label{tab:control}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Spent leaf} & \textbf{First sibling} & \textbf{Second sibling} \\
+\midrule
+$L$ (left)     & $h_S$ & $h_{RX}$ \\
+$S$ (straight) & $h_L$ & $h_{RX}$ \\
+$R$ (right)    & $h_X$ & $h_{LS}$ \\
+$X$ (send)     & $h_R$ & $h_{LS}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The three crossing leaves differ only in the direction byte of the body they
+push (Section~\ref{sec:inscriptions}). Each leaf hash is therefore fixed when
+the state output is created. Choosing a direction selects a leaf; it cannot
+change the leaf's bytes. The current tree uses the
+\code{FRG8CROSS}/\code{0x08} body. A state output whose sat equals
+\code{GRANDFATHERED_SAT} may use the released
+\code{FRG7CROSS}/\code{0x07} body and its own leaf hashes; the two versions
+are never mixed in one tree.
+
+\code{owner_xonly} is the 32-byte witness program of a BIP86 P2TR address
+derived at
+\begin{equation}
+m/84'/\mathit{coin}'/0'/2/0,
+\end{equation}
+the ordinals branch. Its BIP86 even-$Y$ normalized output is the wallet's
+current frog receive address and the state-leaf owner. The released
+implementation tweaked the raw point without normalizing; a recovery scan
+also watches that legacy address and derives the legacy state scripts. The
+sender parses the recipient's P2TR address to obtain the key; a non-P2TR
+destination is refused for custody.
+
+\subsection{The cross leaf}
+
+All three crossing leaves are the same script; only the last byte of the
+pushed body (the direction) differs:
+\begin{lstlisting}[language={},caption={Cross leaf template.},label={lst:cross-leaf}]
+20 <owner:32>          ; PUSH32 owner
+ad                     ; OP_CHECKSIGVERIFY
+00                     ; OP_FALSE
+63                     ; OP_IF
+03 "ord"               ; PUSH 3 "ord"
+01 01                  ; push tag 1
+18 <content-type:24>   ; PUSH 24 "application/octet-stream"
+01 03                  ; push tag 3
+20 <parent:32>         ; PUSH32 mint txid (index 0)
+00                     ; empty body tag
+37 <body:55>           ; PUSH 55 bytes, last byte = dir; FRG8CROSS/0x08
+68                     ; OP_ENDIF
+51                     ; OP_TRUE
+\end{lstlisting}
+
+The first part is an ordinary \code{CHECKSIGVERIFY} against the owner key.
+The second part is an ord envelope that is never executed as a condition:
+\code{OP_FALSE} skips the \code{OP_IF} branch, so the envelope is data, not
+control flow. The final \code{OP_TRUE} leaves a true stack value after the
+signature check.
+
+Every push is minimal. The content type is the 24-byte string
+\code{application/octet-stream}, pushed with \code{0x18}. The parent tag is
+the 32-byte mint txid for index $0$ --- the only reachable case, since a valid
+mint carries exactly one envelope and it sits on input 0 --- or the txid plus
+the minimal little-endian index (a push of length 33 to 36 bytes, opcode
+\code{0x21} to \code{0x24}). The script is therefore \textbf{161 bytes} at index $0$, and up
+to 165 bytes for a manually built nonzero index. The three direction leaves
+are the same length; only the body's last byte differs.
+
+The send leaf is deliberately smaller:
+\begin{lstlisting}[language={},caption={Send leaf.},label={lst:send-leaf}]
+20 <owner:32> ac
+\end{lstlisting}
+It is 34 bytes and contains no envelope. A transfer is therefore silent: it
+moves the sat but publishes no state.
+
+\subsection{Control blocks and witnesses}
+
+A custody spend has three witness elements:
+
+\begin{table}[H]
+\centering
+\small
+\caption{Witness stacks for the two custody spends.}
+\label{tab:witnesses}
+\begin{tabularx}{\linewidth}{@{}p{0.16\linewidth}p{0.35\linewidth}X@{}}
+\toprule
+\textbf{Spend} & \textbf{\code{witness[0]}} & \textbf{\code{witness[1]}} / \textbf{\code{witness[2]}} \\
+\midrule
+hop & 64-byte BIP-340 \cite{bip340} signature $\|$ \code{0x01} (SIGHASH\_ALL) &
+the chosen \code{dir} leaf script / 97-byte control block \\
+transfer & 64-byte signature $\|$ \code{0x01} &
+send leaf script / 97-byte control block \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+SPEC.md specifies that the signature is produced with the tweaked owner key
+over the BIP-342 tapscript sighash of the leaf and the transaction's whole
+prevouts and outputs. The reference implementation expresses that key as
+\code{internal_key.tap_tweak(None)}. The SIGHASH\_ALL byte commits every
+input and output, so a signature cannot be redirected to a different
+transaction.
+
+\subsection{The two-phase mint}
+
+Ord needs an input to engrave an inscription, so a mint is a commit/reveal
+pair. The commit output is a Taproot output with the BIP86 owner key
+(\code{owner_xonly}) as internal key and one leaf:
+\begin{lstlisting}[language={},caption={Commit output leaf.},label={lst:commit-leaf}]
+<owner:32> OP_CHECKSIG OP_FALSE OP_IF <mint inscription envelope> OP_ENDIF
+\end{lstlisting}
+Its address is
+$\mathrm{p2tr}(\mathit{owner},\mathrm{merkle\_root}(\mathrm{leaf}))$, and its
+value is
+\begin{equation}
+1{,}000 + \mathrm{reveal\_fee\_budget}(\mathit{feerates}).
+\end{equation}
+The leaf demands the owner's signature. SIGHASH\_DEFAULT commits every
+prevout and every output, so a copied witness cannot redirect the frog. A
+legacy keyless commit, using \code{NUMS} as internal key with
+\code{OP_TRUE || envelope}, remains revealable forever, but no new commit
+may use it.
+
+The reveal transaction then has the shape in Table~\ref{tab:reveal}.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{The mint reveal transaction.}
+\label{tab:reveal}
+\begin{tabularx}{\linewidth}{@{}p{0.12\linewidth}p{0.22\linewidth}X@{}}
+\toprule
+\textbf{Position} & \textbf{Role} & \textbf{Content} \\
+\midrule
+input 0 & commit spend & script path \code{[sig, leaf, control block]} \\
+output 0 & frog & 1{,}000 sats to the wallet's frog P2TR key-path address \\
+output 1 & mint message & OP\_RETURN \code{FRG 0x08 0x01 seed name} (\code{0x07} only for the grandfather) \\
+output 2 & change & \code{m/84'/coin'/0'/1/index}, optional if $\ge$ dust \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Every input uses sequence \code{0xFFFFFFFF}, so the transaction is not
+replaceable. The anchor sat is the first sat of the commit output, which is
+the first sat of the first funding input. Because the commit leaf embeds the
+anchor sat, the commit address is derived after a probe coin-selection pass.
+
+\subsection{Action transactions}
+
+After the mint, a frog moves through the transactions in
+Table~\ref{tab:actions}. All of them use version 2, lock time zero, and
+sequence \code{0xFFFFFFFF} on every input. They are intentionally not
+replaceable: a mint, prepare, hop or transfer may move an inscription or a
+state card, and shaving an output to raise a fee can burn the anchor sat.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{The custody actions.}
+\label{tab:actions}
+\begin{tabularx}{\linewidth}{@{}p{0.12\linewidth}p{0.30\linewidth}X@{}}
+\toprule
+\textbf{Action} & \textbf{Input 0} & \textbf{Outputs} \\
+\midrule
+\textsc{prepare} & the frog output, P2TR key path with the tweaked frog key &
+output 0 is the state output for $(\mathrm{sat},\mathit{mint},\mathit{owner})$;
+outputs 1.. are funding change \\
+\textsc{hop} & the state output, the leaf for the chosen direction &
+output 0 is the next state output (same owner or a new P2TR owner);
+outputs 1.. are funding change \\
+\textsc{transfer} & the state output via the send leaf, or the mint output via
+key path & output 0 is the recipient's ordinary address (any script, P2WPKH
+included) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{invariant}{One crossing per transaction}
+A hop publishes exactly one inscription, in input 0. The anchor sat must
+land in output 0 at offset 0. No funding input may carry a frog, and no
+\code{FRG} envelope may appear anywhere in the crossing.
+\end{invariant}
+
+\textsc{prepare} exists only for a frog still in its mint or frog-address
+output. The state leaf commits to the mint inscription id, which is created
+by the mint reveal; an output of that transaction cannot contain its own
+txid. The first state output is therefore created by either the first
+transfer or the one-time \textsc{prepare}. After that, each crossing spends
+the previous state output and creates the next one.
+
+The player chooses $\mathit{dir}\in\{\text{left},\text{straight},\text{right}\}$
+before signing; the transaction spends the matching leaf, so the body it
+inscribes carries that \code{dir}. Choosing a direction is the whole of the
+choice: the leaf's bytes are fixed by the state output, and the outcome is
+decided by the block, not by the player. The wallet must show the chosen
+direction in the preview and must not let it change after the preview is
+approved.
+
+A transfer deliberately pays the recipient's ordinary address, not a state
+output. The state script commits to the mint id, which the recipient cannot
+know until it has discovered the frog. The recipient re-enters custody with
+\textsc{prepare} on its next action.
+
+\subsection{Previews and the ordinary send}
+
+A browser \textsc{send} (including \textbf{SEND ALL}), \textsc{hop},
+\textsc{transfer} or \textsc{mint} is previewed before broadcast.
+\textsc{send} and \textsc{transfer} display \code{PREVIEW TRANSACTION};
+\textbf{SEND ALL} is titled \code{SEND ALL BITCOIN}; \textsc{mint} keeps
+its \code{MINT!} button and opens the same review window; a hop is previewed
+with its direction spelled out (\code{HOP LEFT},
+\code{HOP STRAIGHT} or \code{HOP RIGHT}) and the leaf it will spend. The
+preview shows the destination address and amount, change address and amount
+(or ``one output'' for a transfer or \textbf{SEND ALL}), chosen fee rate and
+actual fee in sats. A mint shows the commit and reveal txids, both change
+outputs, both fees and the total size.
+
+\code{CANCEL} performs no broadcast, persists no action and spends nothing.
+Approval re-scans and refuses the preview if any input moved, an anchor's
+ordinal ranges changed, or a coin gained a Hopper, then broadcasts the exact
+previewed bytes. A mint approval broadcasts the commit and then the reveal
+that spends it; if the reveal is rejected after the commit was accepted, the
+error names the accepted commit and no mint action is recorded. A mint never
+has an RBF path. Fee recommendations come from mempool.space
+\code{/api/v1/fees/precise} (\code{fastestFee}, \code{halfHourFee},
+\code{economyFee}); the chosen rate remains manually editable, and values
+below the 1 sat/vB wallet relay floor are raised to it.
+
+An ordinary wallet \textsc{send} is separate from these actions. Its inputs
+use sequence \code{0xFFFFFFFD} (BIP125 opt-in), and the wallet may replace an
+unconfirmed send only under a narrow policy: the original is a wallet-created
+plain BIP84 send; the backend returns exactly the recorded serialization;
+every original input is a plain, range-known, non-Hopper BIP84 coin and the
+current view still contains no Hopper at those outpoints or sats; every
+original output keeps its exact script and value; the replacement appends
+confirmed plain BIP84 funding and one new change output; and it pays a
+strictly higher absolute fee and feerate, including BIP125's incremental
+relay margin. The wallet never replaces a HOPPER action. The transaction
+builder recomputes the FIFO sat ranges and refuses a replacement if a known
+Hopper sat would land in its fee.
+
+\textbf{SEND ALL.} A SEND variant sweeps the plain-BTC balance into exactly
+one recipient output. It selects every eligible plain BIP84 coin: complete,
+value-matched ranges, no Hopper or state output, and no protected sat;
+unconfirmed coins are included only when the wallet permits them. There is no
+change output, and the actual fee is deducted from the total, so the recipient
+receives $\mathit{totalIn}-\mathit{actualFee}$. The build refuses when the
+fee consumes the balance or leaves the recipient below the P2WPKH dust limit,
+and approval repeats the same exact-bytes and input checks as SEND. The
+preview is titled \code{SEND ALL BITCOIN} and states that there is one output
+and no change.
+
+\subsection{Sat assignment}
+
+Ordinals move FIFO over inputs in order. The protocol depends on three
+consequences.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.22em]
+  \item The anchor sat is the first sat of input 0. For a mint, that is the
+        first sat of the commit output.
+  \item After a spend, the anchor sat is at offset 0 of output 0 if and only
+        if output 0 receives value and no earlier output claims sats first.
+  \item A fee is taken from the tail of the frog's range or from funding; it
+        is never taken from the anchor's position.
+\end{enumerate}
+
+The wallet and the indexer both verify these properties with ordinal range
+arithmetic. A coin whose ranges cannot be attributed is not spent.
+
+\subsection{Addresses, discovery and history}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=0.3em]
+  \item The mint pays the wallet's \textbf{frog address}: the BIP86 P2TR
+        output at \code{.../2/0}. It never pays a BIP-84 receive address.
+        Coins at the frog address are never funding candidates.
+  \item The BIP-84 receive script is \textbf{fixed at \code{.../0/0}} in
+        v8. This is a deliberate simplicity and recovery tradeoff, not an
+        accidental gap: the watch set is fixed, paginated to exhaustion, and
+        a restored wallet reuses the same script. Address rotation and
+        privacy are future wallet features, not a consensus rule. The UI
+        must not claim that a receive address retires.
+  \item The state output's script is per
+        $(\mathrm{sat},\mathit{mint\ id},\mathit{owner})$. It matches no
+        derivation path. A wallet finds it by deriving the script from the
+        frog record and by watching its frog address.
+  \item A frog sent by a peer arrives at the ordinary address and is
+        discovered by the wallet's address scan plus the indexer or ord. It
+        is imported by reading its mint inscription and replaying its history
+        from the mint outpoint.
+  \item History is wallet-scoped, not a raw indexer feed. It merges local
+        actions, events whose Hopper sat belongs to this wallet, settled
+        outputs observed on its watched scripts, internal change, and mempool
+        rows. A confirmed ordinary deposit or a Hopper output is retained as
+        a \code{receive} row, so it stays visible after the coin is spent.
+        Change from our own transactions is retained separately as a
+        \code{CHANGE} row; it is never presented as an incoming
+        \code{RECEIVE}. Events for unrelated public or NPC Hoppers are
+        filtered out.
+  \item A \code{MINT} row does not depend only on the browser that broadcast
+        it. When the owned mint output is still at its mint outpoint, the
+        wallet persists a chain-derived mint row, so a restored seed shows
+        the same \code{MINT} and \code{HOPPER ARRIVED} rows without a local
+        action ledger. A Hopper received from a peer is not at its mint
+        outpoint and does not create a \code{MINT} row.
+  \item Rows for one txid share its best-known height and sort as a group.
+        The feed is newest first, so inside a group the newest row is on top:
+        \code{HOPPER ARRIVED} $\to$ \code{CHANGE} $\to$ \code{MINT}, and
+        \code{CHANGE} $\to$ \code{SEND}. A mint's commit change is grouped
+        with the reveal's \code{HOPPER ARRIVED} row by the minted sat and by
+        both txids. Older actions with no stored sat recover it from the
+        arrival's frog/reveal record; a missing commit is read once from
+        input 0 of the reveal and persisted. A missing sat is never treated
+        as sat 0. Grouping is ultimately by reveal/commit txid cluster, so it
+        works even when no row stores a sat. Shortened txids and addresses
+        are copy buttons: the visible text is abbreviated, but the copied
+        text is the complete value.
+  \item The first completed refresh after the history-ledger upgrade performs
+        two one-time, versioned address-history backfills: receive addresses
+        the wallet handed out, and change addresses it has used. The receive
+        pass recovers deposits whose coins were spent before the receive
+        ledger existed and skips outgoing action/commit txids; the change
+        pass recovers spent internal change and migrates older ledgers that
+        had stored it as a \code{RECEIVE}. \code{RESCAN} clears both markers
+        so recovery can be forced.
+\end{itemize}
+
+\begin{invariant}{No key-path escape hatch}
+A state output is a UTXO spent exactly once. The body binds the sat, the mint
+and the direction, so a witness cannot be replayed against another frog. The
+NUMS internal key ensures that the only ways out are the four leaves.
+\end{invariant}

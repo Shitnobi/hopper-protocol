@@ -1,0 +1,107 @@
+% ---------------------------------------------------------------------------
+% Front matter: cover, abstract, contents
+% ---------------------------------------------------------------------------
+\begin{titlepage}
+\thispagestyle{empty}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[paper] (current page.north west) rectangle (current page.south east);
+  \fill[deepgreen] (current page.north west) rectangle ([yshift=-8mm]current page.north east);
+  \fill[accent] ([yshift=-8mm]current page.north west) rectangle ([yshift=-9mm]current page.north east);
+  % faint pixel rule at the foot
+  \fill[accentlight!55] ([yshift=16mm]current page.south west) rectangle ([yshift=16.4mm]current page.south east);
+\end{tikzpicture}
+
+\vspace*{12mm}
+{\sffamily\scriptsize\color{muted}\MakeUppercase{Hopper Protocol}\hfill Technical Whitepaper}
+\vspace{2mm}
+
+\vspace{14mm}
+\begin{center}
+  \includegraphics[width=46mm]{figures/hopper-logo.png}\\[10mm]
+  {\sffamily\bfseries\color{deepgreen}\fontsize{60}{64}\selectfont HOPPER}\\[3mm]
+  {\sffamily\Large\color{ink} A Satoshi-Native Game Protocol\\[1.2mm] on Bitcoin}\\[9mm]
+  {\color{accent}\rule{54mm}{1.1pt}}\\[7mm]
+  {\large\itshape One satoshi. One life.\\[1mm] The chain is the referee.}
+\end{center}
+
+\vfill
+\begin{center}
+  \begin{tabular}{@{}c@{}}
+    {\sffamily\small\color{deepgreen}\textbf{Wire version} \code{0x08}}\\[1.2mm]
+    {\sffamily\small\color{muted}Specification 3.0 \textperiodcentered{} October 2026}\\[1.2mm]
+    {\sffamily\small\color{muted}The HOPPER contributors}
+  \end{tabular}
+\end{center}
+\vspace*{10mm}
+\end{titlepage}
+
+% ---------------------------------------------------------------------------
+% Abstract
+% ---------------------------------------------------------------------------
+\pagenumbering{roman}
+\thispagestyle{plain}
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+\begin{notebox}
+\noindent
+HOPPER is a game played by a satoshi. A frog is an ordinal sat whose public
+life is written into Bitcoin itself: a mint inscription creates it, each
+crossing publishes a 55-byte state inscription on the same sat, and the
+direction carried in that inscription is judged against the one direction
+the next block wraps to. Custody is enforced by a four-leaf Taproot output
+with a nothing-up-my-sleeve internal key. Three crossing leaves, one per
+direction, each check the owner's signature and carry the protocol envelope;
+the fourth leaf is an ordinary owner signature for transfers. The v8 fold
+verifies every crossing body against the raw transaction that published it;
+if a proof is missing, the art says so rather than guessing. The road's
+difficulty runs in generations: it rises from five crossings to a ceiling of
+twenty-five and then resets. One released v7 Hopper is grandfathered for
+custody and play. No server signs, no external origin is needed to render the
+frog, and the indexer is a cache, not an authority.
+
+This paper specifies the wire format, the generation schedule, the
+block-wide wrap, the tapscript tree and transaction shapes that play the
+game, and the standalone indexer and JavaScript wallet that implement them.
+It is an exposition of the normative specification in \code{SPEC.md}; where
+the two documents differ, \code{SPEC.md} governs.
+\end{notebox}
+
+\vspace{4mm}
+\noindent\textbf{\sffamily Keywords:} Bitcoin, ordinals, inscriptions,
+Taproot, tapscript, ordinal theory, self-custody, PWA.
+
+\vspace{2mm}
+\noindent\textbf{\sffamily Normative source.} The repository specification
+\code{hopper-protocol/SPEC.md} is the single normative source for the
+consensus rules, byte layouts, constants, API surface and configuration
+described here. Code snippets are illustrative; byte strings, constants and
+acceptance conditions are quoted from that document.
+
+\vspace{6mm}
+{\small\color{muted}\noindent
+The historical mint magic \code{FRG} and the JSON keys
+\code{frog}/\code{frogger} are retained because they are already committed to
+Bitcoin. The current state magic is \code{FRG8CROSS}; the legacy
+\code{FRG7CROSS} is accepted only for the one grandfathered Hopper. The
+interface name is \textsf{HOPPER}; the crossing action is \code{HOP} in the
+interface and \code{cross} on the wire.}
+
+\clearpage
+
+% ---------------------------------------------------------------------------
+% Contents
+% ---------------------------------------------------------------------------
+\thispagestyle{plain}
+\renewcommand{\contentsname}{\sffamily\color{deepgreen}Contents}
+\tableofcontents
+\vfill
+\begin{notebox}
+\small
+\textbf{Reading guide.} Sections~\ref{sec:parameters}--\ref{sec:custody}
+are the consensus core. Sections~\ref{sec:indexer} and~\ref{sec:wallet}
+describe infrastructure that can be replaced without changing the protocol.
+Section~\ref{sec:security} states what the construction does and does not
+protect against.
+\end{notebox}
+\clearpage

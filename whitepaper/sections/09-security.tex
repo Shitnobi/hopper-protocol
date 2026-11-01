@@ -1,0 +1,171 @@
+\section{Security analysis}\label{sec:security}
+
+\subsection{Threats and mitigations}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Threats and protocol-level mitigations.}
+\label{tab:threats}
+\begin{tabularx}{\linewidth}{@{}p{0.29\linewidth}X@{}}
+\toprule
+\textbf{Threat} & \textbf{Mitigation} \\
+\midrule
+Forge a crossing & The chosen cross leaf requires an owner signature and a
+canonical 55-byte body. The body binds the sat, mint txid, mint index and
+direction; the state output is a one-time UTXO. \\
+Replay a witness on another frog & The body and the parent tag both name the
+mint; the state output commits to the owner. A copied witness fails
+\code{CHECKSIG}, the body check, or the spent-leaf check. \\
+Replay a witness with a different direction & The direction is the last byte
+of the body pushed by the leaf, and the leaf hash is committed by the control
+block. A witness that spent the left leaf cannot authorize a straight or
+right body. \\
+Counterfeit a mint & A mint requires exactly one inscription reveal in input
+0, no pointer, the correct content type, the canonical v8 body digest, and a
+first sat that is tracked and frog-free. The v7 digest is accepted only for
+the grandfathered sat; v6 and every other v7 mint are rejected. \\
+Hide a death & The fold derives the wrap from $H(T+1)$ and the direction in
+the body. The static band never prints a count it cannot know. \\
+Choose the outcome & The author chooses $T$ and the direction, not
+$H(T+1)$. The target is frozen at $T$; the wrap does not exist when the
+crossing is signed. A block producer can influence the candidate hash or
+withhold a block, but that is miner influence, not player agency. \\
+Blame another Hopper for a block's wrap & The wrap is global and depends only
+on the block hash. One frog's death says nothing about another frog's sat or
+owner. \\
+Kill without publishing & A transfer publishes nothing, so a frog cannot be
+killed without publishing a crossing. A burn is a separate, observable
+terminal event. \\
+Pointer attack & HOPPER never writes a pointer tag, and a mint carrying one
+is rejected. The inscription stays on the anchor sat. \\
+External-origin phishing & The mint document contains no external URL. A
+viewer with different recursion semantics sees the static band, not a
+third-party page. \\
+Accidental burn & The wallet never uses the frog address for funding and
+refuses to spend a coin whose ranges it cannot attribute. \\
+Parameter confusion & The parameter hash is committed in snapshots and
+checked by the wallet before mint or hop. A mismatch is a hard error. A
+\code{generation_len} that does not match its formula is rejected. \\
+Indexer lies & The indexer is not in the art's trust path. The viewer's own
+ord node supplies the satpoints, bodies, raw transactions and block hashes
+used by the fold. \\
+Fabricated child & A body is not believed because it names the right parent.
+The fold checks the child's sat and satpoint, then proves from the raw
+transaction that input 0 spent the canonical state leaf for the body's
+direction. A body pasted into a funding input, or an ordinary output-only
+deposit, fails the proof and renders the fold unverified. \\
+Reorg & Timers are pure functions of height and hash. The indexer replays to
+the fork point; the fold simply asks again. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Properties}
+
+The following statements are informal but precise enough to test.
+
+\begin{enumerate}[leftmargin=1.7em,itemsep=0.35em]
+  \item \textbf{Unforgeability.} Under the security of BIP-340 signatures on
+        secp256k1, an adversary without the owner key cannot produce a
+        witness that passes a cross or send leaf with a valid sighash.
+  \item \textbf{Direction binding.} The direction is part of the body, the
+        body is pushed by the leaf, and the leaf hash is committed by the
+        control block and the output key. A crossing cannot be re-labelled
+        with another direction, and a witness cannot be replayed with one.
+  \item \textbf{No replay across frogs.} A state body names
+        $(\mathrm{sat},\mathit{mint\_txid},\mathit{mint\_index})$, and the
+        state output is spent once. A witness for one frog cannot satisfy
+        another frog's state output or body check.
+  \item \textbf{Proof-checked public verifiability.} The fold reconstructs
+        state from the mint document, the crossing inscriptions, the raw
+        transactions, the tip and block hashes. A body-valid child without a
+        valid canonical spend makes the fold unverified rather than
+        optimistic. No secret is required and no HOPPER-specific server is
+        authoritative.
+  \item \textbf{Outcome independence.} The verdict depends on $H(T+1)$, which
+        is not known when the crossing is signed, and on the direction the
+        owner committed. The owner can time the crossing and pick a
+        direction; it cannot select a favorable hash.
+  \item \textbf{Deterministic replay.} The state machine is a pure function
+        of blocks, seeds and parameters. Two honest indexers with the same
+        inputs produce the same state root and event log.
+  \item \textbf{Fail-closed art.} If the fold cannot fetch a child, verify a
+        satpoint or raw proof, complete pagination, or run JavaScript, the
+        document presents the static band or the unverified band with an
+        unknown count. It does not claim the frog is alive, and it does not
+        claim \code{HOME}.
+\end{enumerate}
+
+The first three properties are the custody argument. The fourth is
+proof-checking plus the game argument. The fifth and sixth are the
+infrastructure arguments. The seventh is the presentation argument.
+
+\subsection{Limitations and honest assumptions}
+
+\begin{warnbox}{What HOPPER does not promise}
+\begin{itemize}[leftmargin=1.2em,itemsep=0.25em]
+  \item \textbf{Liveness.} A transaction can be censored or fee-starved. The
+        protocol decides what happens after confirmation, not when
+        confirmation occurs.
+  \item \textbf{Privacy.} Addresses and sat histories are public. The design
+        is self-custodial, not anonymous. The global wrap also correlates
+        every Hopper in a block: one block-wide coin flip, not one per frog.
+  \item \textbf{Data availability.} The art, state bodies and raw
+        transactions must remain retrievable from the ord node or another
+        index. A viewer that cannot fetch them shows the fallback or
+        unverified band.
+  \item \textbf{Legacy reveals.} A keyless commit made before the signed
+        commit rule remains revealable forever. No new commit may use that
+        form.
+  \item \textbf{Discovery.} A wallet that cannot see the chain or a trusted
+        index may not find a frog sent to it. The frog still exists; the
+        wallet simply has not discovered it.
+  \item \textbf{Rule changes.} The rules are fixed for wire version
+        \code{0x08}. A change requires a new wire version; it cannot be
+        deployed by editing an indexer's configuration. The single
+        grandfathered v7 Hopper is a custody exception, not a general
+        compatibility mode.
+  \item \textbf{Wrap bias.} The modulo is biased toward left by one part in
+        $2^{32}$. This is negligible for the game and is part of the
+        consensus definition.
+\end{itemize}
+\end{warnbox}
+
+\subsection{Why the extra transaction is unavoidable}
+
+A state leaf names the mint inscription id. The id contains the mint reveal
+txid. An output created by the reveal transaction cannot contain that txid,
+because a transaction cannot commit to its own hash. The first state output
+must therefore be created by a later transaction: either the first transfer
+or the one-time \textsc{prepare}. This is not an implementation artifact; it
+is a consequence of self-referential identity on a hash-linked ledger.
+
+The alternative --- omitting the mint id from the state leaf --- would make
+the custody script independent of the frog's identity and would weaken
+replay resistance. HOPPER chooses the extra transaction and keeps the binding.
+
+\subsection{Compatibility notes}
+
+Three compatibility rules are normative and easy to misread.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.25em]
+  \item Version 8 is the current deployment. The envelope version
+        (\code{0x08}), the 55-byte body, the four-leaf tree, the proof-checked
+        fold and the art all changed. A v8 indexer accepts exactly one v8
+        mint-body digest. For \code{GRANDFATHERED_SAT} only, the released v7
+        envelope, digest, \code{V7} body and \code{FRG7CROSS}/\code{0x07}
+        state path remain valid. Every other v7 mint or crossing is rejected,
+        and v6 bodies are rejected. The v7 card's embedded fold is immutable
+        and predates the proof check; it is not an authoritative art oracle.
+  \item The indexer accepts both minimal and PUSHDATA1 spellings of short
+        pushes in an ord envelope. The reference encoder emits minimal
+        pushes, and byte-exact fixtures use them, but the parser is lenient
+        in the same places ord is lenient.
+  \item The wrap must be computed with exactly
+        \code{u32LE(H(B)_internal[0..4]) mod 3}. A wider word, a rejection
+        scheme, or a hash of the hash changes the outcome and is not v8.
+\end{enumerate}
+
+These rules do not change the game. They keep old bytes valid where they
+must be, and they make the decoder match the ecosystem it lives in.

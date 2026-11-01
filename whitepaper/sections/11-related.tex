@@ -1,0 +1,45 @@
+\section{Related work}\label{sec:related}
+
+HOPPER sits at the intersection of ordinal theory, inscription protocols and
+Taproot-based custody.
+
+\paragraph{Ordinal theory and inscriptions.}
+Ordinal theory assigns a number to every sat and defines how sats move
+through transactions \cite{ordinals,ord}. Inscriptions attach arbitrary
+content to a sat by committing a Taproot script containing an ord envelope
+and revealing it in a later transaction \cite{ord}. HOPPER adopts both ideas
+but uses the inscription as a state transition, not as a collectible image.
+The mint document is the frog's genesis; each crossing is a small binary
+inscription on the same sat.
+
+\paragraph{Fungible token experiments.}
+BRC-20 \cite{brc20} and Runes \cite{runes} use inscriptions or OP\_RETURN
+messages to encode balances and transfers. They rely on an indexer to agree
+on a ledger derived from those messages. HOPPER has no fungible balance and
+no global ledger: the state is attached to one sat, and the custody rules are
+enforced by the script that holds it. An indexer can be wrong or unavailable
+without changing which frog belongs to which sat.
+
+\paragraph{Taproot assets and off-chain systems.}
+Taproot Assets \cite{taprootassets} uses Taproot commitments to represent
+assets that can move on Lightning. BitVM \cite{bitvm} explores optimistic
+computation anchored in Bitcoin. HOPPER is deliberately smaller: it does not
+need a bridge, a channel, or a fraud proof. The game's entire outcome
+function is a four-byte block-hash modulo and a direction comparison, and the
+custody rules fit in four Taproot leaves.
+
+\paragraph{Comparison.}
+The distinguishing property is the combination of three choices:
+(i) identity is a sat, not a token id; (ii) every state transition is an
+inscription on that sat; and (iii) the spend that publishes a transition is
+also the spend that authorizes it, including the chosen direction. The first
+makes the art independent of a server, the second makes the state
+reconstructible from chain data, and the third makes the game self-custodial.
+The cost is the one-time \textsc{prepare} transaction and the need for
+ordinal-aware coin selection.
+
+\paragraph{What HOPPER is not.}
+It is not a smart-contract platform, a general-purpose asset protocol, a
+privacy system, or a replacement for ord. It is a game with a small,
+auditable consensus surface and a rendering path that degrades to an honest
+static card.

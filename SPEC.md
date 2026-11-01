@@ -531,7 +531,7 @@ The mint is a commit/reveal pair because ord needs an input to engrave.
 Commit output:
 
 ```
-internal key = owner_xonly (untweaked ordinals key)
+internal key = owner_xonly (the BIP86 output key)
 one leaf     = <owner:32> OP_CHECKSIG OP_FALSE OP_IF <mint envelope> OP_ENDIF
 address      = p2tr(owner, merkle_root(leaf))
 value        = 1_000 + reveal_fee_budget(feerates)
@@ -621,14 +621,24 @@ The wallet never replaces a HOPPER action. The transaction builder recomputes
 the FIFO sat ranges and refuses a replacement if a known Hopper sat would land
 in its fee.
 
-A browser **SEND**, Hopper **HOP**, **TRANSFER** or **MINT** is previewed
-before broadcast. SEND and TRANSFER display **PREVIEW TRANSACTION**; MINT
-keeps its **MINT!** button and opens the same review window; a HOP is
+**SEND ALL** is a SEND variant for sweeping the plain-BTC balance. It selects
+every eligible plain BIP84 coin (complete, value-matched ranges, no Hopper or
+state output, and no protected sat), builds exactly one recipient output and
+no change, and deducts the actual fee from the total. The recipient receives
+`totalIn − actualFee`. It refuses to build when the fee consumes the balance
+or leaves the recipient below the P2WPKH dust limit. It uses the ordinary
+BIP125 opt-in sequence and does not bypass any SEND input check.
+
+A browser **SEND** (including **SEND ALL**), Hopper **HOP**, **TRANSFER** or
+**MINT** is previewed before broadcast. SEND and TRANSFER display
+**PREVIEW TRANSACTION**; SEND ALL displays **SEND ALL BITCOIN**; MINT keeps
+its **MINT!** button and opens the same review window; a HOP is
 previewed with its direction spelled out (`HOP LEFT`, `HOP STRAIGHT` or
 `HOP RIGHT`) and the leaf it will spend. The preview shows the destination
 address and amount, change address and amount (or "one output" for a
-transfer), chosen fee rate and actual fee in sats. A mint shows the commit
-and reveal txids, both change outputs, both fees and the total size.
+transfer or SEND ALL), chosen fee rate and actual fee in sats. A mint shows
+the commit and reveal txids, both change outputs, both fees and the total
+size.
 CANCEL performs no broadcast, persists no action and spends nothing.
 Approval re-scans and refuses the preview if any input moved, an anchor's
 ordinal ranges changed, or a coin gained a Hopper, then broadcasts the exact
@@ -716,7 +726,10 @@ gen            generation(mint_height), immutable, 1-based
 state          idle | crossing | home | dead | burned | retired
 dist           completed crossings
 crossings_entered
+crossings_settled  finished attempts (survived, dead or burned)
+deaths         0 or 1
 mint_height, mint_txid, mint_index, inscription_id
+wire_version   0x08, or 0x07 for the grandfathered sat
 location       tracked(outpoint) | burned
 in_flight      {txid, height T, dir, target_hops = required(T)}
 outcome_block_hash, outcome_wrap, provisional_dead
@@ -847,14 +860,17 @@ reorg that removes `T` reopens the frog as `idle` and restores its card.
 * 12-word BIP-39 mnemonic; the entropy is sealed in the vault.
 * v2 derivation: full 64-byte BIP-39 seed → BIP-32 → `m/84'/coin'/0'`.
   Coin type 0 on mainnet, 1 elsewhere.
-* Receive `…/0/i` and change `…/1/i` are P2WPKH.
-* Ordinals/frog branch `…/2/0`: untweaked key is the mint commit owner and
-  the leaf's `owner`; its **BIP86 even-Y normalized** taproot output is the
-  new frog receive address. The released implementation tweaked the raw
-  point without normalizing; a recovery scan also watches that legacy
-  address and derives the legacy state scripts. Migration is explicit: a
-  `migrateLegacyFrog` transfer moves the sat to the current address; the old
-  path is never rewritten in place.
+* Receive `…/0/0` (fixed in v8) and change `…/1/i` are P2WPKH.
+* Ordinals/frog branch `…/2/0`: the branch point is normalized to even Y
+  and tweaked once with an empty merkle root (the BIP86 tweak). The
+  resulting output key is `owner_xonly`: it is the owner in the mint commit
+  leaf (and the commit output's internal key), the owner in every state
+  leaf, the key that signs crossings and transfers, and the wallet's frog
+  receive address. The untweaked branch key is not itself an owner. The
+  released implementation tweaked the raw point without normalizing; a
+  recovery scan also watches that legacy address and derives the legacy
+  state scripts. Migration is explicit: a `migrateLegacyFrog` transfer moves
+  the sat to the current address; the old path is never rewritten in place.
 * The vault is AES-256-GCM under a non-extractable WebCrypto KEK in
   IndexedDB. Creation writes, reads back, and verifies the ciphertext before
   reporting success; a storage denial is an error, never a "sealed" vault.
@@ -872,7 +888,7 @@ Two HTTP ports, chosen by URL:
   exhaustion; the first 50 rows are never treated as complete),
   `/tx/{txid}/hex`, `/blocks/tip/hash`, `/block-height/{h}`,
   `/fee-estimates`, `POST /tx`.
-* **Electrum over WebSocket** (`ws://`, `wss://`) — a JSON-RPC 1.1 client
+* **Electrum over WebSocket** (`ws://`, `wss://`) — a JSON-RPC 2.0 client
   using `blockchain.scripthash.*`, `blockchain.transaction.get`,
   `blockchain.block.header(s)`, `blockchain.estimatefee`,
   `blockchain.transaction.broadcast`. A relay (`frogger-relay`) can bridge
@@ -972,7 +988,14 @@ internal_key       50929b74…3ac0
 output_key         32-byte x-only output key of the staged address
 leaves[]           { dir, script_hex, leaf_hash, control_block }
 send_leaf          { script_hex, leaf_hash, control_block }
+descriptor         tr(<internal>,{raw(<L>),raw(<S>),raw(<R>),raw(<X>)})#checksum
 ```
+
+A Hopper on a legacy path uses the released owner; a v7-wire Hopper also
+uses the `FRG7CROSS` leaves. `owner_xonly` is that legacy owner. Before
+displaying the document the wallet rebuilds each output key and compares it
+with the scanned state scriptPubKey; a mismatch removes that frog from the
+export.
 
 and once for the wallet:
 
@@ -983,14 +1006,17 @@ network            mainnet | testnet | signet | regtest
 fingerprint        BIP-32 master fingerprint (8 hex)
 owner_path         m/84'/<coin>'/0'/2/0
 descriptor         tr(<internal>,{raw(<L>),raw(<S>),raw(<R>),raw(<X>)})#checksum
+                   (present only when exactly one staged tree; null otherwise)
 generated_at       ISO-8601 UTC
 tip_height         the height the export was built at
 ```
 
-The `descriptor` line uses the BIP-380 checksum and the miniscript `raw()`
-fragment for the four leaves. Many signers cannot parse raw leaves, so the
-`leaves[]` hex and control blocks are the authoritative form; the descriptor
-is a convenience for tools that can.
+Each `descriptor` line uses the BIP-380 checksum and the miniscript `raw()`
+fragment for that frog's four leaves. Many signers cannot parse raw leaves,
+so the `leaves[]` hex and control blocks are the authoritative form; the
+per-frog descriptor is a convenience for tools that can. The wallet-level
+descriptor is a convenience only when exactly one tree is staged; with more
+than one, it is `null` and the per-frog descriptors are the complete set.
 
 Rules:
 
@@ -1065,7 +1091,8 @@ hopper-indexer-api   axum HTTP API + block ingest (ZMQ/RPC or admin POST)
 ```
 
 `hopper-core` depends only on `sha2` (plus optional serde) and must stay
-pure. `hopper-indexer` performs no I/O. `hopper-indexer-api` owns the network.
+pure. `hopper-indexer` performs no network I/O; its optional redb feature is
+local disk persistence. `hopper-indexer-api` owns the network.
 
 ### 6.2 Ingest
 
@@ -1093,8 +1120,9 @@ and tag-3 parents. The state machine never touches witnesses.
 ### 6.3 State and persistence
 
 State is `(config, seeds, chain) → derived IndexState + event log`. A
-canonical state root hashes the ordered frog records, coin ranges and tip;
-two indexers that agree on consensus must agree on the root.
+canonical state root hashes the parameter commitment, tip (height and hash),
+ordered frog records and coin ranges; two indexers that agree on consensus
+must agree on the root.
 
 Persistence:
 
@@ -1126,8 +1154,11 @@ GET  /healthz, /readyz, /metrics
 POST /v1/admin/block|seed|rollback   Bearer token, never exposed by the PWA
 ```
 
-CORS is a browser read policy (`HOPPER_CORS_ORIGINS`); it is not access
-control. The API never publishes a wrap for a height it has not ingested:
+Administrative routes require `Authorization: Bearer <token>` when
+`HOPPER_ADMIN_TOKEN` is set; a non-loopback bind is refused without it, so the
+no-token loopback case is operator-only. CORS is a browser read policy
+(`HOPPER_CORS_ORIGINS`), not access control. The API never publishes a wrap
+for a height it has not ingested:
 the outcome of a future block is not predictable from the indexer either.
 
 ### 6.5 Seeding
@@ -1152,16 +1183,22 @@ HOPPER_API_ADDR               default 127.0.0.1:9770
 HOPPER_ACTIVATION_HEIGHT      default and required: 974_034
 HOPPER_INSCRIPTION_ACTIVATION_HEIGHT   default and required: 974_034
 HOPPER_RATE_LIMIT_PER_MIN     public-read budget per caller (default 300; 0 disables)
+HOPPER_CORS_ORIGINS           browser read origins; default * (not access control)
 HOPPER_SNAPSHOT_PATH          default hopper-indexer.snapshot.bin
 HOPPER_SNAPSHOT_EVERY         default 10 blocks
 HOPPER_RETAIN_BLOCKS          default 288
+HOPPER_EVENT_SEGMENT          events per append-only segment (default 4096)
+HOPPER_EVENT_RETAIN_SEGMENTS  old segments retained (default 0 = keep all)
 HOPPER_SEEDS_FILE             bootstrap seed JSON for fresh starts
+HOPPER_INGEST_START_HEIGHT    must be 0 or unset; later starts are refused
+HOPPER_ORD_URL                optional ord base for lazy range seeding
 HOPPER_ZMQ_ADDR               e.g. tcp://127.0.0.1:28332
 HOPPER_RPC_URL                default http://127.0.0.1:18443
 HOPPER_RPC_COOKIE / USER / PASS
 HOPPER_NETWORK / HOPPER_GENESIS_HASH  published chain identity
 HOPPER_ADMIN_TOKEN            required for non-loopback binds
 HOPPER_DB                     optional redb path
+HOPPER_DB_CACHE_MIB           redb page cache in MiB (0/unset = redb default)
 HOPPER_ENGINE=store           keep only a block-sized overlay in memory
 HOPPER_REINDEX=1              discard the durable store
 ```

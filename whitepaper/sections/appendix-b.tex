@@ -1,0 +1,67 @@
+\section{Deployment quick reference}\label{app:deployment}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Reference deployment values.}
+\label{tab:deployment}
+\begin{tabularx}{\linewidth}{@{}p{0.32\linewidth}X@{}}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+Wire version & \code{0x08} (legacy \code{0x07} for one sat) \\
+Activation height & \code{974034} \\
+Grandfathered sat & \code{1,965,983,893,977,665} \\
+Genesis height $G$ & \code{974034} \\
+Generation length $L$ & \code{6480} \\
+Generation parameters & $b=5$, $\mathit{gi}=144$, $c=25$,
+$h_{\rm hold}=3600$ \\
+Finality $\kappa$ & 6 blocks \\
+Parameter hash & \footnotesize\code{d466f8db3efa330dc92444274675804e47ec76b62393eeae88063ef764bcf72f} \\
+State body & \code{FRG8CROSS}, 55 bytes (legacy \code{FRG7CROSS} for one sat) \\
+Crossing leaves & 161 bytes at mint index 0 (3 directions) \\
+Send leaf & 34 bytes \\
+Control block & 97 bytes \\
+Default API bind & \code{127.0.0.1:9770} \\
+Public read budget & 300/min per caller (\code{0} disables) \\
+Default snapshot & \code{hopper-indexer.snapshot.bin} \\
+Default reorg window & 288 blocks \\
+Default snapshot interval & 10 blocks \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Bring-up order.}
+\begin{enumerate}[leftmargin=1.6em,itemsep=0.2em]
+  \item Start the indexer with a clean state and let it ingest from block 0.
+        Do not set a later start height.
+  \item If restoring from a snapshot, verify the embedded parameter hash
+        before serving. A mismatch is fatal, not a warning.
+  \item Connect bitcoind's \code{zmqpubhashblock} and RPC. Keep the admin
+        token off the public network.
+  \item Confirm that \code{GET /v1/params} returns the expected
+        \code{params_hash}, wire version, chain identity and network, and
+        that \code{GET /v1/generation/{height}} reports the expected
+        schedule. The wallet must refuse a missing or mismatched identity.
+  \item Point the wallet at the indexer or at a stock ord node. The wallet
+        must still enforce the parameter hash and its own address rules.
+\end{enumerate}
+
+\paragraph{Event shape.}
+The public event envelope carries the block context and one action:
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\begin{lstlisting}[language={},caption={Event envelope.},label={lst:event}]
+{
+  "height": 980514,
+  "block_hash": "<display hex>",
+  "txid": "<display hex or null>",
+  "action": { "kind": "settle", "frogger_sat": 1000000000000,
+              "outcome": "dead", "dir": 2, "wrap": 2 }
+}
+\end{lstlisting}
+\end{minipage}
+\end{center}
+The four action payloads are listed in Table~\ref{tab:events}; \code{mint}
+also carries \code{gen}. The event log is a projection; it can be regenerated
+from the chain.

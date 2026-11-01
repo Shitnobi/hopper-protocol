@@ -1,0 +1,305 @@
+\section{The wallet and the PWA}\label{sec:wallet}
+
+\subsection{Keys and the vault}
+
+A wallet is a 12-word BIP-39 mnemonic. The full 64-byte BIP-39 seed is
+derived through BIP-32 to
+\begin{equation}
+m/84'/\mathit{coin}'/0',
+\end{equation}
+with coin type 0 on mainnet and 1 elsewhere. The receive script is fixed at
+$m/84'/\mathit{coin}'/0'/0/0$ and change addresses are
+$m/84'/\mathit{coin}'/0'/1/i$; both are P2WPKH. The fixed receive script is a
+deliberate v8 simplicity and recovery tradeoff. The watch set is fixed,
+paginated to exhaustion, and a restored wallet reuses the same script;
+address rotation is a future feature, not a consensus rule.
+
+The ordinals branch is different. The branch is derived at
+\begin{equation}
+m/84'/\mathit{coin}'/0'/2/0.
+\end{equation}
+The branch point is normalized to even $Y$ and tweaked once with an empty
+merkle root (the BIP86 \cite{bip86} tweak). The resulting output key is the
+32-byte \code{owner}: it is the owner in the mint commit leaf and the commit
+output's internal key, the owner committed by the four state leaves, the key
+that signs crossings and transfers, and the wallet's current frog receive
+address. The untweaked branch key is not itself an owner. The released
+implementation tweaked the raw point without normalizing; a recovery scan
+also watches that legacy address and derives the legacy state scripts.
+Migration is explicit: a \code{migrateLegacyFrog} transfer moves the sat to
+the current address. The old path is never rewritten in place. This key is
+not used for funding. Coins at the frog address are never candidates for coin
+selection, because spending one as fee would burn a frog.
+
+The vault stores the BIP-39 entropy sealed with AES-256-GCM under a
+non-extractable WebCrypto key-encryption key held in IndexedDB. Creation
+writes, reads back and verifies the ciphertext before reporting success; a
+storage denial is an error, never a ``sealed'' vault. The public ledger
+(addresses, UTXOs, frog records, history) is stored separately. The ledger is
+re-derivable from the chain; the 12 words are the only backup.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Wallet derivation paths.}
+\label{tab:derivation}
+\begin{tabularx}{\linewidth}{@{}p{0.36\linewidth}p{0.16\linewidth}X@{}}
+\toprule
+\textbf{Path} & \textbf{Script} & \textbf{Purpose} \\
+\midrule
+$m/84'/\mathit{coin}'/0'/0/0$ & P2WPKH & Receive (fixed in v8) \\
+$m/84'/\mathit{coin}'/0'/1/i$ & P2WPKH & Change \\
+$m/84'/\mathit{coin}'/0'/2/0$ & P2TR & Frog receive and state owner \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Chain access}
+
+The wallet has two HTTP ports, chosen by URL.
+
+\paragraph{Esplora.} For an \code{https://} endpoint, the wallet uses the Esplora API \cite{esplora}:
+\code{/blocks/tip/height}, \code{/address/{a}/utxo},
+\code{/address/{a}/txs}, \code{/address/{a}/txs/chain[/{after_txid}]},
+\code{/tx/{txid}/hex}, \code{/blocks/tip/hash},
+\code{/block-height/{h}}, \code{/fee-estimates}, and \code{POST /tx}.
+Address history is paginated to exhaustion; the first 50 rows are never
+treated as complete.
+
+\paragraph{Electrum over WebSocket.} For a \code{ws://} or \code{wss://}
+endpoint, the wallet speaks JSON-RPC 2.0 and uses
+\code{blockchain.scripthash.*}, \code{blockchain.transaction.get},
+\code{blockchain.block.header(s)}, \code{blockchain.estimatefee}, and
+\code{blockchain.transaction.broadcast}. A relay (\code{frogger-relay}) can
+bridge raw TCP.
+
+Discovery comes from the HOPPER indexer
+(\code{/v1/froggers}, \code{/v1/frogger/{sat}}, \code{/v1/utxo/...}) or,
+without an indexer, from stock ord (\code{/r/utxo/...},
+\code{/content/{id}}, \code{/r/blockheight}). Ranges are mandatory before a
+coin may be spent. An unattributable coin still counts in the balance, but it
+is displayed as unspendable rather than spent blindly.
+
+\paragraph{Tip catch-up.} Address scans are gated on the tip
+$(\mathit{height},\mathit{hash})$: outside the catch-up window below, an
+unchanged tip with no wallet transaction in flight costs no address queries.
+The tip endpoint can publish a block before the address index has that
+block's transactions. After an automatic pass that observes a new tip, the
+wallet must therefore run two further full passes at
+\code{TIP_RECHECK_MS} (about 1.2 s) even though the tip is unchanged. Those
+passes bypass the gate and read the addresses again; only then may the gate
+skip them. Without this grace window, the first pass could record the new tip
+while holding the old UTXO set and the gate would keep the stale view until
+the next block or a forced \code{RESCAN}. A manual \code{RESCAN} is a forced
+pass; it does not itself create this automatic grace window.
+
+\paragraph{Scan repaint.} A completed scan is also a UI repaint event. If it
+lands while a foreground action holds the busy overlay, the repaint must be
+queued and applied when that action releases the UI, not dropped. Otherwise
+the Road or Pond can stay on the previous snapshot until the next block or a
+manual \code{RESCAN} even though the wallet state is current.
+
+A mint reveal is also self-describing: its tapscript witness contains the
+canonical v8 body (or the v7 body for the grandfather), and output 0 pays the
+wallet's ordinals address. A wallet
+may recover an idle mint record from that witness when neither an indexer
+nor ord answers, verifying the seed, sat and full body before trusting it.
+This recovers mints paid directly to the wallet's ordinals address. It does
+not recover a frog transferred in later, whose new output carries no mint
+body; that discovery requires the indexer, or a working ord range view and a
+record source.
+
+\subsection{Screens and interaction}
+
+The interface is a single-page PWA with the following screens:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Wallet & History & The Pond & The Road \\
+Mint & Leaderboard & Detail & Bio \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+These are supplemented by onboarding (choose, show, confirm, recover,
+mistake), the intro, an eight-page rules walkthrough, the $\equiv$ drawer,
+send and receive sheets, the address book, backup words, a QR scanner, the
+dead-frog page, and settings.
+
+The visual language is fixed: dark lily-pad green \texttt{\#18241a}, card
+\texttt{\#223226}, accent \texttt{\#f0c83c}, 8-bit monospace, square corners,
+bark-framed buttons, lily-pad-bordered floating windows, and 16$\times$16
+deterministic frog sprites. The art is generated from the seed, not fetched
+from a server.
+
+The road screen asks one question: \textbf{LEFT}, \textbf{STRAIGHT} or
+\textbf{RIGHT}. The chosen button is the direction committed in the crossing
+body and the leaf spent; the preview names it, and it cannot change after
+approval. The screen states the rule in one line: the next block picks one
+direction, and a Hopper that picked it dies. A frog's card shows its
+generation badge (\code{G1}, \code{G2}, \ldots), its crossing count beside
+the road mark, and \code{RIP} before the name once it is dead. Each settled
+hop gets one road-log row. A crossed row says \textbf{survived}; it says
+\textbf{came home} only when that settle's \code{immortal_height} is the
+crossing height for the row ($\mathit{row.height}-\kappa$). A dead row says
+\textbf{died}. If the frog record is absent, for example after a transfer
+out of this wallet, the row is conservative and says \textbf{survived}
+rather than claiming \code{HOME}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\linewidth]{figures/spritesheet.png}
+\caption{Deterministic 16$\times$16 frog sprites. The same seed produces the
+same sprite in the Rust implementation, the JavaScript wallet and the
+inscribed fold.}
+\label{fig:sprites}
+\end{figure}
+
+\subsection{Sound}
+
+The score is one MIDI file (\code{music.mid}) played by \code{sound.js}. The
+player parses the file once, maps ticks to seconds through the tempo map,
+schedules notes with a 400 ms lookahead, and loops at the score's length.
+Each note is one periodic-wave voice with a harmonic stack falling as
+$1/k^{1.15}$, a 4 ms attack, and a pitch-dependent decay. The signal chain is
+a 45 Hz highpass, a $+2.5$ dB shelf at 1.5 kHz, a compressor at $-16$ dB with
+a 3.5:1 ratio, and a master gain. The gain is $0.5\cdot v^2$ for volume $v$.
+Mute wins over volume, and nothing sounds before a user gesture.
+
+\subsection{Emergency descriptor export}
+
+The seed words are the only backup, but they do not describe how a custody
+output is built. The wallet therefore offers \textbf{EXPORT EMERGENCY
+DESCRIPTORS} in settings: one plain-text JSON document (also delivered as a
+QR) that is enough for another taproot-capable tool to spend every staged
+address without this wallet.
+
+A \emph{staged address} is the P2TR state output of a frog. Per frog the
+export carries:
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\begin{lstlisting}[language={},caption={Per-frog emergency export fields.},label={lst:emergency}]
+sat, gen, dist, state, name
+mint_id            "<txid>i<index>"
+state_outpoint     "<txid>:<vout>"      (when known)
+state_value        sats
+owner_xonly        32-byte hex
+internal_key       50929b74...3ac0
+output_key         32-byte x-only output key of the staged address
+leaves[]           { dir, script_hex, leaf_hash, control_block }
+send_leaf          { script_hex, leaf_hash, control_block }
+descriptor         tr(<internal>,{raw(<L>),raw(<S>),raw(<R>),raw(<X>)})#checksum
+\end{lstlisting}
+\end{minipage}
+\end{center}
+A Hopper on a legacy path exports the released owner; a v7-wire Hopper also
+uses the \code{FRG7CROSS} leaves. \code{owner_xonly} is that legacy owner.
+Before displaying the document the wallet rebuilds each output key and
+compares it with the scanned state scriptPubKey; a mismatch removes that frog
+from the export.
+
+and once for the wallet:
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\begin{lstlisting}[language={},caption={Wallet-level emergency export fields.},label={lst:emergency-wallet}]
+type               "hopper-v8-emergency"
+version            1
+network            mainnet | testnet | signet | regtest
+fingerprint        BIP-32 master fingerprint (8 hex)
+owner_path         m/84'/<coin>'/0'/2/0
+descriptor         tr(<internal>,{raw(<L>),raw(<S>),raw(<R>),raw(<X>)})#checksum
+                   (present only when exactly one staged tree; null otherwise)
+generated_at       ISO-8601 UTC
+tip_height         the height the export was built at
+\end{lstlisting}
+\end{minipage}
+\end{center}
+
+Each \code{descriptor} line uses the BIP-380 checksum and the miniscript
+\code{raw()} fragment for that frog's four leaves. Many signers cannot parse
+raw leaves, so the \code{leaves[]} hex and control blocks are the
+authoritative form; the per-frog descriptor is a convenience for tools that
+can. The wallet-level descriptor is present only when exactly one tree is
+staged; with more than one it is \code{null}, and the per-frog descriptors
+are the complete set.
+
+Rules:
+\begin{itemize}[leftmargin=1.4em,itemsep=0.25em]
+  \item no seed words, no private keys, no xprv. The export is a \emph{layout}
+        backup, not a key backup: whoever holds it still needs the seeds;
+  \item the signing key is the BIP-32 key at \code{owner_path}, tweaked once
+        with \code{TapTweak(P)} and an empty merkle root (the BIP86 tweak);
+        the leaf's \code{owner_xonly} is the resulting output key. Spending
+        uses leaf version \code{0xc0} and SIGHASH\_ALL (\code{0x01}), with the
+        script and control block from \code{leaves[]};
+  \item a receiving tool must verify the export before trusting it: rebuild
+        each leaf hash, each branch, the root, the output key and every
+        control block from the export's own bytes, and compare the result
+        with the on-chain scriptPubKey of \code{state_outpoint}. The wallet
+        runs the same check before it displays the export;
+  \item the export is public data about the wallet's holdings. It is shown
+        behind a confirmation and is never logged, uploaded, or put in a URL;
+  \item the export is a snapshot, and every hop, prepare or transfer changes
+        a state outpoint. The wallet stamps \code{tip_height} and regenerates
+        the export after every action; a tool that sees a state outpoint
+        already spent must discard the entry rather than guess.
+\end{itemize}
+
+\subsection{Wallet safety invariants}
+
+These are mandatory before any transaction is signed or broadcast.
+
+\begin{enumerate}[leftmargin=1.7em,itemsep=0.25em]
+  \item \textbf{Complete ranges.} Every funding or state input has non-empty
+        ordinal ranges whose lengths sum to its value. An empty
+        ord/indexer answer is not proof that a coin has no inscription.
+  \item \textbf{FIFO assignment.} The wallet recomputes the sat ranges of
+        the exact signed outputs. A transfer, \textsc{prepare} or hop must
+        place the Hopper sat in output 0 at offset 0; a send must not place
+        any known protected sat in a recipient output, change, or the fee.
+        RBF and the approval path repeat this proof.
+  \item \textbf{Asset recheck.} Hop, prepare, transfer, send and mint
+        revalidate every live input immediately before broadcast. The old
+        exemption for send and mint is removed.
+  \item \textbf{State discovery.} A state script alone never proves its sat
+        ranges. Local discovery asks ord or the indexer for complete ranges
+        and marks the coin unspendable until they match the value and
+        contain the frog sat.
+  \item \textbf{Recovery is fail-closed.} A restore paginates address
+        histories to exhaustion, treats \code{more} or \code{null} as
+        incomplete, reads at most a bounded checkpoint, and never
+        synthesizes a range or a mint sat from a document.
+  \item \textbf{Reorg identity.} Scan gates and outcome-hash caches are
+        keyed by $(\mathit{height},\mathit{tip\ hash})$, not height alone.
+        A same-height hash change forces a fresh pass.
+  \item \textbf{Vault durability.} Vault creation writes, reads back and
+        verifies the ciphertext; a storage failure is an error. Refresh
+        summaries carry public keys only.
+  \item \textbf{Service bounds.} Public reads are rate-limited, default
+        300 per minute per caller; diagnostic \code{/v1/state/root} is not a
+        hot path; and no state lock is held across an outbound ord call.
+  \item \textbf{Scan freshness.} A new automatic tip gets two
+        gate-bypassing catch-up passes (\code{TIP_RECHECK_MS}, about 1.2 s)
+        so a lagging address index cannot freeze the UTXO view. A completed
+        scan repaints the current view; if a foreground action owns the
+        overlay, the repaint is queued and applied on release, never dropped.
+\end{enumerate}
+
+\subsection{The user's trust boundary}
+
+The wallet never sends the mnemonic or the sealed entropy to a server. It
+signs locally. It refuses a mint or a hop if the indexer's
+\code{params_hash} differs from the embedded one, if the indexer does not
+answer the parameter gate, or if its \code{network} does not match the
+wallet's. It refuses a non-P2TR destination for custody. It refuses to spend
+a coin whose ordinal ranges it cannot attribute. It never replaces a HOPPER
+action with RBF. These refusals are part of the wallet's safety model, not UI
+preferences.
+
+\begin{invariant}{The wallet is not a custodian}
+A wallet can be lost, replaced, or run offline. The frog remains a UTXO on
+Bitcoin. Recovery is the 12 words; the public ledger is a cache.
+\end{invariant}

@@ -382,6 +382,17 @@ fn golden_v7_mint_body() {
 }
 
 #[test]
+fn golden_v7_grandfather_mint_body() {
+    use sha2::{Digest, Sha256};
+    let body = hopper_core::live_v7_html(0x9058_D0FA, 1_000_000_000_000, "Hopkinson", 1);
+    assert_eq!(
+        to_hex(&Sha256::digest(body.as_bytes())),
+        "18c566cc68856b41f4a71ac9bd0b39e57ed9ef25461798d8677ce490d1ee7dca",
+        "the released v7 body must stay byte-identical for the grandfather"
+    );
+}
+
+#[test]
 fn v8_body_is_the_only_content_type_and_rejects_v6() {
     let (ct, body) = hopper_core::mint_body(1, 2, "Frog", 1);
     assert_eq!(ct, "text/html;charset=utf-8");

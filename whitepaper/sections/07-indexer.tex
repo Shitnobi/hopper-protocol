@@ -1,0 +1,276 @@
+\section{The standalone indexer}\label{sec:indexer}
+
+\subsection{Crate boundaries}
+
+The Rust implementation is a three-crate workspace.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Indexer crates and responsibilities.}
+\label{tab:crates}
+\begin{tabularx}{\linewidth}{@{}p{0.24\linewidth}X@{}}
+\toprule
+\textbf{Crate} & \textbf{Responsibility} \\
+\midrule
+\code{hopper-core} & Pure protocol: envelope, v8 and legacy body, scripts, parameters,
+generations, wrap, sat math, art, PNG, fold document. Depends only on
+\code{sha2} (plus optional serde). \\
+\code{hopper-indexer} & Pure state machine: sat tracker, rules, timers,
+events, snapshots, optional redb store. Performs no network I/O; the optional
+redb store is local disk persistence. \\
+\code{hopper-indexer-api} & Axum HTTP API and block ingest (ZMQ/RPC or admin
+POST). Owns the network and the write lock. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The separation is not cosmetic. \code{hopper-core} can be compiled for
+native and mobile targets without a Bitcoin node. \code{hopper-indexer} can
+be replayed from a fixture without sockets. Only the API crate knows about
+ZMQ, RPC, HTTP, or authentication.
+
+\subsection{Ingest}
+
+The indexer always ingests from block 0. A later start cannot name coins
+created earlier; a frog whose mint predates the start would look as if it had
+been sent away. This is a correctness rule, not an optimization.
+
+There are two wires, sharing the same block decoder and the same write lock.
+
+\begin{itemize}[leftmargin=1.4em,itemsep=0.3em]
+  \item \code{POST /v1/admin/block} accepts an operator or debug JSON block.
+        Outside loopback it requires the admin token.
+  \item bitcoind ZMQ \code{hashblock} plus RPC is the production path. On a
+        new hash, the indexer fetches blocks from its tip to that hash. On a
+        reorg, it rolls back to the fork and replays.
+\end{itemize}
+
+The ingest layer converts a Bitcoin transaction into a small, witness-light
+structure:
+\begin{lstlisting}[language={},caption={Ingest types.},label={lst:ingest}]
+Tx {
+    txid,
+    inputs[{ prevout, value, inscription? }],
+    outputs[{ value, op_return? }]
+}
+Block { hash, height, txs }
+\end{lstlisting}
+It parses the tapscript witness at \code{witness[n-2]} with the ord envelope
+decoder, extracts the control block at \code{witness[n-1]}, and records the
+content type, body and tag-3 parents. The state machine never touches
+witnesses.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw=deepgreen, fill=pale, rectangle, align=center,
+              text width=25mm, minimum height=13mm, inner sep=3pt,
+              font=\scriptsize\sffamily},
+  net/.style={draw=midgreen, fill=white, rectangle, align=center,
+              text width=25mm, minimum height=13mm, inner sep=3pt,
+              font=\scriptsize\sffamily},
+  arrow/.style={-{Stealth[length=2mm]}, draw=deepgreen!75, line width=0.7pt},
+  lbl/.style={font=\tiny\sffamily, color=muted, fill=white, inner sep=1pt}
+]
+\node[net] (node) at (0,0) {bitcoind\\ZMQ + RPC};
+\node[box] (ingest) at (3.6,0) {ingest\\decode + verify};
+\node[box] (engine) at (7.2,0) {state machine\\frogs, coins, wrap};
+\node[box] (store) at (10.8,0) {snapshot\\events / redb};
+\node[box] (api) at (7.2,-2.2) {HTTP API\\axum};
+\node[net] (clients) at (7.2,-4.0) {wallet / PWA / ord};
+\draw[arrow] (node) -- node[lbl, above] {blocks} (ingest);
+\draw[arrow] (ingest) -- node[lbl, above] {Tx/Block} (engine);
+\draw[arrow] (engine) -- node[lbl, above] {state} (store);
+\draw[arrow] (engine) -- (api);
+\draw[arrow] (api) -- (clients);
+\end{tikzpicture}
+\caption{Indexer architecture. The state machine is independent of the
+network and of the HTTP layer; persistence is a projection of the same
+state.}
+\label{fig:indexer}
+\end{figure}
+
+\subsection{State, snapshots and the state root}
+
+The state is a function
+\begin{equation}
+(\mathrm{config},\mathrm{seeds},\mathrm{chain})\;\longrightarrow\;
+\mathrm{IndexState}+\mathrm{event\ log}.
+\end{equation}
+It contains the frog records, the coin ranges, the retained headers, the
+pending timers and the tip. A canonical state root hashes the parameter
+commitment, the tip (height and hash), the ordered frog records and the coin
+ranges. Two indexers that agree on consensus must agree on the root; a
+disagreement is a bug or a different parameter set, not a client preference.
+
+Persistence has three layers.
+
+\begin{itemize}[leftmargin=1.4em,itemsep=0.3em]
+  \item A binary snapshot at \code{HOPPER_SNAPSHOT_PATH}, default
+        \code{hopper-indexer.snapshot.bin}. The snapshot embeds the parameter
+        hash; a mismatch on load is a hard error, never a migration.
+  \item Append-only event segments next to the snapshot.
+  \item An optional redb durable store (feature \code{redb}, path
+        \code{HOPPER_DB}) holding the full state and the undo journals.
+\end{itemize}
+
+The snapshot interval defaults to 10 blocks, the retained block window to
+288 blocks, and the event segment size to 4096 events.
+
+\subsection{HTTP API}
+
+The public surface is read-only. Administrative routes are separate and
+require a Bearer token when \code{HOPPER_ADMIN_TOKEN} is set; the server
+refuses a non-loopback bind without one. They are never exposed by the PWA.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Indexer HTTP API.}
+\label{tab:api}
+\begin{tabularx}{\linewidth}{@{}p{0.39\linewidth}X@{}}
+\toprule
+\textbf{Route} & \textbf{Purpose} \\
+\midrule
+\code{GET /v1/status} & Tip, height, active crossings, wire version \\
+\code{GET /v1/params} & Full parameter block, \code{params_hash}, chain id \\
+\code{GET /v1/generation/{height}} & Generation index, start, end,
+\code{required(h)} \\
+\code{GET /v1/wrap/{height}} & The block's wrap ($0|1|2$); 404 until
+ingested \\
+\code{GET /v1/froggers} & Paginated list; \code{limit}, \code{offset},
+\code{after_sat}, \code{to_sat} \\
+\code{GET /v1/frogger/{sat}} & One frog record, with \code{gen},
+\code{in_flight.dir} and \code{outcome.wrap} \\
+\code{GET /v1/road} & In-flight crossings: $T$, direction, target, wrap,
+settle height \\
+\code{GET /v1/leaderboard} & Ranked by generation, then \code{dist};
+\code{limit} \\
+\code{GET /v1/state/root} & Canonical state root \\
+\code{GET /v1/events} & Event log; \code{limit} \\
+\code{GET /v1/events/stream} & Server-sent event stream \\
+\code{GET /v1/mempool} & Mempool preview; needs RPC \\
+\code{GET /v1/fees} & bitcoind fee estimate; never invented \\
+\code{GET /v1/utxo/{txid}/{vout}} & Value, ordinal ranges, frogs,
+\code{exact} flag \\
+\code{GET /healthz}, \code{/readyz}, \code{/metrics} & Liveness, readiness,
+metrics \\
+\code{POST /v1/admin/block} & Ingest an operator/debug block \\
+\code{POST /v1/admin/seed} & Bootstrap explicit ordinal ranges \\
+\code{POST /v1/admin/rollback} & Roll back to a fork point \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+CORS is a browser read policy configured by \code{HOPPER_CORS_ORIGINS}. It
+is not access control and must not be treated as one. The API never publishes
+a wrap for a height it has not ingested: the outcome of a future block is not
+predictable from the indexer either.
+
+\subsection{Configuration}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Indexer configuration. Legacy \code{FROGGER_*} names are accepted
+as fallbacks.}
+\label{tab:config}
+\begin{tabularx}{\linewidth}{@{}p{0.43\linewidth}X@{}}
+\toprule
+\textbf{Variable} & \textbf{Meaning / default} \\
+\midrule
+\code{HOPPER_API_ADDR} & Bind address; default \code{127.0.0.1:9770} \\
+\code{HOPPER_ACTIVATION_HEIGHT} & Frozen inscription cutover; default and
+required \code{974,034} \\
+\code{HOPPER_INSCRIPTION_ACTIVATION_HEIGHT} & Frozen cutover; default and
+required \code{974,034} \\
+\code{HOPPER_RATE_LIMIT_PER_MIN} & Public-read budget per caller; default
+300, \code{0} disables \\
+\code{HOPPER_CORS_ORIGINS} & Browser read origins; default \code{*}; not
+access control \\
+\code{HOPPER_SNAPSHOT_PATH} & Snapshot file; default
+\code{hopper-indexer.snapshot.bin} \\
+\code{HOPPER_SNAPSHOT_EVERY} & Snapshot interval; default 10 blocks \\
+\code{HOPPER_RETAIN_BLOCKS} & Reorg window; default 288 \\
+\code{HOPPER_EVENT_SEGMENT} & Events per append-only segment; default 4096 \\
+\code{HOPPER_EVENT_RETAIN_SEGMENTS} & Old segments retained; default 0 (keep
+all) \\
+\code{HOPPER_SEEDS_FILE} & Bootstrap seed JSON for fresh starts \\
+\code{HOPPER_INGEST_START_HEIGHT} & Must be 0 or unset; later starts are
+refused \\
+\code{HOPPER_ORD_URL} & Optional ord base for lazy range seeding \\
+\code{HOPPER_ZMQ_ADDR} & bitcoind \code{zmqpubhashblock}, e.g.
+\code{tcp://127.0.0.1:28332} \\
+\code{HOPPER_RPC_URL} & bitcoind RPC; default
+\code{http://127.0.0.1:18443} \\
+\code{HOPPER_RPC_COOKIE}\newline \code{HOPPER_RPC_USER}\newline \code{HOPPER_RPC_PASS} & RPC authentication \\
+\code{HOPPER_NETWORK} / \code{HOPPER_GENESIS_HASH} & Published chain
+identity \\
+\code{HOPPER_ADMIN_TOKEN} & Bearer token for \code{/v1/admin/*}; a
+non-loopback bind without it is refused \\
+\code{HOPPER_DB} & Optional redb path \\
+\code{HOPPER_DB_CACHE_MIB} & redb page cache in MiB; 0/unset uses redb's
+default \\
+\code{HOPPER_ENGINE=store} & Keep only a block-sized overlay in memory \\
+\code{HOPPER_REINDEX=1} & Discard the durable store \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The legacy \code{FROGGER_*} spellings are read as fallbacks so an existing
+deployment can migrate without editing its service file.
+
+\subsection{Seeding}
+
+Ordinal ranges ultimately come from the chain. A fresh indexer ingests from
+genesis, but a deployment that starts from a snapshot, or that is handed a
+UTXO it never saw move, can be given explicit ranges:
+\begin{center}
+\begin{minipage}{0.88\linewidth}
+\begin{lstlisting}[language={},caption={Admin seed request.},label={lst:seed}]
+POST /v1/admin/seed
+{
+  "utxos": [
+    { "txid": "<display hex>", "vout": 0,
+      "ranges": [[start, end]] }
+  ]
+}
+\end{lstlisting}
+\end{minipage}
+\end{center}
+A coin whose ranges were never observed is a shadow sat. A mint on one is
+rejected as \texttt{MintAnchor\allowbreak Untracked}. Seeding is an operator bring-up step,
+not a consensus rule.
+
+\subsection{Rejections}
+
+No malformed input is chain-invalidating. A rejection leaves state unchanged
+while sat movement still applies. The closed set lives in
+\code{hopper-indexer/src/types.rs} as \code{RejectionReason}; its families
+are:
+\begin{itemize}[leftmargin=1.4em,itemsep=0.2em]
+  \item mint anchor issues (untracked, shadow, already carrying a frog);
+  \item inscription content type and mint-body digest issues;
+  \item crossing body, parent, leaf or control-block issues;
+  \item the direction set: \code{dir > 2}, the spent leaf is not the
+        \code{dir} leaf, or the control block is not the matching row of
+        Table~\ref{tab:control};
+  \item crossing outpoint and output-position issues;
+  \item crossing on a non-idle frog;
+  \item funding inputs carrying a frog;
+  \item mixed \code{FRG} envelope;
+  \item parameter-hash mismatch.
+\end{itemize}
+
+A rejected transaction is not a reorg and not a chain failure. It is a
+protocol message that the state machine declined to apply. The API also
+refuses to serve a mismatched parameter set: \code{GET /v1/params} publishes
+the hash, wire version and chain identity, and the wallet refuses to sign
+without a matching \code{network}. Missing identity is not permission.
+
+\begin{invariant}{Deterministic replay}
+Given the same blocks, the same seeds and the same parameter set, the
+indexer produces the same state root and the same event log. Network
+topology, arrival order and wall-clock time are not inputs.
+\end{invariant}
