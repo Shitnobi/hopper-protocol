@@ -48,7 +48,6 @@ const app = {
   frogRefusal: null,
   navChosen: false,
   seenFirstFrog: false,
-  booted: false,
 };
 
 // The mint seed is wallet-local randomness, not a user choice. Rotate it
@@ -397,10 +396,6 @@ async function startSession({ mnemonic, network, fingerprint }) {
   if (location.hash) { parseHash(); app.navChosen = true; }
   if (app.view === 'frog') app.frogRecord = app.w.frogBySat(app.frogSat) || null;
   navigate(app.view, { push: false });
-  if (!app.booted) {
-    app.booted = true;
-    beginBootIntro();
-  }
 
   if (!backendReady) return;
   const session = app.w;
@@ -421,9 +416,9 @@ async function startSession({ mnemonic, network, fingerprint }) {
   });
 }
 
-// The boot splash runs once per page load (the egui app plays it every
-// boot); the rules walkthrough follows the first splash until the visitor
-// asks never to see them again.
+// The boot cutscene runs once per page load, before the wallet is created or
+// unlocked. A build-guard reload is not a progress bar for the deploy, so do
+// not replay it into an apparent loop.
 function consumeIntroSkip() {
   let skip = false;
   try {
@@ -443,25 +438,26 @@ function consumeIntroSkip() {
   return skip;
 }
 
-function beginBootIntro() {
+async function playBootIntro() {
   const host = document.getElementById('intro');
-  if (!host) { maybeShowRules(); render(); return; }
-  // A shell update reload starts a new page load, but the splash is not a
-  // progress bar for the deploy. Do not replay it into an apparent loop.
-  if (consumeIntroSkip()) { maybeShowRules(); render(); return; }
+  if (!host || consumeIntroSkip()) return;
   app.intro = true;
-  playIntro(host, () => {
-    app.intro = false;
-    maybeShowRules();
-    render();
+  await new Promise((resolve) => {
+    playIntro(host, () => {
+      app.intro = false;
+      resolve();
+    });
   });
 }
 
+let rulesResolve = null;
+
 function maybeShowRules() {
-  if (app.rulesWalk) return;
+  if (app.rulesWalk) return false;
   try {
     if (!localStorage.getItem('hopper.rulesSeen')) app.rulesWalk = { page: 0, neverAgain: false };
   } catch { /* storage can be denied */ }
+  return !!app.rulesWalk;
 }
 
 function finishRules() {
@@ -470,11 +466,23 @@ function finishRules() {
     try { localStorage.setItem('hopper.rulesSeen', '1'); } catch { /* ignore */ }
   }
   app.rulesWalk = null;
+  // A first visit walks the rules between the cutscene and the wallet; boot()
+  // is waiting for that to finish before it shows onboarding or the lock.
+  const resume = rulesResolve;
+  rulesResolve = null;
+  if (resume) { resume(); return; }
   render();
 }
 
 async function boot() {
   app.screen = 'boot';
+  // The cutscene is the boot screen: nothing about the wallet (create, import
+  // or unlock) is shown until it has played or been skipped.
+  await playBootIntro();
+  if (maybeShowRules()) {
+    render();
+    await new Promise((resolve) => { rulesResolve = resolve; });
+  }
   // The score belongs to the whole app, not to an unlocked wallet: ask for
   // it before onboarding/lock so the first gesture can start it anywhere.
   sound.startLoop();
@@ -813,7 +821,13 @@ const handlers = {
     if (!host) return;
     app.menuOpen = false;
     app.intro = true;
-    playIntro(host, () => { app.intro = false; render(); });
+    // The cutscene carries its own mix; do not talk over it with the score.
+    sound.stopLoop();
+    playIntro(host, () => {
+      app.intro = false;
+      sound.startLoop();
+      render();
+    });
   },
 
   'ob-create'() {
@@ -1623,6 +1637,10 @@ setInterval(refreshSoundLines, 1000);
 
 boot().catch((e) => {
   console.error(e);
+  // A boot failure must never leave the cutscene covering the recovery UI.
+  const intro = document.getElementById('intro');
+  if (intro) intro.hidden = true;
+  app.intro = false;
   app.screen = 'onboard';
   render();
   toast(e.message || String(e), 'err');

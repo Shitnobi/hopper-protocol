@@ -95,10 +95,10 @@ async function swipeRules(dx, dy = 0) {
   await sleep(220);
 }
 
-// The ported FROGGER GUI opens with the boot splash and (on a first visit)
-// the eight-page rules walkthrough. Programmatic taps still reach the page
-// behind the splash, but the shell is not in the DOM during the rules, so
-// both are dismissed before any screen assertions run.
+// The ported FROGGER GUI opens with the boot cutscene and (on a first
+// visit) the eight-page rules walkthrough. Programmatic taps still reach the
+// page behind the cutscene, but the shell is not in the DOM during the
+// rules, so both are dismissed before any screen assertions run.
 async function skipTour() {
   const t0 = Date.now();
   while (Date.now() - t0 < 12000) {
@@ -116,21 +116,23 @@ async function skipTour() {
   }
   throw new Error('tour did not finish');
 }
-// A first visit shows the splash/intro and the rules before onboarding.
-// The old test assumed the intro had already been dismissed; on a fresh
-// Chromium profile it has not, so clear that chrome explicitly.
-async function clearTourChrome() {
-  for (let i = 0; i < 60; i += 1) {
+// A first visit shows the cutscene and the rules before onboarding.
+// Programmatic clicks bypass the pointer handlers, so both are dismissed
+// explicitly before a screen assertion runs. `doneExpr` is the screen that
+// means the boot chrome has finished (onboarding by default).
+async function clearTourChrome(doneExpr = 'document.querySelector("[data-action=ob-create]")') {
+  for (let i = 0; i < 100; i += 1) {
     const state = await evaluate(`(() => {
       const intro = document.querySelector('#intro');
       if (intro && !intro.hidden) { intro.click(); return 'intro'; }
       const skip = document.querySelector('[data-action=rule-skip]');
       if (skip) { skip.click(); return 'rules'; }
-      return document.querySelector('[data-action=ob-create]') ? 'done' : 'wait';
+      return (${doneExpr}) ? 'done' : 'wait';
     })()`);
     if (state === 'done') return;
     await sleep(200);
   }
+  throw new Error(`boot chrome did not clear (waiting for ${doneExpr})`);
 }
 
 const fill = (input, value) => evaluate(`(() => {
@@ -219,6 +221,7 @@ if (defaults.esplora !== '' || defaults.indexer !== '' || defaults.ord !== '') {
 }
 await evaluate(`localStorage.setItem('hopper.settings.v1', JSON.stringify({ mode: 'demo' })); true`);
 await call('Page.reload', { ignoreCache: true });
+await clearTourChrome();
 await waitFor('document.querySelector("[data-action=ob-create]")', 15000, 'onboarding after demo override');
 
 // 1. Create wallet.
@@ -1482,6 +1485,7 @@ if (!stranger) {
 
 // 6. Lock semantics: no silent auto-unlock, then opt-in remember.
 await call('Page.reload', { ignoreCache: true });
+await clearTourChrome('document.querySelector("[data-input=lock-password]")');
 await waitFor('document.querySelector("[data-input=lock-password]")', 15000, 'lock after reload');
 console.log('lock: reload asks for the password');
 await fill('lock-password', 'hopper-demo-1');
@@ -1489,6 +1493,7 @@ await click('unlock');
 await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'unlock');
 await skipTour();
 await call('Page.reload', { ignoreCache: true });
+await clearTourChrome('document.querySelector("[data-input=lock-password]")');
 await waitFor('document.querySelector("[data-input=lock-password]")', 15000, 'lock after opt-out reload');
 console.log('lock: password-only unlock is not remembered');
 await fill('lock-password', 'hopper-demo-1');
@@ -1497,6 +1502,7 @@ await click('unlock');
 await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'unlock remembered');
 await skipTour();
 await call('Page.reload', { ignoreCache: true });
+await clearTourChrome('document.querySelector(".topbar")');
 await waitFor('document.querySelector(".topbar") || document.querySelector(".rules-screen")', 30000, 'auto unlock');
 await skipTour();
 console.log('lock: remembered KEK auto-unlocks');

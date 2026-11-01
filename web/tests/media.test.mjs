@@ -137,8 +137,8 @@ ok(FROG_MARK_ROWS.some((row) => row.includes('#')) && FROG_MARK_ROWS.some((row) 
 const mark = frogMarkSvg(24);
 ok(mark.includes('shape-rendering="crispEdges"') && mark.includes('viewBox="0 0 16 16"'), 'the inline mark is a crisp 16x16 SVG');
 
-// The boot intro paints the same mark on a canvas. It must be blocks at
-// whole device pixels, not the old smooth ellipses.
+// The mark also has a canvas painter for surfaces that cannot use the SVG.
+// It must be blocks at whole device pixels, not the old smooth ellipses.
 const rects = [];
 const fakeCtx = {
   _fill: '',

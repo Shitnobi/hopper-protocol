@@ -79,14 +79,15 @@ web/
                            lily-pad window borders, pond/road/grave/sprite
                            painters, mounted on canvases after each render
   js/ui/frog-mark.js       the 16x16 HOPPER mark shared by the tab icon,
-                           title bar, onboarding logo and boot splash
-  js/ui/tour.js            the boot splash (a hop into the road) and the
+                           title bar and onboarding logo
+  js/ui/tour.js            the boot cutscene player and the
                            eight animated rules pictures
   js/ui/qr.js              the QR widget (quiet zone, paper/ink, placeholder)
   js/ui/dom.js             formatting, sprites, toasts, overlays
   js/main.js               boot, onboarding/lock, routing, action wiring
   js/sound.js              the MIDI score player and the short SFX
   music.mid                the score (the same file as frogger-wallet-pwa)
+  media/hopper-cutscene.mp4  the rendered boot cutscene (15s, H.264/AAC)
   js/vendor/               pinned noble/scure bundle and qr.js (generated)
   tests/                   core vectors, game lifecycle, indexer seam,
                            headless browser e2e
@@ -309,8 +310,10 @@ text and events over canvas-painted materials, so the wallet stays
 selectable, accessible and installable.
 The screen map is FROGGER's: Wallet, History, The Pond, The Road, Mint,
 Leaderboard, a Hopper's detail and life-story pages, Settings, plus the
-boot intro and the eight-page rules walkthrough (swipe left or right, or
-use BACK and NEXT). Once a Hopper is staged in its tapscript state output,
+boot cutscene and the eight-page rules walkthrough (swipe left or right, or
+use BACK and NEXT). The cutscene plays before onboarding, import or
+unlock, and can be skipped with a tap or key. Once a Hopper is staged in
+its tapscript state output,
 its pond slot keeps the name but paints an empty lily with no SEND or
 TRAVEL TO ROAD. The Road shows that staged Hopper with SEND (the state
 output's transfer leaf) and HOP (the state fork). A HOME Hopper never
@@ -319,7 +322,7 @@ transfer SEND. Approving a HOP moves the Hopper out of the direction picker
 into **Crossings in flight** immediately, labelled in mempool until a block
 gives the indexer a real settlement height. Shell updates are handled before
 the app starts: a same-build load never reloads, and a stale-build reload suppresses the
-splash, so a new deploy cannot look like a boot loop. While it is out
+cutscene, so a new deploy cannot look like a boot loop. While it is out
 there, the card is a small treadmill:
 the lane dashes scroll left and the Hopper arcs to the right in a one-second
 hop, landing with a squash and a dust puff. A `DEAD SEALED` card is a still
@@ -369,7 +372,7 @@ common cause:
 `js/build-guard.js` compares the running build with the deployed
 `sw.js`. A page that already runs the deployed build only fills its
 cache in the background. A genuinely stale page waits for every shell
-file to be cached, reloads once, and skips the boot splash on that
+file to be cached, reloads once, and skips the boot cutscene on that
 reload. If the cache never completes, the tab keeps the working page
 instead of spinning.
 

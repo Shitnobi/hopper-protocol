@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v8-0-8';
+const VERSION = 'hopper-v8-0-9';
 const SHELL = [
   './',
   'index.html',
@@ -17,6 +17,8 @@ const SHELL = [
   'js/main.js',
   'js/sound.js',
   'music.mid',
+  'media/hopper-cutscene.mp4',
+  'media/hopper-cutscene-poster.jpg',
   'js/core/art.js',
   'js/core/descriptor.js',
   'js/core/envelope.js',

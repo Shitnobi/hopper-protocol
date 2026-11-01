@@ -893,7 +893,25 @@ textarea { resize: vertical; min-height: 84px; }
   cursor: pointer;
   overflow: hidden;
 }
-.intro canvas { display: block; width: 100%; height: 100%; }
+.intro video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.intro-skip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  text-align: center;
+  color: var(--muted);
+  font: 700 13px "Hopper Digits", "Pixelify Sans", monospace;
+  letter-spacing: 2px;
+  opacity: .7;
+  pointer-events: none;
+}
 .intro[hidden] { display: none !important; }
 
 /* ------------------------------- responsive ----------------------------- */

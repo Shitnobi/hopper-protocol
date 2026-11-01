@@ -7,7 +7,7 @@
 <title>HOPPER — the pond on Bitcoin</title>
 <meta name="description" content="Non-custodial HOPPER v8 wallet and game: Hopper are satoshis, their state lives on Bitcoin.">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http: https: ws: wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' http: https: ws: wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="dark">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/favicon.svg" type="image/svg+xml" sizes="any">
@@ -19,7 +19,12 @@
 </head>
 <body>
 <div id="app" class="app" aria-live="polite"></div>
-<div id="intro" class="intro" hidden><canvas></canvas></div>
+<div id="intro" class="intro" hidden>
+  <video id="intro-video" playsinline preload="auto" muted poster="media/hopper-cutscene-poster.jpg">
+    <source src="media/hopper-cutscene.mp4" type="video/mp4">
+  </video>
+  <div class="intro-skip">TAP TO SKIP</div>
+</div>
 <div id="overlay" class="overlay" hidden></div>
 <div id="drawer-backdrop" class="drawer-backdrop"></div>
 <aside id="drawer" class="drawer" aria-label="menu"></aside>
@@ -46,6 +51,10 @@
     if (shown || !app || app.childElementCount) return;
     const busy = document.getElementById('busy');
     if (busy && !busy.hidden) return;
+    // The cutscene is a boot screen, not a failed start. It has its own
+    // watchdog and skip handler, so an empty #app behind it is expected.
+    const intro = document.getElementById('intro');
+    if (intro && !intro.hidden) return;
     shown = true;
     app.innerHTML = `
       <div class="onboard"><div class="stage" style="text-align:center">
