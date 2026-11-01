@@ -7,10 +7,13 @@
 import { bytesToHex, concatBytes, hexToBytes, reverseBytes, sha256 } from '../core/hex.js';
 import { mintEnvelope } from '../core/envelope.js';
 import { mintBody } from '../core/mintdoc.js';
-import { crossLeafScript, mintCommitLeafScript, sendLeafScript } from '../core/v7.js';
+import { crossLeafScript, legacyCrossLeafScript, mintCommitLeafScript, sendLeafScript } from '../core/v7.js';
 import { CARD_VALUE, DUST_P2WPKH, NUMS_XONLY } from '../core/params.js';
+import { assignRanges, rangeLen, rangesValue } from '../core/satmath.js';
 import { p2trScript } from './addresses.js';
-import { branchHash, controlBlock, leafHash, taprootOutputKey } from './keys.js';
+import {
+  branchHash, controlBlock, leafHash, taprootOutputKey, taprootTweakedKey,
+} from './keys.js';
 import {
   RBF_SEQUENCE, inputFromUtxo, makeTx, output, serializeTx, signP2wpkh,
   signTaprootKeyPath, signTapscript, txid, vsize,
@@ -36,9 +39,10 @@ export function frogBody(frog, dir = 0) {
 //
 // The three crossing leaves differ only in the direction byte of the body
 // they push, so their hashes are fixed when the output is created.
-export function stateScripts(frog, ownerXonly) {
+export function stateScripts(frog, ownerXonly, { legacy = false } = {}) {
   const body = frogBody(frog, 0);
-  const crosses = [crossLeafScript(ownerXonly, body), ...([1, 2].map((dir) => crossLeafScript(ownerXonly, body, dir)))];
+  const leaf = legacy ? legacyCrossLeafScript : crossLeafScript;
+  const crosses = [leaf(ownerXonly, body), ...([1, 2].map((dir) => leaf(ownerXonly, body, dir)))];
   const send = sendLeafScript(ownerXonly);
   const [hL, hS, hR] = crosses.map((script) => leafHash(script));
   const hX = leafHash(send);
@@ -109,12 +113,76 @@ export function isFundingUtxo(u, { allowUnconfirmed = false } = {}) {
   // send, mint, TRAVEL TO ROAD or CROSS can ever select the anchor sat as a
   // fee input. There is deliberately no burn builder in this file.
   if (u.kind !== 'p2wpkh' || (u.frogs && u.frogs.length)) return false;
-  if (u.spendable !== false && u.exact !== false
-      && (u.unconfirmed !== true || allowUnconfirmed)) return true;
-  // An unconfirmed plain coin has no sat ranges yet (ord/indexer do not
-  // index the mempool). The SEND opt-in lets it pay a fee when the user
-  // accepts that trade; mint/prepare/cross never pass this flag.
-  return allowUnconfirmed === true && u.unconfirmed === true;
+  // F-02: an empty indexer/ord answer is not proof of "no inscription".
+  // Every funding input must carry complete ordinal ranges whose total
+  // equals its value. An unknown-ranged mempool coin is never funding,
+  // even when the user has opted into spending unconfirmed coins.
+  if (!Array.isArray(u.ranges) || !u.ranges.length || u.exact === false
+      || u.spendable === false) return false;
+  if (rangesValue(u.ranges) !== Number(u.value)) return false;
+  return u.unconfirmed !== true || allowUnconfirmed;
+}
+
+/** Every input must name complete, value-matched ordinal ranges. This is
+ *  the precondition for the FIFO assignment proof below. */
+export function requireExactRanges(inputs, label = 'transaction') {
+  for (const u of inputs) {
+    if (!u || !Array.isArray(u.ranges) || !u.ranges.length || u.exact === false) {
+      throw new Error(`${label}: input ${u?.txid || '?'}:${u?.vout ?? '?'} has no exact ordinal ranges`);
+    }
+    if (!Number.isSafeInteger(Number(u.value)) || Number(u.value) < 0) {
+      throw new Error(`${label}: input ${u.txid}:${u.vout} has an invalid value`);
+    }
+    for (const r of u.ranges) {
+      if (!Array.isArray(r) || r.length !== 2 || !Number.isSafeInteger(r[0])
+          || !Number.isSafeInteger(r[1]) || r[0] > r[1] || r[0] < 0) {
+        throw new Error(`${label}: input ${u.txid}:${u.vout} has a malformed ordinal range`);
+      }
+    }
+    if (rangesValue(u.ranges) !== Number(u.value)) {
+      throw new Error(`${label}: input ${u.txid}:${u.vout} ranges do not sum to its value`);
+    }
+  }
+}
+
+/** Prove the exact FIFO destination of `sat` and every protected sat.
+ *  Returns the assignment so callers can inspect every output/fee range. */
+export function proveAssignment({
+  inputs, outputValues, sat = null, outputIndex = 0, protectedSats = [], label = 'transaction',
+}) {
+  requireExactRanges(inputs, label);
+  const assignment = assignRanges(inputs.map((u) => u.ranges), outputValues.map(Number));
+  if (!assignment) throw new Error(`${label}: inputs cannot cover the outputs`);
+  if (sat != null) {
+    const wanted = Number(sat);
+    if (!Number.isSafeInteger(wanted)) throw new Error(`${label}: invalid anchor sat`);
+    if (!assignment.outputs[outputIndex]?.some(([a, b]) => wanted >= a && wanted <= b)) {
+      throw new Error(`${label}: the Hopper sat would not land in output ${outputIndex}; refusing to build`);
+    }
+  }
+  for (const value of protectedSats) {
+    const s = Number(value);
+    if (!Number.isSafeInteger(s)) continue;
+    for (const [a, b] of assignment.feeRanges) {
+      if (s >= a && s <= b) throw new Error(`${label}: a protected Hopper sat would be paid to fees; refusing to build`);
+    }
+    for (const out of assignment.outputs) {
+      for (const [a, b] of out) {
+        if (s >= a && s <= b) throw new Error(`${label}: a protected Hopper sat would leave the wallet; refusing to build`);
+      }
+    }
+  }
+  return assignment;
+}
+
+export function assertAnchorFirst(input, sat, label = 'transaction') {
+  if (!input || !Array.isArray(input.ranges) || !input.ranges.length) {
+    throw new Error(`${label}: the Hopper coin has no exact ordinal ranges`);
+  }
+  const first = [...input.ranges].sort((a, b) => a[0] - b[0])[0][0];
+  if (Number(first) !== Number(sat)) {
+    throw new Error(`${label}: the Hopper sat is not the first sat of the coin; move it to its own output first`);
+  }
 }
 
 export function selectFunding(utxos, target, exclude = [], opts = {}) {
@@ -189,7 +257,7 @@ function finalize({ tx, inputs, sign, inputTypes, changeIndex, rate, dust = DUST
 
 export function buildMint({
   keys, utxos, seed, name = '', feeRate = 2, changeIndex = 0, revealFeeRate = null,
-  genHint = 1,
+  genHint = 1, protectedSats = [],
 }) {
   const rate = Math.max(FEE_FLOOR, feeRate);
   const revealRate = Math.max(FEE_FLOOR, revealFeeRate ?? feeRate);
@@ -270,6 +338,16 @@ export function buildMint({
     sign: (tx) => inputs.forEach((u, i) => signP2wpkh(tx, i, u.key.privateKey, u.key.publicKey, u.value)),
   });
   const commit = commitFinal.tx;
+  // F-01/F-07: prove the anchor sat really lands at offset 0 of the commit
+  // output, using the complete FIFO ranges, before signing anything else.
+  const commitProof = proveAssignment({
+    inputs,
+    outputValues: commit.outputs.map((o) => Number(o.value)),
+    sat,
+    outputIndex: 0,
+    protectedSats: protectedSats.filter((x) => Number(x) !== Number(sat)),
+    label: 'mint commit',
+  });
   const commitId = txid(commit);
 
   // 4. Reveal transaction (script path spends the commit leaf).
@@ -297,6 +375,16 @@ export function buildMint({
     changeIndex: 2,
     rate: revealRate,
     sign: (tx) => signTapscript(tx, 0, ord.ownerPrivate, leaf, commitControl, revealPrevouts),
+  });
+  proveAssignment({
+    inputs: [{
+      txid: commitId, vout: 0, value: commitValue, exact: true,
+      ranges: commitProof.outputs[0],
+    }],
+    outputValues: revealFinal.tx.outputs.map((o) => Number(o.value)),
+    sat,
+    outputIndex: 0,
+    label: 'mint reveal',
   });
   const revealId = txid(revealFinal.tx);
   const commitVsize = vsize(commit);
@@ -359,15 +447,57 @@ function opReturnScript(push) {
   return concatBytes([Uint8Array.of(0x6a, push.length), push]);
 }
 
+// --- MINT refund ----------------------------------------------------------
+
+/** Spend the commit output back to the wallet by its key path, without
+ *  revealing the mint leaf. This is the documented recovery for a commit
+ *  whose reveal was rejected or cannot be replayed. */
+export function buildMintRefund({
+  keys, commit, recipientScript, feeRate = 2,
+}) {
+  if (!keys?.ordNode?.privateKey) throw new Error('mint refund needs the ordinals key');
+  const commitTxid = String(commit.txid || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(commitTxid)) throw new Error('mint refund needs the commit txid');
+  const value = BigInt(commit.value);
+  if (value <= 0n) throw new Error('mint refund commit has no value');
+  const script = commit.script;
+  const leaf = commit.leaf;
+  if (!script || !leaf) throw new Error('mint refund needs the commit script and leaf');
+  const rate = Math.max(FEE_FLOOR, feeRate);
+  const tweaked = taprootTweakedKey(keys.ord.ownerPrivate, leafHash(leaf));
+  const tx = makeTx({
+    inputs: [{
+      txid: reverseBytes(hexToBytes(commitTxid)), vout: Number(commit.vout || 0),
+      sequence: 0xffffffff, scriptSig: new Uint8Array(), witness: [],
+    }],
+    outputs: [output(0n, recipientScript)],
+  });
+  const fee = feeFor(estimateVsize(tx, [{ type: 'p2tr-key' }]), rate);
+  if (value <= fee) throw new Error('mint refund commit is too small to pay its own fee');
+  tx.outputs[0].value = value - fee;
+  signTaprootKeyPath(tx, 0, tweaked.outputPrivate, [{ value, script }]);
+  return {
+    tx,
+    hex: bytesToHex(serializeTx(tx, true)),
+    txid: txid(tx),
+    fee,
+    vsize: vsize(tx),
+    valueToRecipient: tx.outputs[0].value,
+    outputs: tx.outputs.map((o) => ({ value: o.value, script: o.script })),
+    inputs: [{ txid: commitTxid, vout: Number(commit.vout || 0), value: Number(value), script }],
+  };
+}
+
 // --- PREPARE --------------------------------------------------------------
 
 // Move a frog from its mint/ordinary output into a fresh state output.
 export function buildPrepare({
   keys, utxo, frog, funding = [], feeRate = 2, changeIndex = 0, ownerXonly = null,
+  legacy = false, protectedSats = [],
 }) {
   const ord = keys.ord;
   const owner = ownerXonly || ord.ownerXonly;
-  const state = stateScripts(frog, owner);
+  const state = stateScripts(frog, owner, { legacy });
   const change = keys.change(changeIndex);
   const rate = Math.max(FEE_FLOOR, feeRate);
   const isKeyPath = utxo.kind === 'p2tr' || utxo.kind === 'frog';
@@ -404,6 +534,16 @@ export function buildPrepare({
     },
   });
 
+  assertAnchorFirst(utxo, frog.sat, 'prepare');
+  proveAssignment({
+    inputs,
+    outputValues: final.tx.outputs.map((o) => Number(o.value)),
+    sat: frog.sat,
+    outputIndex: 0,
+    protectedSats,
+    label: 'prepare',
+  });
+
   return {
     tx: final.tx,
     hex: bytesToHex(serializeTx(final.tx, true)),
@@ -418,7 +558,8 @@ export function buildPrepare({
 
 export function buildCross({
   keys, stateUtxo, frog, funding = [], feeRate = 2, changeIndex = 0,
-  newOwnerXonly = null, ownerXonly = null, dir = 0,
+  newOwnerXonly = null, ownerXonly = null, dir = 0, legacy = false,
+  protectedSats = [],
 }) {
   if (!Number.isInteger(dir) || dir < 0 || dir > 2) {
     throw new Error('dir must be 0 (left), 1 (straight) or 2 (right)');
@@ -427,8 +568,8 @@ export function buildCross({
   const owner = ownerXonly || ord.ownerXonly;
   const nextOwner = newOwnerXonly || owner;
   const rate = Math.max(FEE_FLOOR, feeRate);
-  const state = stateScripts(frog, owner);
-  const next = stateScripts(frog, nextOwner);
+  const state = stateScripts(frog, owner, { legacy });
+  const next = stateScripts(frog, nextOwner, { legacy });
   const change = keys.change(changeIndex);
 
   const picked = selectFunding(funding, 4000n, [`${stateUtxo.txid}:${stateUtxo.vout}`]);
@@ -460,6 +601,16 @@ export function buildCross({
     },
   });
 
+  assertAnchorFirst(stateUtxo, frog.sat, 'hop');
+  proveAssignment({
+    inputs,
+    outputValues: final.tx.outputs.map((o) => Number(o.value)),
+    sat: frog.sat,
+    outputIndex: 0,
+    protectedSats,
+    label: 'hop',
+  });
+
   return {
     tx: final.tx,
     hex: bytesToHex(serializeTx(final.tx, true)),
@@ -480,12 +631,13 @@ export function buildCross({
 // Move a coin (state output, mint output, or ordinary coin) to a recipient
 // address. No inscription, no state change: the fold cannot see it.
 export function buildTransfer({
-  keys, utxo, frog = null, recipientScript, feeRate = 2,
+  keys, utxo, frog = null, recipientScript, feeRate = 2, legacy = false,
+  protectedSats = [],
 }) {
   const ord = keys.ord;
   const rate = Math.max(FEE_FLOOR, feeRate);
   const kind = utxo.kind || (frog ? 'state' : 'p2wpkh');
-  const state = kind === 'state' ? stateScripts(frog, ord.ownerXonly) : null;
+  const state = kind === 'state' ? stateScripts(frog, ord.ownerXonly, { legacy }) : null;
   const script = kind === 'state' ? state.sendLeaf : null;
 
   const tx = makeTx({
@@ -511,6 +663,18 @@ export function buildTransfer({
     signP2wpkh(tx, 0, utxo.key.privateKey, utxo.key.publicKey, utxo.value);
   }
 
+  if (frog && Number.isSafeInteger(Number(frog.sat))) {
+    assertAnchorFirst(utxo, frog.sat, 'transfer');
+    proveAssignment({
+      inputs: [utxo],
+      outputValues: tx.outputs.map((o) => Number(o.value)),
+      sat: frog.sat,
+      outputIndex: 0,
+      protectedSats,
+      label: 'transfer',
+    });
+  }
+
   return {
     tx,
     hex: bytesToHex(serializeTx(tx, true)),
@@ -528,7 +692,7 @@ export function buildTransfer({
 
 export function buildSend({
   keys, utxos, recipientScript, amount, feeRate = 2, changeIndex = 0,
-  allowUnconfirmed = false,
+  allowUnconfirmed = false, protectedSats = [],
 }) {
   if (!Number.isSafeInteger(Number(amount)) || Number(amount) < 546) {
     throw new Error('send amount must be at least 546 sats');
@@ -554,6 +718,15 @@ export function buildSend({
     changeIndex: 1,
     rate,
     sign: (t) => picked.forEach((u, i) => signP2wpkh(t, i, u.key.privateKey, u.key.publicKey, u.value)),
+  });
+  // F-01/F-02: prove the final signed bytes never pay a known Hopper sat
+  // to a recipient, change, or the fee. This is the last line of defence
+  // after discovery and coin selection.
+  proveAssignment({
+    inputs: picked,
+    outputValues: final.tx.outputs.map((o) => Number(o.value)),
+    protectedSats,
+    label: 'send',
   });
   return {
     tx: final.tx,

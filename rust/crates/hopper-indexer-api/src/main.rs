@@ -85,13 +85,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .expect("HOPPER_API_ADDR must be host:port");
     // H₀ for v2.0 (0x03). Future wire versions ship with their own
     // announced heights (SPEC §3.1 version schedule).
-    let activation_height: u32 = env_u32("HOPPER_ACTIVATION_HEIGHT", 900_000);
-    // Change B: height from which MINTs must carry an ord inscription
-    // reveal (None / unset = enforcement off — legacy mints accepted).
-    let inscription_activation_height: Option<u32> =
-        env_var("HOPPER_INSCRIPTION_ACTIVATION_HEIGHT")
-            .ok()
-            .and_then(|v| v.parse().ok());
+    let activation_height: u32 = env_u32(
+        "HOPPER_ACTIVATION_HEIGHT",
+        hopper_core::PROTOCOL.generations.genesis,
+    );
+    // F-09: freeze the cutover to the genesis in SPEC §1.1. A deployment
+    // with a different activation is a different protocol and must not
+    // share snapshots.
+    if activation_height != hopper_core::PROTOCOL.generations.genesis {
+        return Err(format!(
+            "HOPPER_ACTIVATION_HEIGHT={activation_height} does not match SPEC genesis {}",
+            hopper_core::PROTOCOL.generations.genesis,
+        ).into());
+    }
+    let inscription_activation_height: Option<u32> = Some(env_u32(
+        "HOPPER_INSCRIPTION_ACTIVATION_HEIGHT",
+        hopper_core::PROTOCOL.generations.genesis,
+    ));
+    if inscription_activation_height != Some(hopper_core::PROTOCOL.generations.genesis) {
+        return Err(format!(
+            "HOPPER_INSCRIPTION_ACTIVATION_HEIGHT={:?} does not match SPEC genesis {}",
+            inscription_activation_height, hopper_core::PROTOCOL.generations.genesis,
+        ).into());
+    }
     let snapshot_path =
         env_var("HOPPER_SNAPSHOT_PATH").unwrap_or_else(|_| "hopper-indexer.snapshot.bin".into());
     let snapshot_every = env_u32("HOPPER_SNAPSHOT_EVERY", 10);
@@ -117,11 +133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let event_segment = env_usize("HOPPER_EVENT_SEGMENT", 4096);
     // 0 = keep every segment (events are re-derivable; this bounds disk).
     let event_retain = env_usize("HOPPER_EVENT_RETAIN_SEGMENTS", 0);
-
-    // There is one wire version (`0x07`): nothing to schedule and no
-    // origin to freeze. `HOPPER_ACTIVATION_HEIGHT` is the hop-schedule
-    // genesis, which lives in the compiled parameters.
-    let _ = activation_height;
 
     let config = IndexerConfig {
         inscription_activation_height,

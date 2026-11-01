@@ -107,7 +107,19 @@ pub struct IngestInscription {
     /// The control block of that script-path spend, hex.
     #[serde(default)]
     pub control_block: Option<String>,
+    /// ord pointer, decimal.
+    #[serde(default)]
+    pub pointer: Option<u64>,
+    /// Number of inscriptions in this input.
+    #[serde(default = "one_inscription")]
+    pub inscription_count: u32,
+    /// False for duplicate/incomplete/pushnum/stutter envelopes.
+    #[serde(default = "true_value")]
+    pub valid: bool,
 }
+
+fn one_inscription() -> u32 { 1 }
+fn true_value() -> bool { true }
 
 #[derive(Deserialize)]
 pub struct IngestOutput {
@@ -181,6 +193,9 @@ pub fn to_block(dto: IngestBlock) -> Result<Block, ApiError> {
                         parents,
                         tapscript: hex_field(ins.tapscript, "tapscript")?,
                         control_block: hex_field(ins.control_block, "control_block")?,
+                        pointer: ins.pointer,
+                        inscription_count: ins.inscription_count.max(1),
+                        valid: ins.valid,
                     })
                 }
             };

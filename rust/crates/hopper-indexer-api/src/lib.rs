@@ -18,7 +18,9 @@
 //! fetches of a sync pass. Acceptable at this scale; a future
 //! walk-outside/apply-inside split is a B5+ optimization.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use hopper_core::satmath::SatRange;
 use hopper_indexer::state_machine::{Indexer, IndexerError};
@@ -105,6 +107,8 @@ pub struct ApiState {
     leaderboard: LeaderboardCache,
     /// The chain this deployment ingests (published on `/v1/params`).
     chain: RwLock<ChainIdentity>,
+    /// Per-caller public-route budget. Entries are pruned on access.
+    rate: Mutex<HashMap<String, (Instant, u32)>>,
     /// Bearer token required for `/v1/admin/*` when configured.
     ///
     /// `None` means "open", which [`serve`] only allows on a loopback
@@ -205,6 +209,7 @@ impl ApiState {
             ord: None,
             chain: RwLock::new(ChainIdentity::default()),
             leaderboard: Mutex::new(None),
+            rate: Mutex::new(HashMap::new()),
             admin_token: None,
         }
     }
@@ -1040,6 +1045,49 @@ async fn allow_cross_origin(
     res
 }
 
+/// A tiny fixed-window limiter for public reads. `HOPPER_RATE_LIMIT_PER_MIN`
+/// is the only knob; 0 disables it (loopback tests).
+async fn rate_limit(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let limit = std::env::var("HOPPER_RATE_LIMIT_PER_MIN")
+        .ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(300);
+    if limit == 0 {
+        return next.run(req).await;
+    }
+    let key = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or_else(|| req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("local")
+        .to_string();
+    let allowed = {
+        let now = Instant::now();
+        let mut map = state.rate.lock().expect("rate lock poisoned");
+        if map.len() > 4096 {
+            map.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(60));
+        }
+        let entry = map.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= Duration::from_secs(60) {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= limit
+    };
+    if !allowed {
+        return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
+            .into_response();
+    }
+    next.run(req).await
+}
+
 /// The full v1 router, reading the CORS policy from the environment.
 pub fn app(state: SharedState) -> axum::Router {
     app_with_cors(state, CorsPolicy::from_env())
@@ -1076,6 +1124,10 @@ pub fn app_with_cors(state: SharedState, cors: CorsPolicy) -> axum::Router {
         .layer(axum::middleware::from_fn_with_state(
             cors,
             allow_cross_origin,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit,
         ))
         .merge(admin)
         .route("/healthz", get(routes::healthz))

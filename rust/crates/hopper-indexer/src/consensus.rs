@@ -299,8 +299,8 @@ fn process_tx<S: ConsensusState + ?Sized>(state: &mut S, tx: &Tx, sink: &mut Blo
         }
     }
 
-    if let Some(Message::Mint { seed, name }) = envelope {
-        process_mint(state, tx, &flow, seed, name, sink);
+    if let Some(Message::Mint { seed, name, version }) = envelope {
+        process_mint(state, tx, &flow, seed, name, version, sink);
     }
 }
 
@@ -376,6 +376,7 @@ fn process_mint<S: ConsensusState + ?Sized>(
     flow: &TxFlow,
     seed: u32,
     name: String,
+    envelope_version: u8,
     sink: &mut BlockSink,
 ) {
     let Some(sat) = flow.anchor_out0 else {
@@ -398,7 +399,9 @@ fn process_mint<S: ConsensusState + ?Sized>(
     // (and when enforcement is off) legacy single-tx mints are
     // accepted. An inscription present on a legacy mint is still
     // recorded (inscription id surfaced, never relied upon).
-    let inscription_id = match validate_mint_inscription(state, tx, seed, sat, &name, sink) {
+    let inscription_id = match validate_mint_inscription(
+        state, tx, seed, sat, &name, envelope_version, sink,
+    ) {
         Ok(id) => id,
         Err(()) => return,
     };
@@ -429,7 +432,13 @@ fn process_mint<S: ConsensusState + ?Sized>(
         // MINT anchors the frog sat at output 0 (SPEC §4.1); the
         // coin's `frogs` list carries the reverse direction.
         location: SatLocation::Tracked(anchor),
-        wire_version: hopper_core::VERSION,
+        wire_version: if hopper_core::is_grandfathered_sat(sat)
+            && envelope_version == hopper_core::VERSION_V7
+        {
+            hopper_core::VERSION_V7
+        } else {
+            hopper_core::VERSION_V8
+        },
         mint_index,
         crossings_settled: 0,
         deaths: 0,
@@ -478,6 +487,7 @@ fn validate_mint_inscription<S: ConsensusState + ?Sized>(
     seed: u32,
     sat: u64,
     name: &str,
+    envelope_version: u8,
     sink: &mut BlockSink,
 ) -> Result<Option<String>, ()> {
     let reveals: Vec<(usize, &InscriptionReveal)> = tx
@@ -515,27 +525,48 @@ fn validate_mint_inscription<S: ConsensusState + ?Sized>(
             sink.reject(tx.txid, RejectionReason::MintWithoutInscription);
             return Err(());
         }
-        let content_type = hopper_core::V7_CONTENT_TYPE;
+        // F-09: preserve ord's pointer/multiplicity/validity fields.
+        if reveal.inscription_count != 1 || reveal.pointer.is_some() || !reveal.valid {
+            sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
+            return Err(());
+        }
+        let content_type = hopper_core::V8_CONTENT_TYPE;
         if reveal.content_type != content_type {
             sink.reject(tx.txid, RejectionReason::InscriptionContentType);
             return Err(());
         }
-        // One body per (seed, sat, name, gen_hint). The hint is read from
-        // the document itself; it is a display value, never state. v6
-        // bodies are not accepted: v7 is a new deployment (SPEC §2.3).
-        let gen_hint = reveal
-            .body
-            .as_deref()
-            .and_then(hopper_core::parse_v7_gen_hint);
+        // The one released Hopper may carry its frozen v7 document and
+        // envelope. Every other mint must be v8.
+        let legacy = envelope_version == hopper_core::VERSION_V7;
+        if legacy != hopper_core::is_grandfathered_sat(sat) {
+            sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
+            return Err(());
+        }
+        let (gen_hint, expected) = if legacy {
+            (
+                reveal.body.as_deref().and_then(hopper_core::parse_v7_gen_hint),
+                "v7",
+            )
+        } else {
+            (
+                reveal.body.as_deref().and_then(hopper_core::parse_v8_gen_hint),
+                "v8",
+            )
+        };
         let Some(gen_hint) = gen_hint else {
             sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
             return Err(());
         };
         // The body hash is recomputed from the canonical render below, so
         // the ingest-supplied digest is never trusted on its own.
-        if !reveal.body.as_deref().is_some_and(|body| {
-            body == hopper_core::live_v7_html(seed, sat, &name, gen_hint).as_bytes()
-        }) {
+        let body_ok = reveal.body.as_deref().is_some_and(|body| {
+            if expected == "v7" {
+                body == hopper_core::live_v7_html(seed, sat, &name, gen_hint).as_bytes()
+            } else {
+                body == hopper_core::live_v8_html(seed, sat, &name, gen_hint).as_bytes()
+            }
+        });
+        if !body_ok {
             sink.reject(tx.txid, RejectionReason::InscriptionArtMismatch);
             return Err(());
         }

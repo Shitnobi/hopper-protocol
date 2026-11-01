@@ -1,4 +1,4 @@
-//! v7 wire: the state-inscription body and the frog's four leaves.
+//! Versioned state-inscription body and leaves (v8 current, v7 legacy) and the frog's four leaves.
 //!
 //! Like the rest of this crate this module is pure (no secp256k1) so it
 //! cross-compiles and can be shared with the indexer. The taproot output
@@ -8,10 +8,14 @@
 //!
 //! See `SPEC.md` §2.4, §3.1–§3.3.
 
-/// Body magic, 9 ASCII bytes (SPEC §2.4).
-pub const STATE_MAGIC: &[u8; 9] = b"FRG7CROSS";
-/// The wire version carried in the body.
-pub const STATE_VERSION: u8 = crate::params::VERSION_V7;
+/// Current body magic, 9 ASCII bytes (SPEC §2.4).
+pub const STATE_MAGIC: &[u8; 9] = b"FRG8CROSS";
+/// Released v7 body magic, accepted only for the grandfathered Hopper.
+pub const LEGACY_STATE_MAGIC: &[u8; 9] = b"FRG7CROSS";
+/// The current wire version carried in the body.
+pub const STATE_VERSION: u8 = crate::params::VERSION_V8;
+/// The released v7 version, accepted only for the grandfathered Hopper.
+pub const LEGACY_STATE_VERSION: u8 = crate::params::VERSION_V7;
 /// `9 + 1 + 8 + 32 + 4 + 1`.
 pub const STATE_BODY_LEN: usize = 55;
 
@@ -35,8 +39,8 @@ impl StateBodyError {
     pub const fn message(self) -> &'static str {
         match self {
             StateBodyError::WrongLength => "state body must be 55 bytes",
-            StateBodyError::BadMagic => "state body magic is FRG7CROSS",
-            StateBodyError::BadVersion => "state body version must be 0x07",
+            StateBodyError::BadMagic => "state body magic is FRG8CROSS or the legacy FRG7CROSS",
+            StateBodyError::BadVersion => "state body version must be 0x08 or the legacy 0x07",
             StateBodyError::BadDirection => "state body direction must be 0, 1 or 2",
         }
     }
@@ -63,12 +67,10 @@ impl StateBody {
     }
 }
 
-/// Encode the canonical body.
-#[must_use]
-pub fn encode_state_body(body: &StateBody) -> [u8; STATE_BODY_LEN] {
+fn encode_body(magic: &[u8; 9], version: u8, body: &StateBody) -> [u8; STATE_BODY_LEN] {
     let mut out = [0u8; STATE_BODY_LEN];
-    out[..9].copy_from_slice(STATE_MAGIC);
-    out[9] = STATE_VERSION;
+    out[..9].copy_from_slice(magic);
+    out[9] = version;
     out[10..18].copy_from_slice(&body.sat.to_le_bytes());
     out[18..50].copy_from_slice(&body.mint_txid);
     out[50..54].copy_from_slice(&body.mint_index.to_le_bytes());
@@ -76,16 +78,30 @@ pub fn encode_state_body(body: &StateBody) -> [u8; STATE_BODY_LEN] {
     out
 }
 
-/// Decode a state body. Failure is a rejection, never a state change.
-pub fn decode_state_body(bytes: &[u8]) -> Result<StateBody, StateBodyError> {
+/// Encode the current v8 body.
+#[must_use]
+pub fn encode_state_body(body: &StateBody) -> [u8; STATE_BODY_LEN] {
+    encode_body(STATE_MAGIC, STATE_VERSION, body)
+}
+
+/// Encode the released v7 body (grandfathered Hopper only).
+#[must_use]
+pub fn encode_legacy_state_body(body: &StateBody) -> [u8; STATE_BODY_LEN] {
+    encode_body(LEGACY_STATE_MAGIC, LEGACY_STATE_VERSION, body)
+}
+
+/// Decode a state body and report whether it used the legacy envelope.
+pub fn decode_state_body_versioned(bytes: &[u8]) -> Result<(StateBody, bool), StateBodyError> {
     if bytes.len() != STATE_BODY_LEN {
         return Err(StateBodyError::WrongLength);
     }
-    if &bytes[..9] != STATE_MAGIC {
-        return Err(StateBodyError::BadMagic);
-    }
-    if bytes[9] != STATE_VERSION {
-        return Err(StateBodyError::BadVersion);
+    let legacy = &bytes[..9] == LEGACY_STATE_MAGIC && bytes[9] == LEGACY_STATE_VERSION;
+    if !legacy && !(&bytes[..9] == STATE_MAGIC && bytes[9] == STATE_VERSION) {
+        return Err(if &bytes[..9] == STATE_MAGIC || &bytes[..9] == LEGACY_STATE_MAGIC {
+            StateBodyError::BadVersion
+        } else {
+            StateBodyError::BadMagic
+        });
     }
     let mut sat = [0u8; 8];
     sat.copy_from_slice(&bytes[10..18]);
@@ -97,12 +113,20 @@ pub fn decode_state_body(bytes: &[u8]) -> Result<StateBody, StateBodyError> {
     if dir > crate::wrap::DIR_RIGHT {
         return Err(StateBodyError::BadDirection);
     }
-    Ok(StateBody {
-        sat: u64::from_le_bytes(sat),
-        mint_txid,
-        mint_index: u32::from_le_bytes(index),
-        dir,
-    })
+    Ok((
+        StateBody {
+            sat: u64::from_le_bytes(sat),
+            mint_txid,
+            mint_index: u32::from_le_bytes(index),
+            dir,
+        },
+        legacy,
+    ))
+}
+
+/// Decode a state body. Failure is a rejection, never a state change.
+pub fn decode_state_body(bytes: &[u8]) -> Result<StateBody, StateBodyError> {
+    decode_state_body_versioned(bytes).map(|(body, _)| body)
 }
 
 /// The v7 state-output crossing leaf, byte-exact (SPEC §3.2):
@@ -117,28 +141,60 @@ pub fn decode_state_body(bytes: &[u8]) -> Result<StateBody, StateBodyError> {
 /// `body.dir`; the three leaves differ only in that byte, so choosing a
 /// direction selects a leaf whose bytes were fixed when the state output
 /// was created.
-#[must_use]
-pub fn state_leaf_script(owner_xonly: &[u8; 32], body: &StateBody) -> Vec<u8> {
+fn state_leaf_script_with(
+    owner_xonly: &[u8; 32],
+    body: &StateBody,
+    legacy: bool,
+) -> Vec<u8> {
     let parent = encode_parent_tag(&body.mint_txid, body.mint_index);
+    let encoded = if legacy {
+        encode_legacy_state_body(body)
+    } else {
+        encode_state_body(body)
+    };
     let mut out = Vec::with_capacity(165);
     out.push(0x20); // PUSH32
     out.extend_from_slice(owner_xonly);
     out.push(0xad); // OP_CHECKSIGVERIFY
     out.extend_from_slice(&crate::inscription::build_inscription_script_with_parents(
         STATE_CONTENT_TYPE,
-        &encode_state_body(body),
+        &encoded,
         &[parent],
     ));
     out.push(0x51); // OP_TRUE
     out
 }
 
+#[must_use]
+pub fn state_leaf_script(owner_xonly: &[u8; 32], body: &StateBody) -> Vec<u8> {
+    state_leaf_script_with(owner_xonly, body, false)
+}
+
+#[must_use]
+pub fn legacy_state_leaf_script(owner_xonly: &[u8; 32], body: &StateBody) -> Vec<u8> {
+    state_leaf_script_with(owner_xonly, body, true)
+}
+
+fn cross_leaf_script_with(
+    owner_xonly: &[u8; 32],
+    body: &StateBody,
+    dir: u8,
+    legacy: bool,
+) -> Vec<u8> {
+    let mut with = *body;
+    with.dir = dir;
+    state_leaf_script_with(owner_xonly, &with, legacy)
+}
+
 /// The crossing leaf for an explicit direction (overrides `body.dir`).
 #[must_use]
 pub fn cross_leaf_script(owner_xonly: &[u8; 32], body: &StateBody, dir: u8) -> Vec<u8> {
-    let mut with = *body;
-    with.dir = dir;
-    state_leaf_script(owner_xonly, &with)
+    cross_leaf_script_with(owner_xonly, body, dir, false)
+}
+
+#[must_use]
+pub fn legacy_cross_leaf_script(owner_xonly: &[u8; 32], body: &StateBody, dir: u8) -> Vec<u8> {
+    cross_leaf_script_with(owner_xonly, body, dir, true)
 }
 
 /// The send leaf: an ordinary owner signature, no envelope.
@@ -210,6 +266,19 @@ pub fn state_leaf_hashes(
     ]
 }
 
+#[must_use]
+pub fn legacy_state_leaf_hashes(
+    owner_xonly: &[u8; 32],
+    body: &StateBody,
+) -> [[u8; 32]; 4] {
+    [
+        leaf_hash(&legacy_cross_leaf_script(owner_xonly, body, crate::wrap::DIR_LEFT)),
+        leaf_hash(&legacy_cross_leaf_script(owner_xonly, body, crate::wrap::DIR_STRAIGHT)),
+        leaf_hash(&legacy_cross_leaf_script(owner_xonly, body, crate::wrap::DIR_RIGHT)),
+        leaf_hash(&send_leaf_script(owner_xonly)),
+    ]
+}
+
 /// The state output's merkle root (SPEC §3.1):
 /// `branch(branch(hL, hS), branch(hR, hX))`.
 #[must_use]
@@ -270,8 +339,8 @@ mod tests {
         for dir in 0..3 {
             let b = encode_state_body(&body(dir));
             assert_eq!(b.len(), 55);
-            assert_eq!(&b[..9], b"FRG7CROSS");
-            assert_eq!(b[9], 0x07);
+            assert_eq!(&b[..9], STATE_MAGIC);
+            assert_eq!(b[9], STATE_VERSION);
             assert_eq!(b[54], dir);
             assert_eq!(decode_state_body(&b), Ok(body(dir)));
         }

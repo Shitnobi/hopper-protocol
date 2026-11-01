@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 
-import { buildCross, buildMint, buildPrepare } from '../js/wallet/actions.js';
+import { buildCross, buildMint, buildPrepare, buildSend } from '../js/wallet/actions.js';
 import { p2trScript } from '../js/wallet/addresses.js';
 import { replayFrogChain, frogTxRole } from '../js/wallet/chainfrog.js';
 import { deriveWallet } from '../js/wallet/keys.js';
@@ -41,6 +41,7 @@ const mint = buildMint({ keys, utxos: [anchor], seed, name: 'Hoppamoto', feeRate
 const reveal = {
   txid: mint.reveal.txid, vout: 0, value: 1000, script: ordScript,
   address: keys.frogAddress(), kind: 'frog',
+  ranges: [[Number(mint.sat), Number(mint.sat) + 999]],
   status: { confirmed: true, block_height: 100 },
 };
 const record = parseLocalMint({
@@ -50,7 +51,7 @@ ok(record, 'the real reveal yields a mint record');
 
 const prepare = buildPrepare({
   keys,
-  utxo: { txid: reveal.txid, vout: 0, value: 1000, script: ordScript, kind: 'frog', key: keys.ord },
+  utxo: { txid: reveal.txid, vout: 0, value: 1000, script: ordScript, kind: 'frog', key: keys.ord, ranges: reveal.ranges, exact: true },
   frog: record,
   funding: [anchor],
   feeRate: 2,
@@ -58,6 +59,7 @@ const prepare = buildPrepare({
 const stateUtxo = {
   txid: prepare.txid, vout: 0, value: 25000, script: prepare.stateScript,
   kind: 'state', key: keys.ord, spendable: false,
+  ranges: [[Number(record.sat), Number(record.sat) + 24999]],
 };
 const changeKey = keys.change(0);
 const crossFunding = {
@@ -74,18 +76,31 @@ const txHex = new Map([[prepare.txid, prepare.hex], [cross.txid, cross.hex]]);
 const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 105 }];
 
 {
-  const role = frogTxRole({ record, hex: prepare.hex, stateScript: prepare.stateScript });
+  const role = frogTxRole({ record, hex: prepare.hex, stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly });
   eq('TRAVEL creates the state output', { stateOut: role.stateOut, crossing: role.crossing }, { stateOut: true, crossing: null });
-  const hop = frogTxRole({ record, hex: cross.hex, stateScript: prepare.stateScript });
+  const hop = frogTxRole({ record, hex: cross.hex, stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly });
   eq('HOP carries direction STRAIGHT', hop.crossing, { dir: 1, input: 0 });
   eq('HOP spends into the same state script', hop.stateOut, true);
+
+  // F-06: a payment to the public state address is an output-only deposit,
+  // never a crossing. It has no input-0 envelope and no canonical leaf.
+  const deposit = buildSend({
+    keys, utxos: [crossFunding], recipientScript: prepare.stateScript,
+    amount: 1000, feeRate: 2,
+  });
+  const depositRole = frogTxRole({
+    record, hex: deposit.hex, stateScript: prepare.stateScript,
+    ownerXonly: keys.ord.ownerXonly,
+  });
+  eq('an output-only deposit is not a crossing', depositRole?.crossing, null);
+  eq('an output-only deposit is still a state-address payment', depositRole?.stateOut, true);
 }
 
 {
   const replay = replayFrogChain({
     record, rows, txHex, tip: 120,
     hashByHeight: new Map([[106, zeroHash]]),
-    stateScript: prepare.stateScript,
+    stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('a surviving first HOP advances dist', replay.dist, 1);
   eq('one HOP is not yet home at target 5', replay.state, 'idle');
@@ -105,7 +120,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   const replay = replayFrogChain({
     record, rows, txHex, tip: 108,
     hashByHeight: new Map([[106, zeroHash]]),
-    stateScript: prepare.stateScript,
+    stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('a HOP inside finality stays crossing', replay.state, 'crossing');
   eq('an in-flight HOP does not advance dist', replay.dist, 0);
@@ -122,7 +137,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
     record, rows,
     txHex: new Map([[prepare.txid, prepare.hex], [dead.txid, dead.hex]]),
     tip: 120, hashByHeight: new Map([[106, zeroHash]]),
-    stateScript: prepare.stateScript,
+    stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('wrap 0 kills a LEFT HOP', replay.state, 'dead');
   eq('a death does not advance dist', replay.dist, 0);
@@ -136,12 +151,12 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
   const old = { ...record, mint_height: 974033 };
   const pre = buildPrepare({
     keys,
-    utxo: { txid: reveal.txid, vout: 0, value: 1000, script: ordScript, kind: 'frog', key: keys.ord },
+    utxo: { txid: reveal.txid, vout: 0, value: 1000, script: ordScript, kind: 'frog', key: keys.ord, ranges: reveal.ranges, exact: true },
     frog: old, funding: [anchor], feeRate: 2,
   });
   const preCross = buildCross({
     keys,
-    stateUtxo: { txid: pre.txid, vout: 0, value: 25000, script: pre.stateScript, kind: 'state', key: keys.ord },
+    stateUtxo: { txid: pre.txid, vout: 0, value: 25000, script: pre.stateScript, kind: 'state', key: keys.ord, ranges: [[Number(old.sat), Number(old.sat) + 24999]], exact: true },
     frog: old, funding: [crossFunding], feeRate: 2, dir: 1,
   });
   const replay = replayFrogChain({
@@ -149,7 +164,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
     rows: [{ txid: pre.txid, height: 974033 }, { txid: preCross.txid, height: 974040 }],
     txHex: new Map([[pre.txid, pre.hex], [preCross.txid, preCross.hex]]),
     tip: 974050, hashByHeight: new Map([[974041, zeroHash]]),
-    stateScript: pre.stateScript,
+    stateScript: pre.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('pre-genesis HOP still advances', replay.dist, 1);
   eq('pre-genesis target is base 5', replay.lastTarget, 5);
@@ -158,7 +173,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
 {
   const missing = replayFrogChain({
     record, rows, txHex: new Map(), tip: 120, hashByHeight: new Map(),
-    stateScript: prepare.stateScript,
+    stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('missing transaction hex does not invent state', missing, null);
 }
@@ -217,6 +232,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
     stateUtxo: {
       txid: cross.txid, vout: 0, value: 25000, script: prepare.stateScript,
       kind: 'state', key: keys.ord,
+      ranges: [[Number(record.sat), Number(record.sat) + 24999]], exact: true,
     },
     frog: record, funding: [crossFunding], feeRate: 2, dir: 2,
   });
@@ -224,7 +240,7 @@ const rows = [{ txid: prepare.txid, height: 100 }, { txid: cross.txid, height: 1
     record, rows: [...rows, { txid: cross2.txid, height: null }],
     txHex: new Map([...txHex, [cross2.txid, cross2.hex]]),
     tip: 120, hashByHeight: new Map([[106, zeroHash]]),
-    stateScript: prepare.stateScript,
+    stateScript: prepare.stateScript, ownerXonly: keys.ord.ownerXonly,
   });
   eq('a mempool HOP keeps the confirmed dist', replay.dist, 1);
   eq('a mempool HOP puts the frog on the road', replay.state, 'crossing');

@@ -1,4 +1,4 @@
-// HOPPER v7 protocol parameters — one source of truth for the webapp.
+// HOPPER v8 protocol parameters — one source of truth for the webapp.
 // Mirrors rust/crates/hopper-core/src/params.rs + generations.rs + wrap.rs.
 // Every constant here is consensus: never change a value without a
 // wire-version bump.
@@ -7,11 +7,26 @@ import {
   concatBytes, hexToBytes, sha256, u32le, u64le, bytesToHex,
 } from './hex.js';
 
-export const WIRE_VERSION = 0x07;
+export const WIRE_VERSION = 0x08;
+export const LEGACY_WIRE_VERSION = 0x07;
 export const MAGIC = 'FRG';
-export const STATE_MAGIC = 'FRG7CROSS';
-export const V7_CONTENT_TYPE = 'text/html;charset=utf-8';
+export const STATE_MAGIC = 'FRG8CROSS';
+export const LEGACY_STATE_MAGIC = 'FRG7CROSS';
+export const STATE_VERSION = 0x08;
+export const LEGACY_STATE_VERSION = 0x07;
+export const V8_CONTENT_TYPE = 'text/html;charset=utf-8';
+export const V7_CONTENT_TYPE = V8_CONTENT_TYPE;
 export const STATE_CONTENT_TYPE = 'application/octet-stream';
+
+// The one Hopper explicitly grandfathered from the released v7 protocol.
+// Set this to the ordinal sat number when it is known; 0 means no legacy
+// Hopper is accepted. This is the only place the number is edited.
+export const GRANDFATHERED_SAT = 0;
+
+export function isGrandfatheredSat(sat) {
+  const n = Number(sat);
+  return GRANDFATHERED_SAT > 0 && Number.isSafeInteger(n) && n === GRANDFATHERED_SAT;
+}
 
 export const MAX_TARGET = 25;
 export const ANCHOR_OUTPUT_VALUE = 1000n;

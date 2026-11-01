@@ -24,7 +24,7 @@ const chain = backend.chain;
 // The wallet has no burn path: no builder, and funding selection refuses
 // every coin that is not a plain BIP84 P2WPKH output.
 assert.equal('buildBurn' in actions, false, 'the wallet must not expose a burn builder');
-const fundShape = { spendable: true, exact: true, frogs: [], txid: '00'.repeat(32), vout: 0, value: 1000 };
+const fundShape = { spendable: true, exact: true, ranges: [[0, 999]], frogs: [], txid: '00'.repeat(32), vout: 0, value: 1000 };
 assert.equal(actions.isFundingUtxo({ ...fundShape, kind: 'p2wpkh' }), true);
 for (const kind of ['frog', 'state', 'p2tr', undefined]) {
   assert.equal(actions.isFundingUtxo({ ...fundShape, kind }), false, `${kind} is never funding`);
@@ -127,9 +127,10 @@ assert.equal(frog.location.txid, prep.txid);
 assert.equal(frog.location.vout, 0);
 assert.equal(frog.state, 'idle');
 const state = stateScripts(frog, wallet.ord.ownerXonly);
+const prepCoin = chain.utxo(prep.txid, 0);
 const stUtxo = {
   txid: prep.txid, vout: 0, value: CARD_VALUE, script: state.script, kind: 'state',
-  exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat], key: wallet.ord,
+  exact: true, ranges: prepCoin.ranges, frogs: [mint.sat], key: wallet.ord,
 };
 assert.equal(chain.utxo(prep.txid, 0).value, Number(CARD_VALUE));
 
@@ -180,9 +181,11 @@ assert.equal(frog.crossings_settled, 1);
 
 if (frog.location) {
   const nextState = stateScripts(frog, wallet.ord.ownerXonly);
+  const nextCoin = chain.utxo(frog.location.txid, frog.location.vout);
   const utxo = {
     txid: frog.location.txid, vout: frog.location.vout, value: CARD_VALUE,
-    script: nextState.script, kind: 'state', exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat],
+    script: nextState.script, kind: 'state', exact: true,
+    ranges: nextCoin.ranges, frogs: [mint.sat],
   };
   const recipient = wallet.receive(1);
   const transfer = buildTransfer({ keys: wallet, utxo, frog, recipientScript: recipient.script, feeRate: 2 });

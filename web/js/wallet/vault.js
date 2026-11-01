@@ -46,7 +46,7 @@ export async function createVault({ mnemonic, password, network, fingerprint, re
   const kek = await deriveKek(password, salt);
   const payload = utf8(JSON.stringify({ mnemonic, network, fingerprint }));
   const ct = await subtle().encrypt({ name: 'AES-GCM', iv }, kek, payload);
-  saveJson(KEYS.vault, {
+  const record = {
     v: 1,
     salt: bytesToBase64(salt),
     iv: bytesToBase64(iv),
@@ -56,8 +56,21 @@ export async function createVault({ mnemonic, password, network, fingerprint, re
     words: mnemonic.trim().split(/\s+/).length,
     createdAt: new Date().toISOString(),
     iterations: ITERATIONS,
-  });
-  if (remember) await idbPut('keys', 'kek', kek);
+  };
+  // F-11: storage denial/quota failure must never be reported as a sealed
+  // vault. Write, read back, and require the ciphertext to match.
+  if (!saveJson(KEYS.vault, record)) {
+    throw new Error('the vault could not be stored; check browser storage permissions and try again');
+  }
+  const readBack = loadJson(KEYS.vault, null);
+  if (!readBack || readBack.ct !== record.ct || readBack.salt !== record.salt
+      || readBack.iv !== record.iv) {
+    removeKey(KEYS.vault);
+    throw new Error('the vault could not be verified after writing; nothing was saved');
+  }
+  if (remember) {
+    try { await idbPut('keys', 'kek', kek); } catch { /* the vault is still sealed */ }
+  }
   return { mnemonic, network, fingerprint };
 }
 

@@ -202,7 +202,7 @@ fn attack_rollback_replay_determinism() {
 // paying for it in canonical art, smuggle foreign content types, park
 // the reveal on a non-commit input, or reuse another mint's art.
 
-use hopper_core::live_v7_html;
+use hopper_core::live_v8_html;
 use hopper_indexer::types::InscriptionReveal;
 
 /// Enforcing indexer (activation height 100) with the usual funding UTXO.
@@ -218,12 +218,15 @@ fn enforcing_idx() -> Indexer {
 
 fn reveal_for(reveal_index: u32, seed: u32, sat: u64, name: &str) -> InscriptionReveal {
     InscriptionReveal {
-        content_type: hopper_core::V7_CONTENT_TYPE.to_string(),
-        body: Some(live_v7_html(seed, sat, name, 1).into_bytes()),
+        content_type: hopper_core::V8_CONTENT_TYPE.to_string(),
+        body: Some(live_v8_html(seed, sat, name, 1).into_bytes()),
         parents: Vec::new(),
         tapscript: None,
         control_block: None,
         body_hash: [0u8; 32],
+        pointer: None,
+        inscription_count: 1,
+        valid: true,
         inscription_id: format!(
             "{}i{reveal_index}",
             b32(2)

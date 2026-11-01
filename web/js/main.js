@@ -269,7 +269,7 @@ function onboarding() {
         ${hasVault() ? `<div class="mt10">${button('I HAVE A VAULT — UNLOCK', 'ob-lock', 'dim', 'small block')}</div>` : ''}
         <div class="hint">Mainnet is real Bitcoin. New wallets start live on the public defaults — Blockstream Esplora and ordinals.com. The HOPPER indexer is optional; choose Demo in Settings for the in-browser chain.</div>
       </div>
-      <div class="footer">HOPPER v7 · HOPPER-PROTOCOL</div>
+      <div class="footer">HOPPER v8 · HOPPER-PROTOCOL</div>
     </div></div>`;
   }
   if (o.step === 'words') {

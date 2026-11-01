@@ -1,5 +1,5 @@
 // HOPPER app shell. The demo chain is local; live mode is network-only.
-const VERSION = 'hopper-v7-3-19';
+const VERSION = 'hopper-v8-0-0';
 const SHELL = [
   './',
   'index.html',
@@ -23,6 +23,7 @@ const SHELL = [
   'js/core/fold.js',
   'js/core/fold_source.js',
   'js/core/hex.js',
+  'js/core/legacy_fold_source.js',
   'js/core/inscription.js',
   'js/core/mintdoc.js',
   'js/core/params.js',

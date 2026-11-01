@@ -12,17 +12,20 @@ import {
 } from '../core/hex.js';
 import { decodeMint } from '../core/envelope.js';
 import {
-  crossLeafScript, decodeStateBody, decodeParentTag, encodeParentTag, mintIdString,
-  sendLeafScript,
+  crossLeafScript, decodeStateBodyVersioned, decodeParentTag, encodeParentTag,
+  legacyCrossLeafScript, mintIdString, sendLeafScript,
 } from '../core/v7.js';
 import { parseInscriptions } from '../core/inscription.js';
 import {
-  CARD_VALUE, GENESIS, MAGIC, NUMS_XONLY, V7_CONTENT_TYPE, WIRE_VERSION,
-  generationAt, requiredAt,
+  CARD_VALUE, GENESIS, LEGACY_WIRE_VERSION, MAGIC, NUMS_XONLY,
+  V7_CONTENT_TYPE, V8_CONTENT_TYPE, WIRE_VERSION, generationAt, isGrandfatheredSat,
+  requiredAt,
 } from '../core/params.js';
 import { diesDisplay, wrapOfDisplayHex } from '../core/wrap.js';
 import { leafHash, branchHash } from '../wallet/keys.js';
-import { liveV7Html, parseV7GenHint } from '../core/mintdoc.js';
+import {
+  liveV7Html, liveV8Html, parseV7GenHint, parseV8GenHint,
+} from '../core/mintdoc.js';
 import { assignRanges } from '../core/satmath.js';
 import { scriptToAddress } from '../wallet/addresses.js';
 import { opReturnPush, parseTx, witnessControl, witnessTapscript } from '../wallet/txparse.js';
@@ -190,7 +193,9 @@ export class MockChain {
     for (const input of tx.inputs) this.utxos.delete(`${input.txid}:${input.vout}`);
 
     const reveal = this.revealOf(tx);
-    const isCross = reveal && reveal.body && bytesToHex(reveal.body.slice(0, 9)) === bytesToHex(new TextEncoder().encode('FRG7CROSS'));
+    const revealMagic = reveal && reveal.body
+      ? new TextDecoder().decode(reveal.body.slice(0, 9)) : '';
+    const isCross = revealMagic === 'FRG8CROSS' || revealMagic === 'FRG7CROSS';
 
     // Record outputs.
     tx.outputs.forEach((output, vout) => {
@@ -223,19 +228,30 @@ export class MockChain {
     }
 
     // MINT: a valid reveal carrying the v7 document + the FRG envelope.
-    const mintMsg = tx.outputs.map((o) => opReturnPush(o.script)).find((p) => p && p.length >= 3 && new TextDecoder().decode(p.slice(0, 3)) === MAGIC && p[3] === WIRE_VERSION);
+    const mintMsg = tx.outputs.map((o) => opReturnPush(o.script)).find((p) =>
+      p && p.length >= 3 && new TextDecoder().decode(p.slice(0, 3)) === MAGIC
+      && (p[3] === WIRE_VERSION || p[3] === LEGACY_WIRE_VERSION));
     if (mintMsg && reveal && reveal.contentType === V7_CONTENT_TYPE) {
       try {
-        const { seed, name } = decodeMint(mintMsg);
+        const message = decodeMint(mintMsg);
         const anchor = assignment.outputs[0] && assignment.outputs[0][0] ? assignment.outputs[0][0][0] : null;
         if (anchor != null && !this.frogs.has(anchor) && reveal.body) {
           // The body is canonical if it is exactly the render for the
-          // seed, sat, name and the hint it carries.
+          // seed, sat, name and the hint it carries. v7 is accepted only
+          // for the one grandfathered sat.
           const text = new TextDecoder().decode(reveal.body);
-          const hint = parseV7GenHint(text);
-          const want = hint == null ? null : liveV7Html(seed, anchor, name, hint);
-          if (want != null && text === want) {
-            this.createFrog({ sat: anchor, seed, name, height, txid: tx.txid, index: 0 });
+          const legacy = message.version === LEGACY_WIRE_VERSION;
+          if (legacy === isGrandfatheredSat(anchor)) {
+            const hint = legacy ? parseV7GenHint(text) : parseV8GenHint(text);
+            const want = hint == null ? null : (legacy
+              ? liveV7Html(message.seed, anchor, message.name, hint)
+              : liveV8Html(message.seed, anchor, message.name, hint));
+            if (want != null && text === want) {
+              this.createFrog({
+                sat: anchor, seed: message.seed, name: message.name,
+                height, txid: tx.txid, index: 0, legacyWire: legacy,
+              });
+            }
           }
         }
       } catch { /* malformed mints move sats only */ }
@@ -245,12 +261,14 @@ export class MockChain {
     let crossedSat = null;
     if (isCross && reveal) {
       try {
-        const body = decodeStateBody(reveal.body);
+        const versioned = decodeStateBodyVersioned(reveal.body);
+        const body = versioned.body;
         const frog = this.frogs.get(body.sat);
-        if (frog && frog.state === 'idle' && reveal.inputIndex === 0 && reveal.parents.length) {
+        if (frog && frog.state === 'idle' && reveal.inputIndex === 0 && reveal.parents.length
+            && !!versioned.legacy === (frog.legacy_wire === true)) {
           const [parent] = reveal.parents;
           const decoded = decodeParentTag(parent);
-          const ownerOk = stateLeafShapeOk(reveal.tapscript, reveal.control, body);
+          const ownerOk = stateLeafShapeOk(reveal.tapscript, reveal.control, body, versioned.legacy);
           const out0 = assignment.outputs[0] || [];
           const anchorFirst = out0.length && out0[0][0] === body.sat;
           const parentOk = bytesToHex(decoded.mintTxid) === bytesToHex(reverseBytes(hexToBytes(frog.mint_txid)))
@@ -317,9 +335,11 @@ export class MockChain {
     return null;
   }
 
-  createFrog({ sat, seed, name, height, txid, index, npc = false, dist = 0, state = 'idle' }) {
+  createFrog({ sat, seed, name, height, txid, index, npc = false, dist = 0, state = 'idle', legacyWire = false }) {
     this.frogs.set(sat, {
       sat, seed, name,
+      wire_version: legacyWire ? LEGACY_WIRE_VERSION : WIRE_VERSION,
+      legacy_wire: legacyWire,
       gen: generationAt(height),
       state,
       dist,
@@ -526,18 +546,19 @@ export class MockChain {
 
 // The v7 state leaf: canonical bytes for this owner/body/direction plus a
 // 97-byte control block that commits the leaf's own sibling path.
-function stateLeafShapeOk(tapscript, control, body) {
+function stateLeafShapeOk(tapscript, control, body, legacy = false) {
   if (!tapscript || !control) return false;
   if (control.length !== 97 || (control[0] & 0xfe) !== 0xc0) return false;
   if (!equalBytes(control.slice(1, 33), NUMS_XONLY)) return false;
   if (tapscript.length < 35 || tapscript[0] !== 0x20 || tapscript[33] !== 0xad) return false;
   const owner = tapscript.slice(1, 33);
-  const expected = crossLeafScript(owner, body, body.dir);
+  const leaf = legacy ? legacyCrossLeafScript : crossLeafScript;
+  const expected = leaf(owner, body, body.dir);
   if (!equalBytes(tapscript, expected)) return false;
   if (parseInscriptions(tapscript).length !== 1) return false;
-  const hL = leafHash(crossLeafScript(owner, body, 0));
-  const hS = leafHash(crossLeafScript(owner, body, 1));
-  const hR = leafHash(crossLeafScript(owner, body, 2));
+  const hL = leafHash(leaf(owner, body, 0));
+  const hS = leafHash(leaf(owner, body, 1));
+  const hR = leafHash(leaf(owner, body, 2));
   const hX = leafHash(sendLeafScript(owner));
   const hLS = branchHash(hL, hS);
   const hRX = branchHash(hR, hX);

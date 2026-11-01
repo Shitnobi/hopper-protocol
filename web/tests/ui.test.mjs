@@ -227,7 +227,7 @@ ok(hopSheet.includes('review the destination, change and fee'), 'the chooser say
 ok(!hopSheet.includes('Death at target'), 'the v6 death table is gone');
 
 const settingsHtml = screens.settings({ w: live, settings: live.settings });
-ok(settingsHtml.includes('HOPPER v7') && settingsHtml.includes('WIRE 0x07'), 'the footer names v7');
+ok(settingsHtml.includes('HOPPER v8') && settingsHtml.includes('WIRE 0x08'), 'the footer names v7');
 ok(settingsHtml.includes('data-input="spendUnconfirmed"'), 'settings offers the unconfirmed-spend control');
 ok(settingsHtml.includes('DOWNLOAD HISTORY TXT'), 'settings hosts the history download');
 ok(settingsHtml.includes('USE MEMPOOL.SPACE') && settingsHtml.includes('data-url="https://mempool.space/api"'),

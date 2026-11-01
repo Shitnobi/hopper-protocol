@@ -8,7 +8,8 @@ import {
   bytesToHex, equalBytes, hexToBytes, reverseBytes,
 } from '../core/hex.js';
 import {
-  CARD_VALUE, GENESIS, NUMS_XONLY, generationAt, paramsHashHex, requiredAt,
+  CARD_VALUE, GENESIS, NUMS_XONLY, WIRE_VERSION, generationAt, isGrandfatheredSat,
+  paramsHashHex, requiredAt,
 } from '../core/params.js';
 import { taprootDescriptor } from '../core/descriptor.js';
 import { decodeAddress, p2trScript, scriptToAddress } from './addresses.js';
@@ -26,8 +27,8 @@ import {
   recoveryPackDoc, recoverySummary,
 } from './recovery.js';
 import {
-  anchorOffsetOf, buildCross, buildMint, buildPrepare, buildSend,
-  buildTransfer, stateScripts,
+  anchorOffsetOf, buildCross, buildMint, buildMintRefund, buildPrepare, buildSend,
+  buildTransfer, proveAssignment, stateScripts,
 } from './actions.js';
 import {
   RBF_POLICY, buildReplacement, buildSendRbfEnvelope, safeBumpFunding,
@@ -189,6 +190,9 @@ export class WalletSession {
     this.chainMints = [];
     this.mempool = [];
     this.pending = [];
+    // F-04: a mint commit is a funded on-chain output. Persist the signed
+    // reveal and the recovery material before the commit is broadcast.
+    this.pendingMints = [];
     this.imported = new Set();
     // State outputs sit at scripts that are not on an HD index. Once a local
     // mint reveals one, remember its address/script/outpoint so the warm
@@ -201,6 +205,7 @@ export class WalletSession {
     // pass where it does not. `fullScanTip` is the tip gate.
     this.fullScanTip = null;
     this.watchTip = null;
+    this._scanTipHash = null;
     this.forceWatch = false;
     this.cold = true;
     this.fails = 0;
@@ -247,6 +252,8 @@ export class WalletSession {
       ? l.chainMints.filter((m) => m && /^[0-9a-f]{64}$/i.test(String(m.txid)))
       : [];
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
+    this.pendingMints = Array.isArray(l.pendingMints)
+      ? l.pendingMints.filter((p) => p && p.commitTxid && p.revealHex) : [];
     this.history = l.history || [];
     this.mempool = Array.isArray(l.mempool)
       ? l.mempool.filter((m) => m && m.txid && Number.isSafeInteger(m.amount) && m.amount > 0)
@@ -259,6 +266,8 @@ export class WalletSession {
           && typeof row.script === 'string'))
       : {};
     this.fullScanTip = Number.isSafeInteger(l.fullScanTip) ? l.fullScanTip : null;
+    this._scanTipHash = /^[0-9a-f]{64}$/i.test(String(l.tipHash || ''))
+      ? String(l.tipHash).toLowerCase() : null;
     if (l.balance && typeof l.balance === 'object') {
       const big = (v) => { try { return BigInt(v); } catch { return 0n; } };
       this.balance = {
@@ -279,6 +288,7 @@ export class WalletSession {
       changesVersion: this.changesVersion || 0,
       chainMints: this.chainMints.slice(-300),
       pending: this.pending.slice(-24),
+      pendingMints: this.pendingMints.slice(-12),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
       imported: [...this.imported],
@@ -291,6 +301,7 @@ export class WalletSession {
       },
       lastRefresh: new Date().toISOString(),
       tipHeight: this.tipHeight,
+      tipHash: this.tipHash || null,
     });
   }
 
@@ -352,7 +363,7 @@ export class WalletSession {
     if (!entry) return null;
     const now = new Date().toISOString();
     const doc = {
-      type: 'hopper-v7-emergency',
+      type: 'hopper-v8-emergency',
       version: 1,
       network: this.network,
       fingerprint: this._emergencyFingerprint(),
@@ -409,16 +420,30 @@ export class WalletSession {
     let published;
     try {
       published = await this.backend.params();
-    } catch {
-      return; // no answer, no claim
+    } catch (e) {
+      // F-13: a configured indexer that does not answer is not permission
+      // to skip the identity gate.
+      throw new Error(`the configured indexer did not answer its params gate: ${e.message || e}`);
     }
-    if (!published || !published.params_hash) return;
+    if (!published || !published.params_hash) {
+      throw new Error('the configured indexer published no params_hash; refusing to sign');
+    }
+    if (published.wire_version != null && Number(published.wire_version) !== WIRE_VERSION) {
+      throw new Error(`the indexer speaks wire ${published.wire_version}; this wallet speaks ${WIRE_VERSION}`);
+    }
     if (String(published.params_hash).toLowerCase() !== paramsHashHex()) {
       const err = new Error(
         `the indexer publishes different protocol parameters (wire v${published.wire_version}); this wallet refuses to sign`,
       );
       err.paramsMismatch = true;
       throw err;
+    }
+    if (published.network) {
+      const map = { main: 'mainnet', test: 'testnet', testnet3: 'testnet' };
+      const net = map[String(published.network)] || String(published.network);
+      if (net !== String(this.network)) {
+        throw new Error(`the indexer network is ${published.network}; this wallet is ${this.network}`);
+      }
     }
   }
 
@@ -428,6 +453,7 @@ export class WalletSession {
   resetScan(note = 'backend changed — a cold scan will start') {
     this.fullScanTip = null;
     this.watchTip = null;
+    this._scanTipHash = null;
     this.cold = true;
     this.forceWatch = true;
     this.scan.note = note;
@@ -621,6 +647,13 @@ export class WalletSession {
         script: p2trScript(this.keys.ord.outputXonly), kind: 'frog',
       };
     }
+    if (branch === 'ordLegacy') {
+      return {
+        branch: 'ordLegacy', index: 0, key: this.keys.legacyOrd,
+        address: this.keys.legacyFrogAddress(),
+        script: p2trScript(this.keys.legacyOrd.outputXonly), kind: 'frog', legacyPath: true,
+      };
+    }
     const b = Number(branch);
     if (b !== 0 && b !== 1) return null;
     const key = b === 0 ? this.keys.receive(0) : this.keys.change(0);
@@ -709,6 +742,12 @@ export class WalletSession {
       tipNote = `tip height unavailable (${e.message || String(e)}) — using ${last}`;
     }
     this.tipHeight = tip;
+    // F-12: a height is not a chain identity. A same-height reorg must not
+    // reuse the old outcome hashes or the old scan gate.
+    try {
+      const h = await this.backend.tipHash();
+      if (typeof h === 'string' && /^[0-9a-f]{64}$/i.test(h)) this.tipHash = h.toLowerCase();
+    } catch { /* keep the old tip hash; the gate below forces a pass */ }
     await this._reconcilePending(tip);
     if (this._scanAbort) {
       this.scan.note = 'scanning paused — automatic passes are off';
@@ -721,9 +760,12 @@ export class WalletSession {
     // THE GATE. A settled answer can change only with a block. While
     // nothing of ours is in flight, an unchanged tip costs one request.
     if (!force && !this.scan.rescan && this.fullScanTip != null
-        && this.watchTip === tip && !this._inFlight()) {
+        && this.watchTip === tip
+        && (this.tipHash == null || this._scanTipHash === this.tipHash)
+        && !this._inFlight()) {
       this.scan.lastPass = Date.now();
       this.scan.lastTip = tip;
+      this._scanTipHash = this.tipHash;
       this.scan.partial = false;
       this.scan.note = tipNote
         ? `${tipNote} · no address queries`
@@ -758,6 +800,13 @@ export class WalletSession {
     // set cannot hide a mint. Known state scripts follow, then the fixed
     // receive/change scripts.
     addEntry(this._entry('ord'));
+    // F-03: a released wallet may have minted at the unnormalized (odd-Y)
+    // BIP86 address. Walk it on recovery/forced passes and whenever a
+    // legacy frog is already known; warm passes keep the normal watch set.
+    if (this.cold || force || rescanning
+        || (this.frogs || []).some((f) => f.legacy_path === true)) {
+      addEntry(this._entry('ordLegacy'));
+    }
     for (const row of Object.values(this.staged || {})) {
       const sat = Number(row?.sat);
       if (!Number.isSafeInteger(sat) || !row?.address || !row?.script) continue;
@@ -804,7 +853,9 @@ export class WalletSession {
         break;
       }
       const isState = w.kind === 'state';
-      const dtos = isState ? [] : await mapLimit(list, 2, async (u) => {
+      // F-07/F-13: a state script does not prove which sats it holds. Ask
+      // the same range source as any other coin and require value agreement.
+      const dtos = await mapLimit(list, 2, async (u) => {
         try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
       });
       // The UTXO answer already carries mempool status. Aggregate outputs
@@ -823,22 +874,31 @@ export class WalletSession {
       });
       list.forEach((u, i) => {
         const dto = dtos[i];
-        const ranges = isState
-          ? [[Number(w.sat), Number(w.sat)]]
-          : dto && dto.ranges
-            ? dto.ranges.map(([a, b]) => [a, b - 1])
-            : (u.ranges || null);
-        const exact = isState
-          ? true
-          : dto ? (dto.exact !== false && !(ranges && ranges.some(([a]) => a >= 4e15))) : false;
+        // The backend's `ranges` are inclusive in this app; DemoBackend and
+        // the indexer DTO already use inclusive ends.
+        // Prefer the range oracle. A chain adapter may already carry
+        // inclusive ranges on the UTXO row (DemoBackend does); use that
+        // only when it is complete and value-matched.
+        const ranges = dto && Array.isArray(dto.ranges)
+          ? dto.ranges.map(([a, b]) => [Number(a), Number(b) - 1])
+          : (Array.isArray(u.ranges) && u.ranges.length
+            ? u.ranges.map(([a, b]) => [Number(a), Number(b)]) : null);
+        const valueOk = dto ? Number(dto.value) === Number(u.value) : true;
+        const sumOk = ranges ? ranges.reduce((n, [a, b]) => n + (b - a + 1), 0) === Number(u.value) : false;
+        const baseExact = (dto ? dto.exact !== false : true) && valueOk && sumOk;
+        const frogSat = isState ? Number(w.sat) : null;
+        const holdsFrog = isState && baseExact
+          && ranges.some(([a, b]) => frogSat >= a && frogSat <= b);
+        const exact = isState ? holdsFrog : baseExact;
         const frogs = isState
-          ? [Number(w.sat)]
+          ? (holdsFrog ? [frogSat] : [])
           : dto ? (dto.frogs || []) : (u.frogs || []);
         const kind = isState ? 'state' : w.kind === 'frog' ? 'frog' : 'p2wpkh';
-        const key = w.kind === 'frog' || isState ? this.keys.ord : w.key;
+        const key = w.kind === 'frog' || isState
+          ? (w.branch === 'ordLegacy' ? this.keys.legacyOrd : this.keys.ord) : w.key;
         utxos.push({
           txid: u.txid, vout: u.vout, value: Number(u.value), script: u.script,
-          address: w.address, kind, ranges, exact, frogs,
+          address: w.address, kind, ranges: exact ? ranges : null, exact, frogs,
           status: u.status || null, unconfirmed: isUnconfirmedUtxo(u),
           key, keyRef: { branch: w.branch, index: w.index },
           spendable: kind !== 'state' && exact && !frogs.length,
@@ -894,15 +954,22 @@ export class WalletSession {
     const records = new Map();
     if (deep && this.backend.froggers) {
       try {
-        const page = await this.backend.froggers({ limit: 300 });
-        for (const f of page.items || []) {
-          if (!f || f.sat == null) continue;
-          const sat = Number(f.sat);
-          if (!Number.isSafeInteger(sat)) continue;
-          candidates.add(sat);
-          // `/v1/froggers` already returns full records. Re-requesting every
-          // one with /v1/frogger/{sat} doubled the scan for no new data.
-          records.set(sat, f);
+        // F-10: walk every page, not just the first 300 frogs.
+        let offset = 0;
+        let total = Infinity;
+        for (let page = 0; page < 200; page += 1) {
+          const answer = await this.backend.froggers({ limit: 300, offset });
+          const items = answer.items || [];
+          for (const f of items) {
+            if (!f || f.sat == null) continue;
+            const sat = Number(f.sat);
+            if (!Number.isSafeInteger(sat)) continue;
+            candidates.add(sat);
+            records.set(sat, f);
+          }
+          total = Number.isFinite(Number(answer.total)) ? Number(answer.total) : total;
+          offset += items.length;
+          if (!items.length || offset >= total) break;
         }
       } catch { /* live indexer may be absent */ }
     }
@@ -942,12 +1009,12 @@ export class WalletSession {
     }) || (this.frogs || []).some((f) =>
       f?.local === true && (String(f.state || '') === 'crossing' || f.in_flight));
     const replayNow = this.cold || force || rescanning
-      || (tip !== this._chainReconTip && recentCross);
+      || (this.tipHash !== this._chainReconTip && recentCross);
     if (replayNow) {
       if (await this._reconstructChainFrogs(records, utxos, { tip })) {
         notes.push('Hopper road history rebuilt from the chain');
       }
-      this._chainReconTip = tip;
+      this._chainReconTip = this.tipHash;
     }
 
     let recordFailed = false;
@@ -1070,6 +1137,7 @@ export class WalletSession {
     } else if (!pausedMidPass) {
       this.fails = 0;
       this.watchTip = tip;
+      this._scanTipHash = this.tipHash;
     }
     if (this.cold && !watchFailed && !pausedMidPass) {
       this.fullScanTip = tip;
@@ -1119,7 +1187,7 @@ export class WalletSession {
    *  (sat + mint outpoint + owner key). */
   _stagedEntry(record) {
     try {
-      const state = stateScripts(record, this.keys.ord.ownerXonly);
+      const state = this._frogState(record);
       return {
         sat: Number(record.sat),
         address: scriptToAddress(state.script, this.network),
@@ -1135,7 +1203,8 @@ export class WalletSession {
   async _discoverStaged(records, utxos) {
     if (typeof this.backend?.addressUtxos !== 'function') return;
     const local = [...records.values()].filter((r) =>
-      r?.local === true && Number.isSafeInteger(Number(r.sat)) && Number(r.sat) > 0);
+      r?.local === true && Number.isSafeInteger(Number(r.sat)) && Number(r.sat) > 0
+      && r.sat_verified !== false);
     let changed = false;
     await mapLimit(local, 2, async (record) => {
       const location = record.location;
@@ -1148,11 +1217,28 @@ export class WalletSession {
       let found;
       try { found = await this.backend.addressUtxos(entry.address, hexToBytes(entry.script)); } catch { return; }
       if (!Array.isArray(found) || !found.length) return;
-      const first = found[0];
+      // F-07: a third-party payment to the same public state script is not
+      // this Hopper. Select only an output whose complete ranges contain
+      // the frog sat; otherwise leave the staged record alone.
+      let match = null;
+      let matchDto = null;
+      for (const candidate of found) {
+        let dto = null;
+        try { dto = await this.backend.utxo(candidate.txid, candidate.vout); } catch { dto = null; }
+        const rr = dto && Array.isArray(dto.ranges)
+          ? dto.ranges.map(([a, b]) => [Number(a), Number(b) - 1]) : null;
+        if (!rr || !rr.length || Number(dto.value) !== Number(candidate.value)) continue;
+        const frogSat = Number(entry.sat);
+        if (!rr.some(([a, b]) => frogSat >= a && frogSat <= b)) continue;
+        match = candidate;
+        matchDto = { ...dto, ranges: rr };
+        break;
+      }
+      if (!match) return;
       const prior = this.staged[String(entry.sat)] || {};
       const next = {
         ...prior, ...entry,
-        txid: String(first.txid).toLowerCase(), vout: Number(first.vout),
+        txid: String(match.txid).toLowerCase(), vout: Number(match.vout),
       };
       if (prior.address !== next.address || prior.script !== next.script
           || prior.txid !== next.txid || Number(prior.vout) !== Number(next.vout)) {
@@ -1162,9 +1248,25 @@ export class WalletSession {
       for (const u of found) {
         if (utxos.some((x) => String(x.txid).toLowerCase() === String(u.txid).toLowerCase()
           && Number(x.vout) === Number(u.vout))) continue;
+        // F-07: the state script alone only proves where the coin lives,
+        // not which sats it holds. Never invent `[[sat,sat]]`; ask the
+        // chain/indexer for complete ranges and fail closed if absent.
+        let dto = null;
+        if (match && String(u.txid).toLowerCase() === String(match.txid).toLowerCase()
+            && Number(u.vout) === Number(match.vout)) dto = matchDto;
+        else {
+          try { dto = await this.backend.utxo(u.txid, u.vout); } catch { dto = null; }
+        }
+        const ranges = dto && Array.isArray(dto.ranges)
+          ? dto.ranges.map(([a, b]) => [Number(a), Number(b) - 1]) : null;
+        const exact = !!(ranges && ranges.length && Number(dto.value) === Number(u.value));
+        const frogSat = Number(entry.sat);
+        const holdsFrog = exact && ranges.some(([a, b]) => frogSat >= a && frogSat <= b);
         utxos.push({
           ...u, kind: 'state', address: entry.address,
-          ranges: [[entry.sat, entry.sat]], exact: true, frogs: [entry.sat],
+          ranges: holdsFrog ? ranges : null,
+          exact: holdsFrog,
+          frogs: holdsFrog ? [frogSat] : [],
           key: this.keys.ord, keyRef: { branch: 'ord', index: 0 },
           spendable: false, unconfirmed: isUnconfirmedUtxo(u),
         });
@@ -1250,13 +1352,14 @@ export class WalletSession {
   async _chainBlockHash(height) {
     const h = Number(height);
     if (!Number.isInteger(h) || h < 0) return null;
-    if (this._chainHashCache.has(h)) return this._chainHashCache.get(h);
+    const cacheKey = `${this.tipHash || ''}:${h}`;
+    if (this._chainHashCache.has(cacheKey)) return this._chainHashCache.get(cacheKey);
     let hash = null;
     try { hash = await this.backend.blockHashAt(h); } catch { hash = null; }
     if (typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash)) {
       hash = hash.toLowerCase();
-      this._chainHashCache.set(h, hash);
-      if (this._chainHashCache.size > 600) {
+      this._chainHashCache.set(cacheKey, hash);
+      if (this._chainHashCache.size > 1200) {
         this._chainHashCache.delete(this._chainHashCache.keys().next().value);
       }
       return hash;
@@ -1283,7 +1386,7 @@ export class WalletSession {
     await mapLimit(local, 2, async (record) => {
       const sat = Number(record.sat);
       let state;
-      try { state = stateScripts(record, this.keys.ord.ownerXonly); } catch { return; }
+      try { state = this._frogState(record); } catch { return; }
       const stateHex = bytesToHex(state.script);
       // A frog that was sent to another owner no longer has an output at our
       // derived state script. Do not replay its old life as if we still held it.
@@ -1308,7 +1411,11 @@ export class WalletSession {
         const hex = await this._chainTxHex(txid);
         if (!hex) { complete = false; return; }
         hexByTx.set(txid, hex);
-        roles.set(txid, frogTxRole({ record, hex, stateScript: state.script }));
+        roles.set(txid, frogTxRole({
+          record, hex, stateScript: state.script,
+          ownerXonly: this._frogOwner(record), legacy: this._frogLegacyWire(record),
+          txid,
+        }));
       });
       if (!complete) return;
 
@@ -1331,6 +1438,7 @@ export class WalletSession {
 
       const replay = replayFrogChain({
         record, rows, txHex: hexByTx, hashByHeight, tip, stateScript: state.script,
+        ownerXonly: this._frogOwner(record), legacy: this._frogLegacyWire(record),
       });
       if (!replay) return;
 
@@ -1365,14 +1473,19 @@ export class WalletSession {
     if (!this.backend?.getTxHex) return [];
     const ordAddress = this.keys.frogAddress();
     const ordScript = p2trScript(this.keys.ord.outputXonly);
-    const ordHex = bytesToHex(ordScript);
+    const legacyAddress = this.keys.legacyFrogAddress();
+    const legacyScript = p2trScript(this.keys.legacyOrd.outputXonly);
+    const addressInfo = new Map([
+      [ordAddress, { script: ordScript, hex: bytesToHex(ordScript), legacyPath: false }],
+      [legacyAddress, { script: legacyScript, hex: bytesToHex(legacyScript), legacyPath: true }],
+    ]);
     const known = new Set();
     for (const record of records.values()) {
       const location = record?.location;
       if (location?.txid) known.add(`${String(location.txid).toLowerCase()}:${Number(location.vout)}`);
     }
     const candidatesForMint = utxos.filter((u) => u.kind === 'frog'
-      && u.address === ordAddress
+      && addressInfo.has(u.address)
       && !known.has(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
     for (const u of utxos) {
       if (u?.txid) known.add(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`);
@@ -1381,6 +1494,17 @@ export class WalletSession {
     const parseOne = async (u) => {
       const key = `${String(u.txid).toLowerCase()}:${Number(u.vout)}`;
       const height = u.status?.block_height ?? u.status?.height ?? null;
+      // F-07: the reveal document cannot prove its own claimed sat. Add
+      // complete ranges from the chain source before parsing, and let the
+      // parser mark the record unverified when no source can name them.
+      if ((!Array.isArray(u.ranges) || !u.ranges.length) && this.backend?.utxo) {
+        try {
+          const dto = await this.backend.utxo(u.txid, u.vout);
+          if (dto && Array.isArray(dto.ranges)) {
+            u = { ...u, ranges: dto.ranges.map(([a, b]) => [Number(a), Number(b) - 1]) };
+          }
+        } catch { /* leave unverified */ }
+      }
       let record = null;
       if (this._localMintCache.has(key)) {
         // `false` means this immutable outpoint is not a mint reveal. A
@@ -1395,8 +1519,15 @@ export class WalletSession {
         let hex = null;
         try { hex = await this.backend.getTxHex(u.txid); } catch { return; }
         if (!hex) return;
-        record = parseLocalMint({ hex, utxo: u, script: ordScript, mintHeight: height });
-        this._localMintCache.set(key, record || false);
+        const info = addressInfo.get(u.address) || { script: ordScript, legacyPath: false };
+        record = parseLocalMint({
+          hex, utxo: { ...u, legacy_path: info.legacyPath },
+          script: info.script, mintHeight: height,
+        });
+        // Do not cache an unverified record: a later pass may have the
+        // complete ranges that prove the claimed sat.
+        if (record && record.sat_verified !== false) this._localMintCache.set(key, record);
+        else if (!record) this._localMintCache.set(key, false);
         if (!record) return;
       }
       if (!records.has(record.sat) && !found.some((r) => r.sat === record.sat)) found.push(record);
@@ -1404,27 +1535,29 @@ export class WalletSession {
     await mapLimit(candidatesForMint, 2, parseOne);
 
     if (history && typeof this.backend.addressHistory === 'function') {
-      let rows = [];
-      try { rows = await this.backend.addressHistory(ordAddress, ordScript); } catch { rows = []; }
       const seen = new Set(candidatesForMint.map((u) =>
         `${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
       const extra = [];
-      for (const row of Array.isArray(rows) ? rows : []) {
-        const txid = String(row?.txid || '').toLowerCase();
-        const key = `${txid}:0`;
-        if (!/^[0-9a-f]{64}$/.test(txid) || known.has(key) || seen.has(key)) continue;
-        seen.add(key);
-        // LiveBackend's history rows carry outputs. When present, only fetch
-        // the transaction if its first output is our ordinals script.
-        const out0 = row.outputs?.[0];
-        if (out0?.script && bytesToHex(out0.script) !== ordHex) continue;
-        extra.push({
-          txid, vout: 0, value: out0?.value ?? null, script: ordScript,
-          address: ordAddress, kind: 'frog',
-          status: { block_height: row.height ?? row.status?.block_height ?? null },
-        });
+      for (const [address, info] of addressInfo) {
+        let rows = [];
+        try { rows = await this.backend.addressHistory(address, info.script); } catch { rows = []; }
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const txid = String(row?.txid || '').toLowerCase();
+          const key = `${txid}:0`;
+          if (!/^[0-9a-f]{64}$/.test(txid) || known.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          // LiveBackend's history rows carry outputs. When present, only
+          // fetch the transaction if its first output is this path's script.
+          const out0 = row.outputs?.[0];
+          if (out0?.script && bytesToHex(out0.script) !== info.hex) continue;
+          extra.push({
+            txid, vout: 0, value: out0?.value ?? null, script: info.script,
+            address, kind: 'frog', legacy_path: info.legacyPath,
+            status: { block_height: row.height ?? row.status?.block_height ?? null },
+          });
+        }
       }
-      await mapLimit(extra.slice(0, 50), 2, parseOne);
+      await mapLimit(extra, 2, parseOne);
     }
     return found;
   }
@@ -2001,19 +2134,41 @@ export class WalletSession {
     if (!tx) return { owned: false, error: true };
     const out = tx.outputs[record.location.vout];
     if (!out) return { owned: false };
-    let want;
-    try { want = stateScripts(record, this.keys.ord.ownerXonly); } catch { return { owned: false }; }
-    if (!equalBytes(out.script, want.script)) return { owned: false };
+    let want = null;
+    try {
+      want = this._frogState(record);
+      if (!equalBytes(out.script, want.script)
+          && !this._frogLegacyPath(record) && !record.legacy_path) {
+        // A recovered v7/legacy-path frog may live at the released
+        // derivation. Try it once; never change the record's path in place.
+        const legacyWant = stateScripts(
+          record, this.keys.legacyOrd.ownerXonly, { legacy: this._frogLegacyWire(record) },
+        );
+        if (equalBytes(out.script, legacyWant.script)) {
+          record.legacy_path = true;
+          want = legacyWant;
+        }
+      }
+    } catch { return { owned: false }; }
+    if (!want || !equalBytes(out.script, want.script)) return { owned: false };
     let dto = null;
     try { dto = await this.backend.utxo(record.location.txid, record.location.vout); } catch { dto = null; }
-    const ranges = dto ? dto.ranges.map(([a, b]) => [a, b - 1]) : [[record.sat, record.sat]];
+    // F-07/F-13: a state script is not a set of sat ranges. Keep the coin
+    // owned, but do not mark it exact or spendable unless the range source
+    // is complete and value-matched. Actions fail closed on this flag.
+    const ranges = dto && Array.isArray(dto.ranges)
+      ? dto.ranges.map(([a, b]) => [Number(a), Number(b) - 1]) : null;
+    const exact = !!(ranges && ranges.length && Number(dto.value) === Number(out.value));
+    const holdsFrog = exact && ranges.some(([a, b]) => Number(record.sat) >= a && Number(record.sat) <= b);
     return {
       owned: true,
       custody: true,
       utxo: {
         txid: record.location.txid, vout: record.location.vout, value: Number(out.value),
-        script: out.script, kind: 'state', address: null, ranges,
-        exact: dto ? dto.exact !== false : true, frogs: [record.sat],
+        script: out.script, kind: 'state', address: null,
+        ranges: holdsFrog ? ranges : null,
+        exact: holdsFrog,
+        frogs: holdsFrog ? [record.sat] : [],
         key: this.keys.ord, keyRef: { branch: 'ord', index: 0 }, spendable: false,
       },
     };
@@ -2118,7 +2273,7 @@ export class WalletSession {
     }
     const staged = frogs.filter((f) => f.state_outpoint);
     return {
-      type: 'hopper-v7-emergency',
+      type: 'hopper-v8-emergency',
       version: 1,
       network: this.network,
       fingerprint: this._emergencyFingerprint(),
@@ -2139,6 +2294,18 @@ export class WalletSession {
   }
 
   summary() {
+    // F-11: refresh events are rendered and may be inspected by extensions.
+    // Never publish private key material; the UI only needs public keys.
+    const ord = {
+      path: this.ord.path,
+      address: this.ord.address,
+      internalXonly: this.ord.internalXonly,
+      ownerXonly: this.ord.ownerXonly,
+      parity: this.ord.parity,
+      legacyAddress: this.ord.legacyAddress,
+      legacyOwnerXonly: this.ord.legacyOwnerXonly,
+      legacyParity: this.ord.legacyParity,
+    };
     return {
       network: this.network,
       mode: this.settings.mode,
@@ -2151,8 +2318,7 @@ export class WalletSession {
       actions: this.actions,
       receives: this.receives,
       mempool: this.mempool,
-      keys: this.keys,
-      ord: this.ord,
+      ord,
       settings: this.settings,
       scan: this.scanState(),
     };
@@ -2194,23 +2360,38 @@ export class WalletSession {
       && !(u.frogs && u.frogs.length) && (!u.unconfirmed || spendUnconfirmed));
   }
 
-  /** SEND funding additionally accepts unconfirmed plain coins whose sat
-   *  ranges are not known yet. Mint/travel/hop keep the stricter pool above
-   *  because the anchor sat depends on input order and exact ranges. */
+  /** SEND uses the same fail-closed funding pool as every other action.
+   *  F-02: an empty ord/indexer answer is not proof that a coin carries no
+   *  inscription, so an unknown-ranged mempool coin is not spendable. */
   _sendFunding() {
-    const base = this._funding();
-    if (this.settings.spendUnconfirmed === false) return base;
-    const seen = new Set(base.map((u) => `${u.txid}:${u.vout}`));
-    const extra = this.utxos.filter((u) => {
-      if (u.kind !== 'p2wpkh' || !u.unconfirmed || (u.frogs && u.frogs.length)) return false;
-      if (u.exact) return false;
-      return !seen.has(`${u.txid}:${u.vout}`);
-    });
-    return [...base, ...extra];
+    return this._funding();
   }
 
   _frogUtxo(frog) {
     return this.utxos.find((u) => frog.location && u.txid === frog.location.txid && u.vout === frog.location.vout) || null;
+  }
+
+  _frogLegacyPath(frog) {
+    return frog?.legacy_path === true;
+  }
+
+  _frogLegacyWire(frog) {
+    return frog?.legacy_wire === true || isGrandfatheredSat(frog?.sat);
+  }
+
+  _frogOwner(frog) {
+    return this._frogLegacyPath(frog)
+      ? this.keys.legacyOrd.ownerXonly : this.keys.ord.ownerXonly;
+  }
+
+  _frogKeys(frog) {
+    return this._frogLegacyPath(frog)
+      ? { ...this.keys, ord: this.keys.legacyOrd }
+      : this.keys;
+  }
+
+  _frogState(frog) {
+    return stateScripts(frog, this._frogOwner(frog), { legacy: this._frogLegacyWire(frog) });
   }
 
   /** The derived tapscript address a Hopper pays while it is staged for
@@ -2222,8 +2403,85 @@ export class WalletSession {
     if (!utxo || utxo.kind !== 'state') return null;
     if (utxo.address) return utxo.address;
     try {
-      return scriptToAddress(stateScripts(frog, this.keys.ord.ownerXonly).script, this.network);
+      return scriptToAddress(this._frogState(frog).script, this.network);
     } catch { return null; }
+  }
+
+  _upsertPendingMint(pkg) {
+    if (!pkg?.commitTxid) return null;
+    const key = String(pkg.commitTxid).toLowerCase();
+    const prior = (this.pendingMints || []).find((p) => p.commitTxid === key) || {};
+    const row = { ...prior, ...pkg, commitTxid: key, updatedAt: new Date().toISOString() };
+    this.pendingMints = [row, ...(this.pendingMints || []).filter((p) => p.commitTxid !== key)]
+      .slice(0, 12);
+    this._saveLedger();
+    return row;
+  }
+
+  _dropPendingMint(commitTxid) {
+    const key = String(commitTxid || '').toLowerCase();
+    const before = (this.pendingMints || []).length;
+    this.pendingMints = (this.pendingMints || []).filter((p) => p.commitTxid !== key);
+    if (this.pendingMints.length !== before) this._saveLedger();
+  }
+
+  pendingMintPackages() {
+    return (this.pendingMints || []).map((p) => ({ ...p }));
+  }
+
+  /** Re-broadcast a persisted commit/reveal pair. Replaying the same signed
+   *  bytes is safe; repricing needs a fresh preview. */
+  async retryPendingMint(commitTxid) {
+    const key = String(commitTxid || '').toLowerCase();
+    const pkg = (this.pendingMints || []).find((p) => p.commitTxid === key);
+    if (!pkg) throw new Error('no pending mint package for that commit');
+    if (!pkg.commitAccepted) {
+      await this.backend.broadcast(pkg.commitHex);
+      pkg.commitAccepted = true;
+      this._upsertPendingMint(pkg);
+    }
+    try {
+      await this.backend.broadcast(pkg.revealHex);
+    } catch (e) {
+      pkg.lastError = e.message || String(e);
+      this._upsertPendingMint(pkg);
+      throw e;
+    }
+    this._dropPendingMint(key);
+    this._recordAction({
+      kind: 'mint', sat: Number(pkg.sat), seed: pkg.seed, name: pkg.name,
+      txid: pkg.revealTxid, commit: key, fee: null, recovered: true,
+    });
+    if (Number.isSafeInteger(Number(pkg.sat))) this.imported.add(Number(pkg.sat));
+    await this.refresh().catch(() => {});
+    return { commitTxid: key, revealTxid: pkg.revealTxid };
+  }
+
+  /** Refund an accepted commit whose reveal will never be replayed. */
+  async refundPendingMint(commitTxid, { feeRate = null } = {}) {
+    const key = String(commitTxid || '').toLowerCase();
+    const pkg = (this.pendingMints || []).find((p) => p.commitTxid === key);
+    if (!pkg) throw new Error('no pending mint package for that commit');
+    if (!pkg.commitAccepted) throw new Error('the commit is not confirmed or accepted; retry it first');
+    const commit = {
+      txid: key,
+      vout: Number(pkg.commitVout || 0),
+      value: BigInt(pkg.commitValue),
+      script: hexToBytes(pkg.commitScript),
+      leaf: hexToBytes(pkg.leafHex),
+    };
+    const built = buildMintRefund({
+      keys: this.keys, commit, recipientScript: this.keys.receive(0).script,
+      feeRate: rateOr(feeRate ?? this.settings.feeRate),
+    });
+    await this.backend.broadcast(built.hex);
+    this._dropPendingMint(key);
+    this._recordAction({
+      kind: 'mint-refund', txid: built.txid, commit: key, fee: built.fee,
+      to: this.keys.receive(0).address,
+    });
+    await this.refresh().catch(() => {});
+    return built;
   }
 
   _recordAction(action) {
@@ -2288,6 +2546,7 @@ export class WalletSession {
     const genHint = generationAt((this.tipHeight || 0) + 2);
     const args = {
       utxos: this._funding(), seed, name, feeRate: rate, revealFeeRate: revealRate, genHint,
+      protectedSats: [...this._protectedSats()],
     };
     let built;
     try {
@@ -2355,8 +2614,10 @@ export class WalletSession {
       throw new Error('the Hopper sat is not first in this coin; transfer it to its own output before traveling to The Road');
     }
     const built = buildPrepare({
-      keys: this.keys, utxo, frog, funding: this._funding(),
+      keys: this._frogKeys(frog), utxo, frog, funding: this._funding(),
       feeRate: rateOr(feeRate ?? this.settings.feeRate),
+      legacy: this._frogLegacyWire(frog),
+      protectedSats: [...this._protectedSats()].filter((x) => Number(x) !== Number(frog.sat)),
     });
     await this.backend.broadcast(built.hex);
     this._recordAction({ kind: 'prepare', sat: frog.sat, txid: built.txid });
@@ -2391,10 +2652,11 @@ export class WalletSession {
       throw new Error('choose LEFT, STRAIGHT or RIGHT before hopping');
     }
     const rate = rateOr(feeRate ?? this.settings.feeRate);
-    const state = stateScripts(frog, this.keys.ord.ownerXonly);
+    const state = this._frogState(frog);
     const built = buildCross({
-      keys: this.keys, stateUtxo: utxo, frog, funding: this._funding(),
-      feeRate: rate, newOwnerXonly, dir,
+      keys: this._frogKeys(frog), stateUtxo: utxo, frog, funding: this._funding(),
+      feeRate: rate, newOwnerXonly, dir, legacy: this._frogLegacyWire(frog),
+      protectedSats: [...this._protectedSats()].filter((x) => Number(x) !== Number(frog.sat)),
     });
     const changeOut = built.changeIndex == null ? null : built.tx.outputs[built.changeIndex];
     return {
@@ -2416,7 +2678,7 @@ export class WalletSession {
       destinationAmount: built.tx.outputs[0].value,
       changeAddress: changeOut ? scriptToAddress(changeOut.script, this.network) : null,
       changeAmount: changeOut ? changeOut.value : 0n,
-      newOwner: !!newOwnerXonly && !equalBytes(newOwnerXonly, this.keys.ord.ownerXonly),
+      newOwner: !!newOwnerXonly && !equalBytes(newOwnerXonly, this._frogOwner(frog)),
     };
   }
 
@@ -2434,6 +2696,7 @@ export class WalletSession {
     const built = buildSend({
       keys: this.keys, utxos: this._sendFunding(), recipientScript: recipient.script,
       amount: BigInt(amountSats), feeRate: rate, allowUnconfirmed: spendUnconfirmed,
+      protectedSats: [...this._protectedSats()],
     });
     const changeOut = built.changeIndex == null ? null : built.tx.outputs[built.changeIndex];
     const unconfirmedOutpoints = new Set(this.utxos
@@ -2468,7 +2731,9 @@ export class WalletSession {
     const recipient = decodeAddress(address, this.network);
     const rate = rateOr(feeRate ?? this.settings.feeRate);
     const built = buildTransfer({
-      keys: this.keys, utxo, frog, recipientScript: recipient.script, feeRate: rate,
+      keys: this._frogKeys(frog), utxo, frog, recipientScript: recipient.script, feeRate: rate,
+      legacy: this._frogLegacyWire(frog),
+      protectedSats: [...this._protectedSats()].filter((x) => Number(x) !== Number(frog.sat)),
     });
     return {
       kind: 'transfer',
@@ -2507,18 +2772,64 @@ export class WalletSession {
       if (live.script && inputScript && !equalBytes(live.script, inputScript)) {
         throw new Error('preview expired: an input script changed; cancel and preview again');
       }
-      if (preview.kind === 'send' || preview.kind === 'mint') {
+      // F-08: every action that spends a funding coin must recheck the
+      // complete asset/ranges classification, not only SEND and MINT.
+      const isFrogInput = preview.kind === 'transfer'
+        || (preview.kind === 'hop' && String(input.txid).toLowerCase()
+          === String(preview?.built?.inputs?.[0]?.txid || '').toLowerCase()
+          && Number(input.vout) === Number(preview?.built?.inputs?.[0]?.vout))
+        || (preview.kind === 'mint' && preview?.built?.anchor
+          && String(input.txid).toLowerCase() === String(preview.built.anchor.txid).toLowerCase()
+          && Number(input.vout) === Number(preview.built.anchor.vout));
+      if (!isFrogInput && live.kind !== 'p2wpkh') {
+        throw new Error('preview expired: a funding input is no longer plain BTC; cancel and preview again');
+      }
+      if (!isFrogInput) {
         const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
-        const confirmedOk = live.exact !== false && live.spendable !== false
-          && (!live.unconfirmed || spendUnconfirmed);
-        const pendingOk = spendUnconfirmed && live.unconfirmed === true;
+        const knownRanges = Array.isArray(live.ranges) && live.ranges.length
+          && live.exact !== false && live.spendable !== false;
         const fundingOk = live.kind === 'p2wpkh'
           && !(live.frogs && live.frogs.length)
-          && (confirmedOk || pendingOk);
+          && knownRanges
+          && (!live.unconfirmed || spendUnconfirmed);
         if (!fundingOk) {
-          throw new Error('preview expired: a funding coin now carries a Hopper; cancel and preview again');
+          throw new Error('preview expired: a funding coin now carries unknown ranges or a Hopper; cancel and preview again');
         }
       }
+    }
+    // Re-run the FIFO assignment over the live ranges and the exact signed
+    // outputs. Input classification alone is not enough: a range change can
+    // move the frog into a fee output without changing any outpoint.
+    const liveInputs = inputs.map((input) => {
+      const live = (this.utxos || []).find((u) => u.txid === input.txid
+        && Number(u.vout) === Number(input.vout));
+      return live;
+    });
+    if (preview.kind === 'send') {
+      proveAssignment({
+        inputs: liveInputs,
+        outputValues: preview.built.tx.outputs.map((o) => Number(o.value)),
+        protectedSats: [...this._protectedSats()],
+        label: 'send revalidation',
+      });
+    } else if (preview.kind === 'transfer' || preview.kind === 'hop') {
+      proveAssignment({
+        inputs: liveInputs,
+        outputValues: preview.built.tx.outputs.map((o) => Number(o.value)),
+        sat: preview.frogSat,
+        outputIndex: 0,
+        protectedSats: [...this._protectedSats()].filter((x) => Number(x) !== Number(preview.frogSat)),
+        label: `${preview.kind} revalidation`,
+      });
+    } else if (preview.kind === 'mint') {
+      proveAssignment({
+        inputs: liveInputs,
+        outputValues: preview.built.commit.tx.outputs.map((o) => Number(o.value)),
+        sat: Number(preview.built.sat),
+        outputIndex: 0,
+        protectedSats: [...this._protectedSats()].filter((x) => Number(x) !== Number(preview.built.sat)),
+        label: 'mint commit revalidation',
+      });
     }
     if (preview.kind === 'mint') {
       const anchor = preview.built.anchor;
@@ -2597,15 +2908,46 @@ export class WalletSession {
       });
     } else if (preview.kind === 'mint') {
       const built = preview.built;
-      await this.backend.broadcast(built.commit.hex);
+      // F-04: write the recoverable package before the commit can leave
+      // the wallet. A reload, crash, or rejected reveal now has durable
+      // bytes and recovery instructions.
+      const pkg = {
+        commitTxid: String(built.commit.txid).toLowerCase(),
+        commitHex: built.commit.hex,
+        commitVout: 0,
+        commitValue: Number(built.commit.tx.outputs[0]?.value ?? 0),
+        commitScript: bytesToHex(built.commit.tx.outputs[0]?.script || new Uint8Array()),
+        revealTxid: String(built.reveal.txid).toLowerCase(),
+        revealHex: built.reveal.hex,
+        leafHex: bytesToHex(built.reveal.tapscript),
+        sat: Number(built.sat),
+        seed: preview.seed,
+        name: preview.name,
+        createdAt: new Date().toISOString(),
+        commitAccepted: false,
+      };
+      this._upsertPendingMint(pkg);
+      try {
+        await this.backend.broadcast(built.commit.hex);
+      } catch (e) {
+        pkg.lastError = e.message || String(e);
+        this._upsertPendingMint(pkg);
+        throw e;
+      }
+      pkg.commitAccepted = true;
+      this._upsertPendingMint(pkg);
       try {
         await this.backend.broadcast(built.reveal.hex);
       } catch (e) {
+        pkg.lastError = e.message || String(e);
+        this._upsertPendingMint(pkg);
         const err = new Error(`commit ${String(built.commit.txid).slice(0, 12)}… was accepted, but the reveal was rejected: ${e.message || String(e)}`);
         err.commitBroadcast = true;
         err.commitTxid = built.commit.txid;
+        err.recoverable = true;
         throw err;
       }
+      this._dropPendingMint(pkg.commitTxid);
       // The reveal is the mint. Tell the UI immediately so its seed draft can
       // rotate even if the post-broadcast refresh (below) fails.
       if (onMintBroadcast) {
@@ -2653,6 +2995,17 @@ export class WalletSession {
       console.warn('transaction broadcast, but the refresh failed', e.message || String(e));
     }
     return preview.built;
+  }
+
+  /** F-03 migration: move a frog found on the released odd-Y derivation to
+   *  the current BIP86 address. It is an explicit user action; recovery
+   *  never rewrites the old path in place. */
+  async migrateLegacyFrog(frog, to = this.keys.frogAddress()) {
+    const current = this.frogBySat(frog?.sat) || frog;
+    if (!current || current.legacy_path !== true) {
+      throw new Error('this Hopper is not on the legacy derivation path');
+    }
+    return this.previewTransfer(current, to);
   }
 
   /** Direct helpers retained for callers that do not need a UI preview. */

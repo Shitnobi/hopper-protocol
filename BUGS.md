@@ -502,3 +502,88 @@ for itself when to fetch remote rows.
   the next scan.
 - Background scans are paused in a hidden tab; returning to the foreground
   wakes one and then repaints through the same path.
+
+## 2026-10-31 — security audit remediation and v8 cutover
+
+### Scope
+
+Implemented the findings in `SECURITY_AUDIT_FEEDBACK.md` on `master`, with
+the audit's `MODEL:`/`DECISION:` notes applied. The protocol is now v8
+(`0x08`); exactly one released v7 Hopper is grandfathered by the global
+`GRANDFATHERED_SAT` value (still `0` until the sat is supplied).
+
+### Fixes
+
+- **F-01 / F-02:** every action requires complete, value-matched ordinal
+  ranges; builders compute the FIFO destination of the Hopper sat and every
+  protected sat and refuse a transfer/SEND that would pay it to fees or a
+  non-recipient output. Unknown-ranged mempool coins are no longer SEND
+  funding. Approval repeats the proof against the exact signed bytes.
+- **F-03:** `taprootTweakedKey` now performs BIP86 even-Y normalization. The
+  released odd-Y path is retained for recovery (`legacyOrd`,
+  `legacyFrogAddress`) and an explicit `migrateLegacyFrog` transfer; new
+  outputs never use it.
+- **F-04:** the signed commit/reveal package is persisted before the commit
+  is broadcast, marked accepted/ rejected, and exposed through
+  `pendingMintPackages()`, `retryPendingMint()`, and `refundPendingMint()`
+  (key-path refund without revealing the mint leaf).
+- **F-05:** v8 crossing envelopes are proof-checked by the fold. The fold
+  reads `/r/tx/{txid}`, requires the canonical input-0 leaf/control path,
+  one envelope/no pointer, P2TR output 0, finality spacing, unique
+  transaction ids, and `meta.sat == frog.sat`. A missing/failed proof
+  renders `unverified`, never a count or HOME. The v7 card's embedded fold
+  remains frozen for the one grandfather; the v8 app/indexer is the
+  authoritative view.
+- **F-06:** `frogTxRole` only accepts input 0 with one canonical leaf and the
+  expected parent; `replayFrogChain` requires the crossing to spend a known
+  prior state outpoint, enforces finality spacing, and refuses incomplete
+  histories. Output-only deposits and body-only funding inputs are not
+  crossings.
+- **F-07:** state-script discovery no longer invents `[[sat, sat]]`; it asks
+  for complete ranges, checks value/sat containment, and leaves the coin
+  unspendable/unverified otherwise. `parseLocalMint` verifies the claimed
+  sat is the first sat of the value-matched reveal output.
+- **F-08:** HOP/PREPARE/TRANSFER/SEND/MINT all revalidate funding coins and
+  repeat the FIFO proof at approval; HOP is no longer exempt.
+- **F-09:** activation is frozen at `974_034`; an unset/modified
+  `HOPPER_ACTIVATION_HEIGHT` or `HOPPER_INSCRIPTION_ACTIVATION_HEIGHT`
+  refuses to boot. RPC ingest preserves ord pointer, envelope count and
+  validity flags; mints/crossings reject pointers, multiple envelopes, and
+  invalid envelopes.
+- **F-10:** Esplora history paginates through `/txs/chain/:after_txid` to
+  exhaustion; local mint history is no longer capped at 50; deep indexer
+  discovery walks every page instead of the first 300 frogs.
+- **F-11:** vault creation writes, reads back, and verifies the ciphertext;
+  storage denial is an error. Refresh summaries no longer include private
+  keys.
+- **F-12:** scan gates and outcome-hash caches are keyed by tip hash as well
+  as height; a same-height reorg forces a fresh pass, and the tip hash is
+  persisted with the scan gate.
+- **F-13:** ord/indexer UTXO answers must agree on value and ranges; ord is
+  canonical. A configured indexer that does not answer the params gate, or
+  reports another network, blocks signing.
+- **F-14:** public reads have a per-caller fixed-window rate limit (default
+  300/min); no state lock is held across the ord lookup.
+
+### Verification
+
+- `npm test`: core 142, game ok, emergency 103, params 9, media 48, scan 98,
+  ord 50, ui 102, fees 19, preview 100, localmint 40, chainfrog 47,
+  history 134, rbf 125; v8 fold sync/parity/doc boot pass.
+- `cargo test --workspace`: all workspace tests pass, including the new
+  pointer/multiplicity rejection and v8 golden/vector tests.
+- The new v8 boot fixture builds a real canonical state leaf/control block
+  and raw transaction; the fold's proof path accepts it and refuses the
+  duplicate/incomplete cases.
+
+### Known limits
+
+- The one grandfathered Hopper's **inscribed v7 card art** cannot be
+  rewritten; it predates the proof-checking fold. Custody/play and the
+  app/indexer view are grandfathered; the old card is not an authoritative
+  art oracle.
+- Funding-input Hopper mixing still cannot be fully proven from raw tx
+  alone without a sat-range oracle; the indexer remains the leaderboard
+  authority.
+- The BIP84 receive script remains fixed at `…/0/0` in v8 by deliberate
+  design; address rotation is a future wallet feature, not a consensus rule.

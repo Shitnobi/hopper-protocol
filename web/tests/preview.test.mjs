@@ -2,7 +2,7 @@
 // record an action, or touch the mempool. Approval broadcasts exactly once.
 import assert from 'node:assert/strict';
 import { vsize } from '../js/wallet/tx.js';
-import { isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
+import { buildSend, isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
 
 const store = new Map();
 globalThis.localStorage = {
@@ -133,6 +133,36 @@ function counter(w) {
   eq('a partial mint imports no sat', w.imported.has(Number(p.sat)), false);
   ok(await w.backend.getTx(p.commitTxid), 'the accepted commit is the only chain transaction');
   eq('the reveal was not broadcast', await w.backend.getTx(p.revealTxid), null);
+  eq('a rejected reveal leaves a durable package', w.pendingMintPackages().length, 1);
+  eq('the package records that the commit was accepted', w.pendingMintPackages()[0].commitAccepted, true);
+  ok(w.pendingMintPackages()[0].lastError, 'the package records the reveal failure');
+  w.backend.broadcast = original;
+  const retried = await w.retryPendingMint(p.commitTxid);
+  eq('retry returns the reveal txid', retried.revealTxid, p.revealTxid);
+  eq('retry clears the package', w.pendingMintPackages().length, 0);
+  ok(await w.backend.getTx(p.revealTxid), 'retry broadcasts the persisted reveal');
+  eq('retry records the mint', w.actions.filter((a) => a.kind === 'mint').length, 1);
+}
+
+{
+  // F-04: an accepted commit whose reveal cannot be replayed can be
+  // refunded by its key path without revealing the mint leaf.
+  const w = await wallet('ozone drill grab fiber curtain grace pudding thank cruise elder eight picnic');
+  const p = await w.previewMint({ seed: 0x22223333, name: 'Refund Me', feeRate: 2 });
+  const original = w.backend.broadcast.bind(w.backend);
+  let calls = 0;
+  w.backend.broadcast = async (hex) => {
+    calls += 1;
+    if (calls === 2) throw new Error('reveal unavailable');
+    return original(hex);
+  };
+  await assert.rejects(() => w.broadcastPreview(p), /reveal .*rejected|reveal unavailable/i);
+  w.backend.broadcast = original;
+  const refund = await w.refundPendingMint(p.commitTxid, { feeRate: 2 });
+  eq('refund spends the accepted commit', refund.inputs[0].txid, p.commitTxid);
+  ok(await w.backend.getTx(refund.txid), 'refund reaches the chain');
+  eq('refund clears the pending package', w.pendingMintPackages().length, 0);
+  eq('refund is recorded', w.actions.filter((a) => a.kind === 'mint-refund').length, 1);
 }
 
 {
@@ -187,32 +217,35 @@ function counter(w) {
 
 
 {
-  // Unconfirmed SEND funding: the user opt-in is default-on, lets a plain
-  // BIP84 mempool coin pay a fee even before ord/indexer know its ranges,
-  // but never changes the mint/prepare/cross funding pool.
+  // Unconfirmed SEND funding is still fail-closed on unknown ranges. An
+  // unconfirmed coin with complete ranges may pay a fee; an unknown coin
+  // must never be selected, even with the mempool opt-in.
   const w = await wallet();
   const raw = w.utxos.find((u) => u.kind === 'p2wpkh');
-  const coin = {
+  const unknown = {
     ...raw,
     unconfirmed: true, exact: false, ranges: null, spendable: false,
     status: { confirmed: false },
   };
   eq('default settings allow unconfirmed spending', DEFAULT_SETTINGS.spendUnconfirmed, true);
-  eq('a non-exact unconfirmed coin is not strict funding', isFundingUtxo(coin), false);
-  eq('the SEND opt-in accepts a non-exact unconfirmed coin', isFundingUtxo(coin, { allowUnconfirmed: true }), true);
-  eq('strict selection refuses it', (() => {
-    try { selectFunding([coin], 1000n); return 'selected'; } catch (e) { return /insufficient/.test(e.message) ? 'insufficient' : e.message; }
+  eq('a non-exact unconfirmed coin is not strict funding', isFundingUtxo(unknown), false);
+  eq('the SEND opt-in still refuses unknown ranges', isFundingUtxo(unknown, { allowUnconfirmed: true }), false);
+  eq('strict selection refuses the unknown coin', (() => {
+    try { selectFunding([unknown], 1000n); return 'selected'; } catch (e) { return /insufficient/.test(e.message) ? 'insufficient' : e.message; }
   })(), 'insufficient');
-  eq('the opt-in selection takes it', selectFunding([coin], 1000n, [], { allowUnconfirmed: true }).length, 1);
+  eq('the opt-in selection also refuses the unknown coin', (() => {
+    try { selectFunding([unknown], 1000n, [], { allowUnconfirmed: true }); return 'selected'; } catch (e) { return /insufficient/.test(e.message) ? 'insufficient' : e.message; }
+  })(), 'insufficient');
 
+  const coin = { ...raw, unconfirmed: true, exact: true, spendable: true, status: { confirmed: false } };
   w.utxos = [coin];
   w.refresh = async () => w;
   w.settings.spendUnconfirmed = true;
   w._computeBalance();
   eq('unconfirmed pending is counted', String(w.balance.pending), String(coin.value));
-  eq('unconfirmed funds are spendable by default', String(w.balance.spendable), String(coin.value));
+  eq('unconfirmed exact funds are spendable by default', String(w.balance.spendable), String(coin.value));
   const p = await w.previewSend(w.keys.receive(9).address, 25000, { feeRate: 2 });
-  eq('SEND uses the unconfirmed coin', p.built.inputs.length, 1);
+  eq('SEND uses the exact unconfirmed coin', p.built.inputs.length, 1);
   eq('SEND flags its unconfirmed funding', p.usesUnconfirmed, true);
   await w._revalidatePreview(p);
   checks += 1;
@@ -225,6 +258,55 @@ function counter(w) {
     /insufficient funds/,
   );
   checks += 1;
+}
+
+
+{
+  // F-02: the final signed bytes are checked against protected sats, even
+  // when a caller bypasses discovery.
+  const w = await wallet('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const key = w.keys.receive(2);
+  const coin = {
+    txid: '44'.repeat(32), vout: 0, value: 10_000, script: key.script,
+    address: key.address, kind: 'p2wpkh', exact: true, spendable: true,
+    ranges: [[100_000, 109_999]], frogs: [], key,
+  };
+  assert.throws(() => buildSend({
+    keys: w.keys, utxos: [coin], recipientScript: w.keys.receive(9).script,
+    amount: 546, feeRate: 1, protectedSats: [100_999],
+  }), /protected Hopper sat/);
+  checks += 1;
+}
+
+{
+  // F-01: a Hopper at the end of a 1,000-sat coin must not be swept into
+  // the fee. The old transfer builder produced a 900-sat output and a
+  // 100-sat fee, assigning the last sat to fees.
+  const w = await wallet('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const frog = {
+    sat: 100_999, mint_txid: '11'.repeat(32), mint_index: 0, state: 'idle',
+    location: { txid: '22'.repeat(32), vout: 0 },
+  };
+  const utxo = {
+    txid: '22'.repeat(32), vout: 0, value: 1000, kind: 'state',
+    script: w._frogState(frog).script, exact: true,
+    ranges: [[100_000, 100_999]], frogs: [100_999],
+  };
+  w.utxos = [utxo];
+  w.refresh = async () => w;
+  await assert.rejects(
+    () => w.previewTransfer(frog, w.keys.receive(9).address, { feeRate: 1 }),
+    /not the first sat|own output/,
+  );
+  checks += 1;
+
+  // F-02: a protected sat in otherwise plain funding is refused even if
+  // the caller bypassed discovery.
+  const funding = {
+    txid: '33'.repeat(32), vout: 0, value: 1000, kind: 'p2wpkh',
+    script: w.keys.receive(2).script, exact: true,
+    ranges: [[100_000, 100_999]], frogs: [], spendable: true,
+  };
 }
 
 console.log(`preview: ${checks} checks passed`);

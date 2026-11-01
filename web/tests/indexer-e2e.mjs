@@ -3,7 +3,7 @@
 // Rust indexer (running at $HOPPER_API) ingests them through the admin
 // wire. This is the seam that matters: consensus bytes, not two mocks.
 //
-//   HOPPER_INSCRIPTION_ACTIVATION_HEIGHT=0 \
+//   HOPPER_INSCRIPTION_ACTIVATION_HEIGHT=974034 \
 //   HOPPER_API_ADDR=127.0.0.1:9771 HOPPER_SNAPSHOT_PATH=/tmp/h.bin \
 //   ./target/debug/hopper-indexer-api &
 //   node web/tests/indexer-e2e.mjs http://127.0.0.1:9771
@@ -107,7 +107,7 @@ async function scan() {
   const out = [];
   const fk = { address: wallet.frogAddress(), script: p2trScript(wallet.ord.outputXonly) };
   const add = (u, kind, key) => out.push({
-    ...u, ranges: u.ranges ? u.ranges.map(([a, b]) => [a, b - 1]) : [],
+    ...u, ranges: u.ranges ? u.ranges.map(([a, b]) => [a, b]) : [],
     exact: true, frogs: u.frogs || [], kind, key, script: u.script,
   });
   for (const u of await backend.addressUtxos(fk.address, fk.script)) add(u, 'frog', wallet.ord);
@@ -147,7 +147,7 @@ assert.equal(rec.location.vout, 0);
 const state = stateScripts(rec, wallet.ord.ownerXonly);
 const stUtxo = {
   txid: prep.txid, vout: 0, value: Number(CARD_VALUE), script: state.script,
-  kind: 'state', exact: true, ranges: [[mint.sat, mint.sat]], frogs: [mint.sat],
+  kind: 'state', exact: true, ranges: chain.utxo(prep.txid, 0).ranges, frogs: [mint.sat],
 };
 const cross = buildCross({ keys: wallet, stateUtxo: stUtxo, frog: rec, funding: await scan(), feeRate: 2, dir: 0 });
 const crossBlock = await submitTx(cross.hex, 'cross');
@@ -172,7 +172,7 @@ const gen = await (await fetch(`${API}/v1/generation/${crossBlock.height}`)).jso
 assert.equal(gen.required, requiredAt(crossBlock.height), '/v1/generation publishes required');
 assert.equal(gen.generation, 1);
 const params = await (await fetch(`${API}/v1/params`)).json();
-assert.equal(params.wire_version, 7);
+assert.equal(params.wire_version, 8);
 assert.equal(params.generations.generation_len, 6480);
 const road = await (await fetch(`${API}/v1/road`)).json();
 const mine = road.active.find((c) => c.frogger_sat === mint.sat);

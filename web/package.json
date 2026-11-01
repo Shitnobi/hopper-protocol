@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "HOPPER v7 browser wallet, game client and PWA",
+  "description": "HOPPER v8 browser wallet, game client and PWA",
   "scripts": {
     "test": "node tests/core.test.mjs && node tests/game.test.mjs && node tests/emergency.test.mjs && node tests/params.test.mjs && node tests/media.test.mjs && node tests/scan.test.mjs && node tests/ord.test.mjs && node tests/ui.test.mjs && node tests/fees.test.mjs && node tests/preview.test.mjs && node tests/localmint.test.mjs && node tests/chainfrog.test.mjs && node tests/history.test.mjs && node tests/rbf.test.mjs && node ../rust/crates/hopper-core/tests/v7_fold_sync.mjs && node ../rust/crates/hopper-core/tests/v7_fold_parity.mjs && node ../rust/crates/hopper-core/tests/v7_doc_boot.mjs",
     "test:core": "node tests/core.test.mjs",

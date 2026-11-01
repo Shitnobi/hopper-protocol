@@ -1816,7 +1816,7 @@ export function settings(app) {
       </div>
     </div>
 
-    <div class="footer">HOPPER v7 · WIRE 0x07 · ${esc(paramsHashHex().slice(0, 16))}…</div>`;
+    <div class="footer">HOPPER v8 · WIRE 0x08 · ${esc(paramsHashHex().slice(0, 16))}…</div>`;
 }
 
 // ---------------------------------------------------------------------------

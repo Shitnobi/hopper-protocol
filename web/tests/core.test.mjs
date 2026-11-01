@@ -18,9 +18,10 @@ import {
   sendLeafScript, encodeParentTag, decodeStateBody as decodeBody,
 } from '../js/core/v7.js';
 import { buildInscriptionScript, parseInscriptions } from '../js/core/inscription.js';
-import { liveV7Html, mintBodyDigest, parseV7GenHint } from '../js/core/mintdoc.js';
+import { liveV8Html, mintBodyDigest, parseV8GenHint } from '../js/core/mintdoc.js';
 import { foldFrog } from '../js/core/fold.js';
-import { leafHash, branchHash } from '../js/wallet/keys.js';
+import { leafHash, branchHash, deriveWallet } from '../js/wallet/keys.js';
+import { entropyToMnemonic, english } from '../js/vendor/bitcoin-lib.js';
 import { bytesToHex, hexToBytes, utf8, reverseBytes } from '../js/core/hex.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,7 @@ function eq(what, got, want) {
 }
 
 // --- parameters -----------------------------------------------------------
-eq('wire version', 7, v.wire_version);
+eq('wire version', 8, v.wire_version);
 eq('genesis', GENESIS, v.genesis);
 eq('generation_len', PROTOCOL.generations.generationLen, v.generations.generation_len);
 eq('params_hash', paramsHashHex(), v.params_hash);
@@ -96,16 +97,16 @@ assert.throws(() => decodeBody(bad), /direction/);
 // --- mint envelope --------------------------------------------------------
 for (const m of v.mint_envelopes) {
   eq(`mint envelope ${m.seed}`, bytesToHex(mintEnvelope(m.seed, m.name)), m.hex);
-  eq(`mint decode ${m.seed}`, decodeMint(hexToBytes(m.hex)), { seed: m.seed, name: m.name });
+  eq(`mint decode ${m.seed}`, decodeMint(hexToBytes(m.hex)), { seed: m.seed, name: m.name, version: 8 });
 }
 
 // --- mint bodies (the consensus-visible document) -------------------------
 for (const m of v.mint_bodies) {
-  const html = liveV7Html(m.seed, m.sat, m.name, m.gen_hint);
+  const html = liveV8Html(m.seed, m.sat, m.name, m.gen_hint);
   eq(`mint body content-type ${m.seed}`, 'text/html;charset=utf-8', m.content_type);
   eq(`mint body bytes ${m.seed}`, utf8(html).length, m.html_len);
   eq(`mint body digest ${m.seed}/${m.sat}`, bytesToHex(mintBodyDigest(m.seed, m.sat, m.name, m.gen_hint)), m.digest);
-  eq(`gen hint ${m.seed}`, parseV7GenHint(html), m.gen_hint);
+  eq(`gen hint ${m.seed}`, parseV8GenHint(html), m.gen_hint);
   // no external origin, ever
   assert(!/https?:\/\/|\/\/[a-z0-9-]+\.[a-z]/i.test(html), 'mint body must not contain an external origin');
   assert(!html.includes('STATE FROM THE CHAIN'), 'v7 has no chain caption');
@@ -122,11 +123,21 @@ for (const m of v.mint_bodies) {
 // --- ord envelope bytes ---------------------------------------------------
 eq('inscription script', bytesToHex(buildInscriptionScript('image/png', utf8('ok'))), v.inscription_script);
 
+// --- F-03: BIP86 even-Y normalization and legacy recovery ---------------
+{
+  const entropy = Uint8Array.from(Buffer.from('00000000000000000000000000000002', 'hex'));
+  const mnemonic = entropyToMnemonic(entropy, english);
+  const w = deriveWallet(mnemonic, 'mainnet');
+  eq('BIP86 even-Y output key', bytesToHex(w.ord.outputXonly), '8f2890308862baac872911bbf9698d714cc658dc326d9d642f1b922f051cf69c');
+  eq('released odd-Y output key remains discoverable', bytesToHex(w.legacyOrd.outputXonly), '789b02a2f92696d9f6e3977dc034d82c5d211c22ce8c82917102d78f12cea9ed');
+  assert.notEqual(w.frogAddress(), w.legacyFrogAddress(), 'the two recovery paths differ for this vector');
+}
+
 // --- fold parity ----------------------------------------------------------
 const P = foldParams();
 const SP = 'aa'.repeat(32) + ':0:0';
 const id = `${'aa'.repeat(32)}i0`;
-const mk = (height, dir) => ({ id, height, sequence: height, satpoint: SP, bodyOk: true, dir });
+const mk = (height, dir) => ({ id: `${id}-${height}-${dir}`, height, sequence: height, satpoint: SP, bodyOk: true, proofOk: true, dir });
 // A hash whose wrap is `dir`: internal bytes dir,0,0,0 -> display hex.
 const hashFor = (dir) => bytesToHex(reverseBytes(Uint8Array.of(dir, 0, 0, 0, ...new Uint8Array(28))));
 const against = (dir) => hashFor((dir + 1) % 3);
@@ -162,5 +173,29 @@ const noHash = foldFrog({
 });
 eq('missing hash is pending, never a lie', noHash.state, 'crossing');
 eq('missing hash reason', noHash.reason, 'missing hash');
+
+
+// --- F-05: proof/finality/duplicate guards --------------------------------
+{
+  const child = mk(GENESIS, 1);
+  const duplicate = { ...child };
+  eq('a duplicate co-located child is unverified', foldFrog({
+    sat: 42, tip: GENESIS + 100, me: { satpoint: SP },
+    children: [child, duplicate], hash: { [GENESIS + 1]: hashFor(2) }, p: P,
+  }).state, 'unverified');
+  const second = { ...mk(GENESIS + 1, 1), id: 'second' };
+  eq('a second crossing before finality is unverified', foldFrog({
+    sat: 42, tip: GENESIS + 100, me: { satpoint: SP },
+    children: [child, second], hash: { [GENESIS + 1]: hashFor(2) }, p: P,
+  }).state, 'unverified');
+  eq('a body-valid child without a raw proof is unverified', foldFrog({
+    sat: 42, tip: GENESIS + 100, me: { satpoint: SP },
+    children: [{ ...child, proofOk: false }], hash: { [GENESIS + 1]: hashFor(2) }, p: P,
+  }).state, 'unverified');
+  eq('incomplete pagination is unverified', foldFrog({
+    sat: 42, tip: GENESIS + 100, me: { satpoint: SP },
+    children: [], hash: {}, p: P, incomplete: true,
+  }).state, 'unverified');
+}
 
 console.log(`core: ${checks} checks passed`);

@@ -58,10 +58,10 @@ export function tapTweakHash(xonly, merkleRoot = null) {
   return tagged('TapTweak', merkleRoot ? concatBytes([xonly, merkleRoot]) : xonly);
 }
 
-// BIP86: Q = P + H_TapTweak(P)*G. Returns the output key and the secret
-// that signs for Q (the key embedded in HOPPER's leaves and spent by the
-// frog address's key path).
-export function taprootTweakedKey(privateKey, merkleRoot = null) {
+// Legacy derivation used by released HOPPER wallets. It tweaks the raw
+// private point without BIP341/86's even-Y normalization. Kept only so a
+// recovery scan can find old outputs; never use it for new addresses.
+export function taprootTweakedKeyLegacy(privateKey, merkleRoot = null) {
   const priv = bytesToNumber(privateKey);
   const P = secp256k1.ProjectivePoint.fromPrivateKey(privateKey);
   const xonly = Uint8Array.from(P.toRawBytes(true).slice(1, 33));
@@ -71,9 +71,34 @@ export function taprootTweakedKey(privateKey, merkleRoot = null) {
     internalXonly: xonly,
     internalPrivate: Uint8Array.from(privateKey),
     outputXonly: Uint8Array.from(Q.toRawBytes(true).slice(1, 33)),
-    outputPrivate: numberTo32(priv + t),
+    // For BIP340, sign with the scalar for the even-Y lift of Q.
+    outputPrivate: numberTo32(Q.hasEvenY() ? priv + t : -(priv + t)),
     parity: Q.hasEvenY() ? 0 : 1,
     tweak: t,
+    legacy: true,
+  };
+}
+
+// BIP86: normalize the internal point to even Y before tweaking.
+// Q = P_even + H_TapTweak(P_even)*G. Returns the output key and the secret
+// that signs for the even-Y lift of Q (the key BIP340 verification uses).
+export function taprootTweakedKey(privateKey, merkleRoot = null) {
+  const priv = bytesToNumber(privateKey);
+  const raw = secp256k1.ProjectivePoint.fromPrivateKey(privateKey);
+  const scalar = raw.hasEvenY() ? priv : mod(-priv);
+  const P = raw.hasEvenY() ? raw : raw.negate();
+  const xonly = Uint8Array.from(P.toRawBytes(true).slice(1, 33));
+  const t = bytesToNumber(tapTweakHash(xonly, merkleRoot));
+  const Q = P.add(secp256k1.ProjectivePoint.BASE.multiply(t));
+  const q = mod(scalar + t);
+  return {
+    internalXonly: xonly,
+    internalPrivate: numberTo32(scalar),
+    outputXonly: Uint8Array.from(Q.toRawBytes(true).slice(1, 33)),
+    outputPrivate: numberTo32(Q.hasEvenY() ? q : -q),
+    parity: Q.hasEvenY() ? 0 : 1,
+    tweak: t,
+    legacy: false,
   };
 }
 
@@ -120,6 +145,12 @@ export function deriveWallet(mnemonic, network = 'regtest') {
   const ord = taprootTweakedKey(ordNode.privateKey);
   ord.ownerXonly = ord.outputXonly;
   ord.ownerPrivate = ord.outputPrivate;
+  // F-03: keep the released derivation for recovery scans. New outputs
+  // always use `ord` (BIP86 even-Y); `legacyOrd` is only for finding and
+  // explicitly migrating old coins.
+  const legacyOrd = taprootTweakedKeyLegacy(ordNode.privateKey);
+  legacyOrd.ownerXonly = legacyOrd.outputXonly;
+  legacyOrd.ownerPrivate = legacyOrd.outputPrivate;
 
   return {
     network,
@@ -130,6 +161,7 @@ export function deriveWallet(mnemonic, network = 'regtest') {
     root,
     ordNode,
     ord,
+    legacyOrd,
     receive(index = 0) {
       return keyInfo(root.derive(`${account}/0/${index}`), 'receive', index, network);
     },
@@ -138,6 +170,9 @@ export function deriveWallet(mnemonic, network = 'regtest') {
     },
     frogAddress() {
       return p2trAddress(ord.outputXonly, network);
+    },
+    legacyFrogAddress() {
+      return p2trAddress(legacyOrd.outputXonly, network);
     },
     ordInfo() {
       return {
@@ -148,6 +183,10 @@ export function deriveWallet(mnemonic, network = 'regtest') {
         privateKey: ord.internalPrivate,
         ownerPrivate: ord.outputPrivate,
         parity: ord.parity,
+        legacyAddress: p2trAddress(legacyOrd.outputXonly, network),
+        legacyOwnerXonly: legacyOrd.outputXonly,
+        legacyOwnerPrivate: legacyOrd.outputPrivate,
+        legacyParity: legacyOrd.parity,
       };
     },
   };

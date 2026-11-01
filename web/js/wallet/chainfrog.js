@@ -10,48 +10,81 @@
 
 import { bytesToHex, equalBytes, reverseBytes } from '../core/hex.js';
 import { parseInscriptions } from '../core/inscription.js';
-import { requiredAt } from '../core/params.js';
-import { decodeStateBody } from '../core/v7.js';
+import { PROTOCOL, requiredAt } from '../core/params.js';
+import { decodeParentTag, decodeStateBodyVersioned } from '../core/v7.js';
 import { wrapOfDisplayHex } from '../core/wrap.js';
-import { parseTx, witnessTapscript } from './txparse.js';
+import { parseTx, witnessControl, witnessTapscript } from './txparse.js';
+import { stateScripts } from './actions.js';
 
 /**
  * Identify the HOPPER transaction in one state-address history row.
  * Returns `{ tx, crossing, stateOut }` where `crossing` is present only
  * when input 0 carries the canonical body for this frog.
  */
-export function frogTxRole({ record, hex, stateScript }) {
-  if (!record || !hex || !stateScript) return null;
+export function frogTxRole({
+  record, hex, stateScript, ownerXonly = null, legacy = false, txid = null,
+}) {
+  if (!record || !hex || !stateScript || !ownerXonly) return null;
   let tx;
   try { tx = parseTx(hex); } catch { return null; }
+  if (txid && String(tx.txid).toLowerCase() !== String(txid).toLowerCase()) return null;
   const sat = Number(record.sat);
   const mintTxid = String(record.mint_txid || '').toLowerCase();
   const mintIndex = Number(record.mint_index ?? 0);
   if (!Number.isSafeInteger(sat) || !/^[0-9a-f]{64}$/.test(mintTxid)) return null;
+  if (!tx.inputs.length) return null;
 
+  // F-06: only input 0 can be the crossing, and it must reveal exactly
+  // one canonical state leaf for this frog and direction. A matching body
+  // in some other input, or an output-only deposit, is never a crossing.
   let crossing = null;
-  for (let i = 0; i < tx.inputs.length; i++) {
-    const tapscript = witnessTapscript(tx.inputs[i]);
-    if (!tapscript) continue;
+  const tapscript = witnessTapscript(tx.inputs[0]);
+  const control = witnessControl(tx.inputs[0]);
+  if (tapscript && control) {
     let inscriptions = [];
     try { inscriptions = parseInscriptions(tapscript); } catch { inscriptions = []; }
-    for (const inscription of inscriptions) {
-      if (!inscription?.body) continue;
-      let body;
-      try { body = decodeStateBody(inscription.body); } catch { continue; }
-      if (Number(body.sat) !== sat) continue;
-      const bodyMint = bytesToHex(reverseBytes(body.mintTxid));
-      if (bodyMint !== mintTxid || Number(body.mintIndex) !== mintIndex) continue;
-      if (Number(body.dir) < 0 || Number(body.dir) > 2) continue;
-      crossing = { dir: Number(body.dir), input: i };
-      break;
+    if (inscriptions.length === 1 && !inscriptions[0].pointer && inscriptions[0].body) {
+      let versioned = null;
+      try { versioned = decodeStateBodyVersioned(inscriptions[0].body); } catch { versioned = null; }
+      if (versioned && versioned.legacy === !!legacy) {
+        const body = versioned.body;
+        const bodyMint = bytesToHex(reverseBytes(body.mintTxid));
+        const parent = inscriptions[0].parents?.[0];
+        let parentOk = false;
+        if (parent) {
+          try {
+            const decoded = decodeParentTag(parent);
+            parentOk = bytesToHex(reverseBytes(decoded.mintTxid)) === mintTxid
+              && Number(decoded.mintIndex) === mintIndex;
+          } catch { parentOk = false; }
+        }
+        if (Number(body.sat) === sat && bodyMint === mintTxid
+            && Number(body.mintIndex) === mintIndex && parentOk
+            && Number(body.dir) >= 0 && Number(body.dir) <= 2) {
+          const state = stateScripts(record, ownerXonly, { legacy: !!legacy });
+          if (equalBytes(tapscript, state.crossLeaves[body.dir])
+              && equalBytes(control, state.crossControls[body.dir])) {
+            crossing = { dir: Number(body.dir), input: 0 };
+          }
+        }
+      }
     }
-    if (crossing) break;
   }
 
-  const stateOut = tx.outputs.some((out) => equalBytes(out.script, stateScript));
+  const out0 = tx.outputs[0];
+  const stateOut = !!(out0 && equalBytes(out0.script, stateScript));
+  // A crossing must create the next state output. A canonical leaf that
+  // pays an ordinary script is a protocol-invalid crossing (audit item 5),
+  // not a handoff.
+  if (crossing && !stateOut) return null;
   if (!crossing && !stateOut) return null;
-  return { tx, crossing, stateOut };
+  return {
+    tx,
+    crossing,
+    stateOut,
+    input0: `${String(tx.inputs[0].txid).toLowerCase()}:${Number(tx.inputs[0].vout)}`,
+    out0: `${String(tx.txid).toLowerCase()}:0`,
+  };
 }
 
 /**
@@ -64,7 +97,9 @@ export function frogTxRole({ record, hex, stateScript }) {
  * Returns null when a transaction needed for the replay is missing, so the
  * caller can keep the last good state instead of inventing one.
  */
-export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateScript }) {
+export function replayFrogChain({
+  record, rows, txHex, hashByHeight, tip, stateScript, ownerXonly = null, legacy = false,
+}) {
   if (!record || !Array.isArray(rows) || !stateScript) return null;
   const hexOf = (txid) => {
     if (txHex instanceof Map) return txHex.get(txid) || null;
@@ -92,10 +127,17 @@ export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateS
   const prepares = [];
   const crossings = [];
   const pendingCrossings = [];
+  // Every row's output 0 is a possible next frog outpoint. A crossing must
+  // spend one of those (or the mint outpoint) in input 0; an output-only
+  // deposit can never qualify.
+  const knownOutpoints = new Set([`${String(record.mint_txid || '').toLowerCase()}:0`]);
+  let lastCrossHeight = null;
   for (const row of ordered) {
     const hex = hexOf(row.txid);
     if (!hex) return null;
-    const role = frogTxRole({ record, hex, stateScript });
+    const role = frogTxRole({
+      record, hex, stateScript, ownerXonly, legacy, txid: row.txid,
+    });
     if (!role) {
       if (row.height == null) continue;
       return null;
@@ -110,10 +152,14 @@ export function replayFrogChain({ record, rows, txHex, hashByHeight, tip, stateS
       continue;
     }
     if (role.crossing) {
+      if (!knownOutpoints.has(role.input0)) return null;
+      if (lastCrossHeight != null && row.height - lastCrossHeight < PROTOCOL.crossFinality) return null;
+      lastCrossHeight = row.height;
       crossings.push({ txid: row.txid, height: row.height, dir: role.crossing.dir });
     } else if (role.stateOut) {
       prepares.push({ txid: row.txid, height: row.height });
     }
+    knownOutpoints.add(role.out0);
   }
 
   let state = 'idle';

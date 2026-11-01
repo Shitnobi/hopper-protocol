@@ -37,7 +37,9 @@ fn inscriptions(tx: &Tx) -> impl Iterator<Item = (usize, &crate::types::Inscript
 pub(crate) fn is_cross_tx(tx: &Tx) -> bool {
     inscriptions(tx).any(|(_, ins)| {
         ins.body.as_deref().is_some_and(|body| {
-            body.len() >= hopper_core::STATE_MAGIC.len() && &body[..9] == hopper_core::STATE_MAGIC
+            body.len() >= hopper_core::STATE_MAGIC.len()
+                && (&body[..9] == hopper_core::STATE_MAGIC
+                    || &body[..9] == hopper_core::LEGACY_STATE_MAGIC)
         })
     })
 }
@@ -47,6 +49,7 @@ pub(crate) fn is_cross_tx(tx: &Tx) -> bool {
 fn leaf_is_for_another_dir(
     ins: &crate::types::InscriptionReveal,
     body: &hopper_core::StateBody,
+    legacy: bool,
 ) -> bool {
     let (Some(control), Some(script)) = (&ins.control_block, &ins.tapscript) else {
         return false;
@@ -65,8 +68,17 @@ fn leaf_is_for_another_dir(
         }
         let mut other = *body;
         other.dir = dir;
-        if script == &hopper_core::state_leaf_script(&owner, &other) {
-            let hashes = hopper_core::state_leaf_hashes(&owner, &other);
+        let other_leaf = if legacy {
+            hopper_core::legacy_state_leaf_script(&owner, &other)
+        } else {
+            hopper_core::state_leaf_script(&owner, &other)
+        };
+        if script == &other_leaf {
+            let hashes = if legacy {
+                hopper_core::legacy_state_leaf_hashes(&owner, &other)
+            } else {
+                hopper_core::state_leaf_hashes(&owner, &other)
+            };
             let path = hopper_core::control_path(&hashes, dir);
             if control[33..65] == path[0][..] && control[65..97] == path[1][..] {
                 return true;
@@ -84,7 +96,11 @@ fn leaf_is_for_another_dir(
 /// byte-for-byte, so a non-canonical push encoding cannot pass. The
 /// control-block path is rebuilt from the four leaf hashes; the output key
 /// itself needs curve arithmetic and is the wallet's check.
-fn state_shape_ok(ins: &crate::types::InscriptionReveal, body: &hopper_core::StateBody) -> bool {
+fn state_shape_ok(
+    ins: &crate::types::InscriptionReveal,
+    body: &hopper_core::StateBody,
+    legacy: bool,
+) -> bool {
     let (Some(control), Some(script)) = (&ins.control_block, &ins.tapscript) else {
         return false;
     };
@@ -99,14 +115,22 @@ fn state_shape_ok(ins: &crate::types::InscriptionReveal, body: &hopper_core::Sta
     }
     let mut owner = [0u8; 32];
     owner.copy_from_slice(&script[1..33]);
-    let expected = hopper_core::state_leaf_script(&owner, body);
+    let expected = if legacy {
+        hopper_core::legacy_state_leaf_script(&owner, body)
+    } else {
+        hopper_core::state_leaf_script(&owner, body)
+    };
     if script != &expected {
         return false;
     }
     if hopper_core::parse_inscriptions(script).len() != 1 {
         return false;
     }
-    let hashes = hopper_core::state_leaf_hashes(&owner, body);
+    let hashes = if legacy {
+        hopper_core::legacy_state_leaf_hashes(&owner, body)
+    } else {
+        hopper_core::state_leaf_hashes(&owner, body)
+    };
     let path = hopper_core::control_path(&hashes, body.dir);
     control[33..65] == path[0][..] && control[65..97] == path[1][..]
 }
@@ -130,14 +154,27 @@ pub(crate) fn validate_cross(
     }
     let ins = first.1;
 
-    // 2. Canonical v7 body, bound to this frog.
-    let body = ins
+    // F-09: preserve and enforce ord's multiplicity/pointer/validity
+    // fields. A second envelope in the same input or a pointer means the
+    // inscription is not on the sat this crossing claims.
+    if ins.inscription_count != 1 || ins.pointer.is_some() || !ins.valid {
+        return Err(RejectionReason::CrossTicketShape);
+    }
+
+    // 2. Canonical v8 body, bound to this frog.
+    let (body, legacy) = ins
         .body
         .as_deref()
         .ok_or(RejectionReason::CrossBodyMalformed)
         .and_then(|b| {
-            hopper_core::decode_state_body(b).map_err(|_| RejectionReason::CrossBodyMalformed)
+            hopper_core::decode_state_body_versioned(b)
+                .map_err(|_| RejectionReason::CrossBodyMalformed)
         })?;
+    // A v7 body is legal only for the one grandfathered Hopper; a v8
+    // body is illegal for that Hopper.
+    if legacy != (frog.wire_version == hopper_core::VERSION_V7) {
+        return Err(RejectionReason::CrossBodyMalformed);
+    }
     if body.sat != frog.sat
         || body.mint_txid != frog.mint_txid
         || body.mint_index != frog.mint_index
@@ -159,8 +196,8 @@ pub(crate) fn validate_cross(
     //    the direction in the body (SPEC §4.3 item 4 / §6.7). A leaf that
     //    is canonical for a DIFFERENT direction is the direction-rejection
     //    case, not a generic malformed script.
-    if !state_shape_ok(ins, &body) {
-        return Err(if leaf_is_for_another_dir(ins, &body) {
+    if !state_shape_ok(ins, &body, legacy) {
+        return Err(if leaf_is_for_another_dir(ins, &body, legacy) {
             RejectionReason::CrossDirectionMismatch
         } else {
             RejectionReason::CrossTicketShape
@@ -525,6 +562,9 @@ mod tests {
             parents: vec![encode_parent_tag(&b.mint_txid, b.mint_index)],
             tapscript: Some(script),
             control_block: Some(control),
+            pointer: None,
+            inscription_count: 1,
+            valid: true,
         }
     }
 
@@ -551,7 +591,7 @@ mod tests {
     fn a_v7_mint_carries_its_generation_and_hops_in_one_tx() {
         let mut idx = minted_v7();
         let minted = idx.frogger(SAT).unwrap();
-        assert_eq!(minted.wire_version, hopper_core::params::VERSION_V7);
+        assert_eq!(minted.wire_version, hopper_core::params::VERSION_V8);
         assert_eq!(minted.gen, 26, "generation(100) under the fixture");
         let report = idx
             .apply_block(block_of(101, 2, vec![cross_v7_tx(&idx, 3, 0)]))
@@ -739,6 +779,9 @@ mod tests {
                 &hopper_core::control_path(&hs, 1),
                 1,
             )),
+            pointer: None,
+            inscription_count: 1,
+            valid: true,
         });
         let b = tx_of(5, vec![b_input], vec![out(CARD - 1_000)]);
         let report = idx.apply_block(block_of(102, 3, vec![a, b])).unwrap();

@@ -1,13 +1,13 @@
-# HOPPER v7 — specification
+# HOPPER v8 — specification
 
-**Status:** 2.0 (wire version `0x07`)
+**Status:** 3.0 (wire version `0x08`; released v7 is grandfathered for one sat)
 **Purpose:** a complete, self-contained statement of (1) the inscription
 envelope and its program, (2) the game logic, including the tapscript tree
 that plays it, and (3) the standalone indexer. This document is normative
 for the Rust indexer and the JavaScript wallet/PWA in this repository.
 
 The game is called **HOPPER** in the interface. The consensus bytes keep
-the historical spelling (`FRG`, `FRG7CROSS`, `frog`/`frogger` in JSON keys)
+the historical spelling (`FRG`, `frog`/`frogger` in JSON keys). The current state magic is `FRG8CROSS`; `FRG7CROSS` is accepted only for the one grandfathered Hopper.
 because those bytes are already on Bitcoin and cannot be renamed. The
 crossing action is called **HOP** in the interface and `cross` on the wire.
 
@@ -26,14 +26,14 @@ HOP       one transaction, one new inscription on the same sat, in one of
 SETTLE    six blocks after the crossing, H(T+1) picks the road's direction
           for the whole block; every Hopper in it that hopped that way dies
 HOME      a frog that reaches its frozen target becomes immortal
-TRANSFER  plain movement: no inscription, no state change
+TRANSFER  plain movement: no new state envelope, state unchanged
 ```
 
 There is no server on the art's trust path. Any stock `ord` viewer can draw
 a Hopper from the inscriptions alone. The indexer is the wallet's chain
 reader and the public API; it is not the art's authority.
 
-Three rules are new in v7 and shape everything below:
+Three rules from v7 still shape everything below; v8 adds a proof-bound envelope and a proof-checking fold:
 
 * the road asks a question, not a die roll. The player picks left,
   straight or right; the next block's hash picks one direction for the
@@ -56,12 +56,16 @@ transfer or a one-time PREPARE transaction.
 ## 1. Constants
 
 ```
-wire version             0x07
+wire version             0x08
+legacy wire version      0x07 (one grandfathered sat only)
 mint magic               "FRG"
 mint action              0x01
-state magic              "FRG7CROSS"
+state magic              "FRG8CROSS"
+legacy state magic       "FRG7CROSS"
 state body length        55 bytes
 state leaf               161 bytes (index 0; 162-165 with a nonzero mint index)
+grandfathered sat         0 = none; set to the one released Hopper's ord sat
+activation height        974_034 (frozen; see §6.6)
 direction encoding       left = 0, straight = 1, right = 2
 wrap function            u32LE(H(B)[0..4]) mod 3
 crossing leaves          3 (one per direction) + 1 send
@@ -137,8 +141,11 @@ Normative consequences:
   frog in that block that hopped right dies and every other frog in that
   block survives;
 * the wrap is a function of the block hash alone — not of the sat, the
-  owner, the name, the target or the number of frogs in the block — so a
-  Hopper cannot influence or predict its own outcome;
+  owner, the name, the target or the number of frogs in the block — so an
+  **ordinary player** cannot choose or predict its own outcome. A block
+  producer can influence the candidate hash and can withhold a block; this
+  is miner influence, not player agency. The protocol does not claim
+  otherwise;
 * `2^32 = 3 * 1_431_655_765 + 1`, so `mod 3` is biased by one part in
   `2^32` toward left. That bias is accepted. An implementation must use this
   exact integer; it must not substitute a wider word, a rejection scheme or
@@ -155,7 +162,11 @@ params_hash = SHA256(canonical_le)
 ```
 
 A wallet refuses to mint or hop when the indexer's published `params_hash`
-differs from its own.
+differs from its own. It also refuses a configured indexer that does not
+answer the params gate, or whose `network` does not match the wallet's
+network. Missing identity is not permission to sign. ord remains the
+canonical source for sat ranges and inscription validity; the HOPPER indexer
+is for the leaderboard/discovery, never for overriding ord.
 
 ### 1.4 Outcome timing
 
@@ -167,14 +178,14 @@ between, and a reorg that replaces `T+1` replaces the wrap.
 
 ## 2. The inscription envelope
 
-### 2.1 MINT envelope (OP_RETURN, 0x07)
+### 2.1 MINT envelope (OP_RETURN, 0x08)
 
 The mint transaction carries one OP_RETURN output whose push is:
 
 ```
 offset len  field
 0      3    "FRG"
-3      1    0x07
+3      1    0x08  (0x07 only for the grandfathered Hopper)
 4      1    0x01  (MINT)
 5      4    seed        u32 LE
 9      1    name_len    0..=38
@@ -219,9 +230,9 @@ the minimal little-endian integer (ord's rule: a 1–3 byte index whose last
 byte is `0x00` is non-minimal and rejected). The parent is mandatory on a
 crossing; it is what makes `/r/children` work.
 
-### 2.3 The mint body: a self-contained fold document
+### 2.3 The mint body: a self-contained proof-checking fold document
 
-`live_v7_html(seed, sat, name, gen_hint)` returns `text/html;charset=utf-8`
+`live_v8_html(seed, sat, name, gen_hint)` returns `text/html;charset=utf-8`
 with:
 
 * no external URL of any kind (`http://`, `https://`, a bare host, a
@@ -231,18 +242,21 @@ with:
   (`G1`, `G2`, …) and the road mark with an unknown crossing count, e.g.
   `NAME · 🛣 —`;
 * an embedded parameter block
-  `V7={sat, genHint, name, p:{g,b,gi,cap,hold,gl,fin}}`, where
-  `g = genesis`, `b = base`, `gi = growth_interval`, `cap = ceiling`,
-  `gl = generation_len` and `fin = cross_finality`;
-* the canonical fold source (`live_v7.js`), which reads only relative
+  `V8={sat, genHint, name, [grandfatheredSat,] p:{g,b,gi,cap,hold,gl,fin}}`,
+  where `g = genesis`, `b = base`, `gi = growth_interval`,
+  `cap = ceiling`, `gl = generation_len` and `fin = cross_finality`;
+* the canonical v8 fold source (`live_v8.js`), which reads only relative
   `/r/…` and `/content/…` endpoints on the viewer's own ord node.
+  `grandfatheredSat` is emitted only when the compiled value is non-zero.
 
-There is no `STATE FROM THE CHAIN` caption in v7. The static band states
+There is no `STATE FROM THE CHAIN` caption in v8. The static band states
 only what the mint transaction itself can prove: the name (from the mint
 envelope), the generation hint (from the intended mint height), and that
 the crossing count is unknown. It must never print a number there.
 
-The live band, drawn by the fold, is authoritative:
+The live band is authoritative only when the fold verifies every body-valid
+child against its raw transaction. If a proof is missing, the band is
+`NAME · 🛣 —` and no count or HOME is claimed.
 
 ```
 alive :  NAME                 🛣 12
@@ -270,27 +284,26 @@ The PNG encoder is canonical and deterministic:
 * filter byte 0 on every scanline;
 * hand-rolled CRC-32 per chunk.
 
-The indexer accepts exactly one mint body digest per
-`(seed, sat, name, gen_hint)`: SHA-256 of `live_v7_html(...)`. v6 bodies
-(`0x06`, the `STATE FROM THE CHAIN` caption) are **not** accepted by a v7
-indexer. v7 is a new deployment: the envelope version, the body length and
-the art all changed, so a v6 frog is not a v7 frog. An operator who must
-carry v6 frogs runs a v6 indexer beside this one.
+The indexer accepts exactly one v8 mint body digest per
+`(seed, sat, name, gen_hint)`: SHA-256 of `live_v8_html(...)`. The released
+v7 document/digest is accepted only when the anchor sat equals
+`GRANDFATHERED_SAT` (§2.6). v6 bodies (`0x06`) and every other v7 mint are
+rejected.
 
-The fold source must not declare `var V7` in the same scope as the
-document's `V7={…}`. The v6.0 hoisting bug is the reason the document
+The fold source must not declare `var V8` in the same scope as the
+document's `V8={…}`. The v6.0 hoisting bug is the reason the document
 assigns the object first and the fold only reads it, never re-declares it.
 
 ### 2.4 The crossing body (55 bytes)
 
 ```
 offset len  field
-0      9    "FRG7CROSS"
-9      1    0x07
-10     8    sat          u64 LE
-18     32   mint_txid    internal byte order
-50     4    mint_index   u32 LE
-54     1    dir          0 = left, 1 = straight, 2 = right
+0      9    "FRG8CROSS"       ("FRG7CROSS" only for the grandfather)
+9      1    0x08              (0x07 only for the grandfather)
+10     8    sat               u64 LE
+18     32   mint_txid         internal byte order
+50     4    mint_index        u32 LE
+54     1    dir               0 = left, 1 = straight, 2 = right
 ```
 
 `(sat, mint_txid, mint_index)` identify the frog and are immutable for its
@@ -301,7 +314,7 @@ malformed and rejected.
 The mint inscription id (`{reversed_mint_txid}i{mint_index}`) is the ordinal
 parent of every crossing inscription.
 
-### 2.5 The fold renderer (canonical algorithm)
+### 2.5 The fold renderer (canonical, proof-checking algorithm)
 
 Inputs: `sat`, the document's own inscription id, `/r/blockheight`, and the
 embedded parameters.
@@ -314,37 +327,91 @@ last     = GET /r/inscription/{id}          (anchor satpoint)
 children = GET /r/children/{id}             (follow {"ids":[…],"more":bool,"page":n})
 for c in children:
   d = GET /r/inscription/{c}
-  keep c iff d.satpoint == last.satpoint and d.height is set
-sort by (height, sequence_number)
+  keep c iff d.sat == sat, d.satpoint == last.satpoint and d.height is set
 bodyOk(c) = GET /r/content/{c} (fallback /content/{c}) is exactly 55 bytes,
-            starts FRG7CROSS||0x07||sat||mint_txid||mint_index, has
+            starts FRG8CROSS||0x08||sat||mint_txid||mint_index, has
             dir <= 2, and the content type is octet-stream
-
-state = idle; dist = 0
-for c in kept:
-  if not bodyOk(c): continue
-  T = c.height
-  if T + finality > tip: return crossing(dist, dir = body(c).dir)
-  if body(c).dir == wrap(T + 1): return dead(dist)
-  dist += 1
-  if dist >= required(T): return home(dist)
-mintH = GET /r/inscription/{mint}.height      (fallback: gen_hint from V7)
-return idle(dist, gen = generation(mintH or gen_hint), target = required(tip + 1))
+raw(c)    = GET /r/tx/{c.txid}
+proofOk(c)= raw(c) is version 2, locktime 0, all input sequences 0xffffffff,
+            has exactly one envelope in input 0 and no pointer or extra
+            envelope, output 0 has value > 0, the input-0 tapscript is the
+            canonical 161-byte leaf for body(c).dir, and its 97-byte control
+            block has NUMS as internal key and the canonical sibling path.
+            A confirmed Bitcoin transaction is already consensus-valid; the
+            fold only has to check that the spent leaf is the canonical one.
 ```
 
+`T = height`, `P = position`. A body-valid child whose proof is missing or
+false makes the fold `unverified`; it is never silently skipped. Sort kept
+children by `(height, sequence_number)`, then:
+
+```
+state = idle; dist = 0; lastT = null; txids = {}
+for c in kept:
+  if c.id in txids: return unverified("duplicate crossing")
+  if lastT != null and c.height - lastT < finality:
+      return unverified("crossing before finality")
+  if c.height + finality > tip: return crossing(dist, dir = body(c).dir)
+  if body(c).dir == wrap(c.height + 1): return dead(dist)
+  dist += 1; lastT = c.height; txids.add(c.id)
+  if dist >= required(c.height): return home(dist)
+return idle(dist, target = required(tip + 1))
+```
+
+The `unverified` state renders `NAME · 🛣 —`; it must never print `dist` or
+`HOME`. A body-invalid child (wrong magic, wrong sat, wrong mint, malformed
+dir) is ignored; a body-valid child with a failed proof is a hard stop.
+Incomplete pagination (`more` after the bounded cursor) is also
+`unverified`, not a lower-bound count.
+
 `wrap(T+1) = u32LE(H(T+1)_internal[0..4]) mod 3`, the same integer the
-indexer uses (§1.2). The fold never asks the indexer what happened: it
-recomputes the outcome from the block hash and the direction each crossing
-body carries.
+indexer uses (§1.2). The fold never asks the HOPPER indexer what happened;
+it recomputes the outcome from the block hash and verifies the spend from
+ord's raw transaction endpoint.
 
 The fold is stateless over heights, so reorgs are handled by asking again.
 Two crossings in flight on one sat is not legal; the second is rejected by
-consensus and must not be counted. A transfer carries no envelope and is
-therefore invisible to the fold by construction.
+consensus and must not be counted. The finality check above rejects it even
+when both transactions are already confirmed at the current tip.
 
-Rendering follows §2.3: `dist` goes in the band beside the road mark, `RIP `
-is prefixed to the name iff `state == dead`, and the generation badge comes
-from `mintH` when it can be read.
+A transfer carries no crossing envelope. To count a later crossing, its raw
+input 0 must spend a canonical state output and carry the canonical leaf;
+an ordinary output-only deposit or a body copied into a funding input cannot
+qualify.
+
+Rendering follows §2.3. A transfer remains invisible to `dist`, but it
+cannot create a false HOME because the next crossing lacks a canonical
+state leaf.
+
+### 2.6 The one grandfathered v7 Hopper
+
+Exactly one released Hopper is carried across the v8 cut. Its sat is the
+global `GRANDFATHERED_SAT` value:
+
+* Rust: `hopper_core::params::GRANDFATHERED_SAT`
+* JavaScript: `GRANDFATHERED_SAT` in `web/js/core/params.js`
+
+`0` means none; it is the only value to edit when the sat is known. The
+value is embedded into new v8 mint documents as `grandfatheredSat` so the
+fold does not need a second copy.
+
+For that sat only:
+
+* the v7 mint envelope (`0x07`), v7 document digest and `V7` body are
+  accepted;
+* the v7 state body (`FRG7CROSS`/`0x07`) and the v7 161-byte leaf/control
+  path are accepted;
+* the wallet uses the released leaf/version and can recover/migrate the
+  sat on the legacy Taproot derivation (§5.1).
+
+Every other sat must use v8. A v7 crossing for a non-grandfathered sat is
+rejected by the indexer and rendered `unverified` by the fold. The
+grandfathered Hopper is not a precedent for a second legacy frog.
+
+The released v7 card's embedded fold is immutable and predates the
+proof-checking algorithm. It is grandfathered for custody/play, not as an
+authoritative art oracle; a viewer that needs the proof-checked state must
+use the v8 app/indexer or a new v8 card.
 
 ---
 
@@ -389,7 +456,10 @@ Every control block is 97 bytes:
 The three crossing leaves differ only in the direction byte of the body
 they push (§3.2), so each leaf hash is fixed when the state output is
 created. Choosing a direction selects a leaf; it cannot change the leaf's
-bytes.
+bytes. The current tree uses the `FRG8CROSS`/`0x08` body. A state output
+whose sat equals `GRANDFATHERED_SAT` may use the released
+`FRG7CROSS`/`0x07` body and its own leaf hashes; the two versions are never
+mixed in one tree.
 
 `owner_xonly` is the 32-byte witness program of a BIP86 P2TR address derived
 at `m/84'/coin'/0'/2/0` (the ordinals branch). The same key is used for the
@@ -477,7 +547,7 @@ Reveal transaction:
 ```
 input 0 : the commit output, script path [sig, leaf, control block]
 output 0: 1_000 sats to the wallet's frog (P2TR key-path) address
-output 1: OP_RETURN MINT envelope (FRG 0x07 0x01 seed name)
+output 1: OP_RETURN MINT envelope (FRG 0x08 0x01 seed name; 0x07 only for the grandfather)
 output 2: change to m/84'/coin'/0'/1/index (optional, if ≥ dust)
 sequence: 0xFFFFFFFF on every input (RBF off)
 ```
@@ -486,7 +556,7 @@ The anchor sat is the first sat of the commit output, which is the first sat
 of the first funding input. Since the leaf embeds the anchor sat, the commit
 address is derived after a probe coin-selection pass.
 
-### 3.6 Action transactions (v7)
+### 3.6 Action transactions (v8)
 
 **PREPARE** (only for a frog still in its mint/frog-address output):
 
@@ -587,10 +657,11 @@ The wallet and indexer both verify this with ordinal range arithmetic.
 
 * The mint pays the wallet's **frog address** (BIP86 P2TR at `…/2/0`), never
   a BIP-84 receive address. Coins there are never funding candidates.
-* A BIP-84 receive address retires once the wallet sees any history on it,
-  including an unconfirmed payment. The next unused index becomes current;
-  an open receive window repaints with it. A paid address is never handed
-  out again.
+* The BIP-84 receive script is **fixed at `…/0/0`** in v8. This is a
+  deliberate simplicity/recovery tradeoff, not an accidental gap: the watch
+  set is fixed, paginated to exhaustion, and a restored wallet reuses the
+  same script. Address rotation/privacy is a future wallet feature, not a
+  consensus rule. The UI must not claim retirement.
 * The state output's script is per `(sat, mint id, owner)`; it matches no
   derivation path. A wallet finds it by deriving the script from the frog
   record, and by watching its frog address.
@@ -659,12 +730,16 @@ immortal_height, death_height, burn_height, burn_txid
 
 Accepted iff:
 
-1. the block is at/after inscription activation (if enforcement is enabled);
-2. exactly one inscription reveal exists in the transaction and it is on
-   input 0;
+1. the block is at/after the frozen activation height `974_034`; there is
+   no "lenient production" mode;
+2. exactly one inscription reveal exists in the transaction, it is on input
+   0, its ord pointer is absent, its envelope is valid, and its input
+   inscription count is exactly one;
 3. content type is `text/html;charset=utf-8`;
-4. the body's SHA-256 equals `mint_body_digests(seed, sat, name, gen_hint)`
-   (exactly one digest, §2.3);
+4. the body is the canonical `live_v8_html(...)` for
+   `(seed, sat, name, gen_hint)`. For `sat == GRANDFATHERED_SAT` only, the
+   canonical `live_v7_html(...)` and the v7 mint envelope/digest are also
+   accepted;
 5. output 0's first sat exists and is not a shadow (the tracker has seen its
    inputs);
 6. that sat carries no frog, live or dead.
@@ -677,9 +752,12 @@ is ignored. The mint output is **not** a state output.
 
 Accepted iff:
 
-1. the transaction contains exactly one inscription, in input 0;
-2. the body decodes as 55-byte `FRG7CROSS` with `dir <= 2`, and its
-   `(sat, mint_txid, mint_index)` equals the frog;
+1. the transaction contains exactly one inscription, in input 0, with no
+   ord pointer and `inscription_count == 1`;
+2. the body decodes as 55-byte `FRG8CROSS`/`0x08` with `dir <= 2` and its
+   `(sat, mint_txid, mint_index)` equals the frog. A `FRG7CROSS`/`0x07`
+   body is accepted only when the frog is the grandfathered sat and its
+   recorded `wire_version` is `0x07`;
 3. the tag-3 parent equals `(mint_txid, mint_index)`;
 4. the spent leaf is the `dir` leaf of the state output's tree: the script
    is the 161-byte template of §3.2 whose body's last byte is `dir`, its
@@ -767,10 +845,17 @@ reorg that removes `T` reopens the frog as `idle` and restores its card.
   Coin type 0 on mainnet, 1 elsewhere.
 * Receive `…/0/i` and change `…/1/i` are P2WPKH.
 * Ordinals/frog branch `…/2/0`: untweaked key is the mint commit owner and
-  the leaf's `owner`; its BIP86 taproot output is the frog receive address.
+  the leaf's `owner`; its **BIP86 even-Y normalized** taproot output is the
+  new frog receive address. The released implementation tweaked the raw
+  point without normalizing; a recovery scan also watches that legacy
+  address and derives the legacy state scripts. Migration is explicit: a
+  `migrateLegacyFrog` transfer moves the sat to the current address; the old
+  path is never rewritten in place.
 * The vault is AES-256-GCM under a non-extractable WebCrypto KEK in
-  IndexedDB. The public ledger (addresses, UTXOs, frogs, history) is stored
-  separately and is re-derivable from the chain. The 12 words are the only
+  IndexedDB. Creation writes, reads back, and verifies the ciphertext before
+  reporting success; a storage denial is an error, never a "sealed" vault.
+  The public ledger (addresses, UTXOs, frogs, history) is stored separately
+  and is re-derivable from the chain. The 12 words are the only
   backup of the keys; §5.5 exports the spending layout of staged outputs for
   the case where this wallet is gone.
 
@@ -779,8 +864,10 @@ reorg that removes `T` reopens the frog as `idle` and restores its card.
 Two HTTP ports, chosen by URL:
 
 * **Esplora** (`https://…`) — `/blocks/tip/height`, `/address/{a}/utxo`,
-  `/address/{a}/txs`, `/tx/{txid}/hex`, `/blocks/tip/hash`,
-  `/block-height/{h}`, `/fee-estimates`, `POST /tx`.
+  `/address/{a}/txs`, `/address/{a}/txs/chain[/{after_txid}]` (paginated to
+  exhaustion; the first 50 rows are never treated as complete),
+  `/tx/{txid}/hex`, `/blocks/tip/hash`, `/block-height/{h}`,
+  `/fee-estimates`, `POST /tx`.
 * **Electrum over WebSocket** (`ws://`, `wss://`) — a JSON-RPC 1.1 client
   using `blockchain.scripthash.*`, `blockchain.transaction.get`,
   `blockchain.block.header(s)`, `blockchain.estimatefee`,
@@ -794,7 +881,7 @@ be spent; an unattributable coin still counts in the balance and is shown as
 unspendable.
 
 A mint reveal is also self-describing: its tapscript witness contains the
-canonical v7 body, and output 0 pays the wallet's ordinals address. A wallet
+canonical v8 body (or the v7 body for the grandfather), and output 0 pays the wallet's ordinals address. A wallet
 MAY recover an idle mint record from that witness when neither an indexer
 nor ord answers, verifying the seed, sat and full body before trusting it.
 This recovers mints paid directly to the wallet's ordinals address. It does
@@ -859,7 +946,7 @@ send_leaf          { script_hex, leaf_hash, control_block }
 and once for the wallet:
 
 ```
-type               "hopper-v7-emergency"
+type               "hopper-v8-emergency"
 version            1
 network            mainnet | testnet | signet | regtest
 fingerprint        BIP-32 master fingerprint (8 hex)
@@ -897,12 +984,44 @@ Rules:
 
 ---
 
+### 5.6 Wallet safety invariants
+
+These are mandatory before any transaction is signed or broadcast:
+
+1. **Complete ranges.** Every funding/state input has non-empty ordinal
+   ranges whose lengths sum to its value. An empty ord/indexer answer is not
+   proof that a coin has no inscription.
+2. **FIFO assignment.** The wallet recomputes the sat ranges of the exact
+   signed outputs. A transfer/PREPARE/HOP must place the Hopper sat in output
+   0 at offset 0; a SEND must not place any known protected sat in a
+   recipient output, change, or the fee. RBF and the approval path repeat
+   this proof.
+3. **Asset recheck.** HOP, PREPARE, TRANSFER, SEND and MINT revalidate every
+   live input immediately before broadcast; only SEND/MINT is no longer
+   exempt.
+4. **State discovery.** A state script alone never proves its sat ranges.
+   Local discovery asks ord/indexer for complete ranges and marks the coin
+   unspendable until they match the value and contain the frog sat.
+5. **Recovery is fail-closed.** A restore paginates address histories to
+   exhaustion, treats `more`/`null` as incomplete, reads at most a bounded
+   checkpoint, and never synthesizes a range or a mint sat from a document.
+6. **Reorg identity.** Scan gates and outcome-hash caches are keyed by
+   `(height, tip hash)`, not height alone. A same-height hash change forces
+   a fresh pass.
+7. **Vault durability.** Vault creation writes, reads back and verifies the
+   ciphertext; a storage failure is an error. Refresh summaries carry public
+   keys only.
+8. **Service bounds.** Public reads are rate-limited (default 300/min per
+   caller), diagnostic `/v1/state/root` is not a hot path, and no state lock
+   is held across an outbound ord call.
+
+
 ## 6. The standalone indexer
 
 ### 6.1 Crates
 
 ```
-hopper-core          pure protocol: envelope, v7 body, scripts, params,
+hopper-core          pure protocol: envelope, v8/legacy body, scripts, params,
                      generations, wrap, sat math, art, PNG, fold document
 hopper-indexer       pure state machine: sat tracker, rules, timers,
                      events, snapshots, optional redb store
@@ -994,7 +1113,9 @@ rejected as `MintAnchorUntracked`. Seeding is the operator's bring-up step.
 
 ```
 HOPPER_API_ADDR               default 127.0.0.1:9770
-HOPPER_INSCRIPTION_ACTIVATION_HEIGHT   optional; unset = lenient mints
+HOPPER_ACTIVATION_HEIGHT      default and required: 974_034
+HOPPER_INSCRIPTION_ACTIVATION_HEIGHT   default and required: 974_034
+HOPPER_RATE_LIMIT_PER_MIN     public-read budget per caller (default 300; 0 disables)
 HOPPER_SNAPSHOT_PATH          default hopper-indexer.snapshot.bin
 HOPPER_SNAPSHOT_EVERY         default 10 blocks
 HOPPER_RETAIN_BLOCKS          default 288

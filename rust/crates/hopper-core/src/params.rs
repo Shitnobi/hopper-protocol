@@ -123,8 +123,21 @@ pub struct ProtocolParams {
     pub card_value: u64,
 }
 
-/// The one wire version (SPEC §1).
+/// Released wire version, retained only for the one grandfathered Hopper.
 pub const VERSION_V7: u8 = 0x07;
+/// Current wire version (SPEC §1).
+pub const VERSION_V8: u8 = 0x08;
+/// The current wire version.
+pub const VERSION: u8 = VERSION_V8;
+
+/// The one released Hopper grandfathered into v8, identified by its
+/// ordinal sat number. Set this when the sat is known; 0 means none.
+/// This is the only place the number is edited.
+pub const GRANDFATHERED_SAT: u64 = 0;
+
+pub fn is_grandfathered_sat(sat: u64) -> bool {
+    GRANDFATHERED_SAT != 0 && sat == GRANDFATHERED_SAT
+}
 
 /// The production parameters (SPEC §1.1).
 ///

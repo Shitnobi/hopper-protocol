@@ -1,12 +1,15 @@
 // The v7 mint body — a self-contained fold document with no external
-// origin. Byte-identical to hopper_core::live_v7::live_v7_html, which is
-// what the indexer re-renders before accepting a mint.
+// origin. Byte-identical to hopper_core::live_v7::live_v8_html, which is
+// what the indexer re-renders before accepting a v8 mint.
 
 import { bytesToBase64, sha256, utf8 } from './hex.js';
 import { renderSprite } from './art.js';
 import { encodePng } from './png.js';
-import { paramsLiteral, V7_CONTENT_TYPE } from './params.js';
+import {
+  GRANDFATHERED_SAT, paramsLiteral, V8_CONTENT_TYPE, V7_CONTENT_TYPE,
+} from './params.js';
 import { FOLD_JS } from './fold_source.js';
+import { LEGACY_FOLD_JS } from './legacy_fold_source.js';
 
 export { V7_CONTENT_TYPE };
 
@@ -59,11 +62,11 @@ export function spriteDataUri(seed, state) {
   return `data:image/png;base64,${bytesToBase64(encodePng(16, 16, sprite.data))}`;
 }
 
-export function liveV7Html(seed, sat, name = '', genHint = 1) {
+function documentHtml({ title, variable, fold, seed, sat, name, genHint, grandfatheredSat = null }) {
   const alive = spriteDataUri(seed, 'idle');
   const dead = spriteDataUri(seed, 'dead');
   const band = `${htmlEscape(name)} · G${genHint} · 🛣 —`;
-  return '<!doctype html><meta charset="utf-8"><title>HOPPER v7</title>'
+  return `<!doctype html><meta charset="utf-8"><title>${title}</title>`
     + `<style>${STYLE}</style>`
     + '<div class="f">'
     + `<img class="a" src="${alive}" alt="">`
@@ -71,24 +74,42 @@ export function liveV7Html(seed, sat, name = '', genHint = 1) {
     + `<div class="g" id="gen">G${genHint}</div>`
     + `<div class="t" id="band">${band}</div>`
     + '</div>'
-    + `<script>var V7={sat:${sat},genHint:${genHint},name:${jsString(name)},p:${paramsLiteral()}};\n${FOLD_JS}</script>`;
+    + `<script>var ${variable}={sat:${sat},genHint:${genHint},name:${jsString(name)},${grandfatheredSat == null ? '' : `grandfatheredSat:${grandfatheredSat},`}p:${paramsLiteral()}};\n${fold}</script>`;
+}
+
+// Frozen v7 document. Only used to recognise the one grandfathered Hopper.
+export function liveV7Html(seed, sat, name = '', genHint = 1) {
+  return documentHtml({
+    title: 'HOPPER v7', variable: 'V7', fold: LEGACY_FOLD_JS,
+    seed, sat, name, genHint,
+  });
+}
+
+export function liveV8Html(seed, sat, name = '', genHint = 1) {
+  return documentHtml({
+    title: 'HOPPER v8', variable: 'V8', fold: FOLD_JS,
+    seed, sat, name, genHint, grandfatheredSat: GRANDFATHERED_SAT || null,
+  });
 }
 
 export function mintBody(seed, sat, name = '', genHint = 1) {
-  return { contentType: V7_CONTENT_TYPE, body: utf8(liveV7Html(seed, sat, name, genHint)) };
+  return { contentType: V8_CONTENT_TYPE, body: utf8(liveV8Html(seed, sat, name, genHint)) };
 }
 
 export function mintBodyDigest(seed, sat, name = '', genHint = 1) {
-  return sha256(utf8(liveV7Html(seed, sat, name, genHint)));
+  return sha256(utf8(liveV8Html(seed, sat, name, genHint)));
 }
 
-// Read the genHint the document embeds (the indexer re-renders with it).
-export function parseV7GenHint(htmlText) {
-  const at = String(htmlText).indexOf('var V7={sat:');
+function parseGenHint(htmlText, variable) {
+  const marker = `var ${variable}={sat:`;
+  const at = String(htmlText).indexOf(marker);
   if (at < 0) return null;
-  const rest = String(htmlText).slice(at + 'var V7={sat:'.length);
+  const rest = String(htmlText).slice(at + marker.length);
   const c = rest.indexOf(',genHint:');
   if (c < 0) return null;
   const m = /^(\d+)/.exec(rest.slice(c + ',genHint:'.length));
   return m ? Number(m[1]) : null;
 }
+
+export function parseV8GenHint(htmlText) { return parseGenHint(htmlText, 'V8'); }
+export function parseV7GenHint(htmlText) { return parseGenHint(htmlText, 'V7'); }

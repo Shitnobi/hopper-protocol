@@ -70,7 +70,7 @@ stubFetch(() => new Response(JSON.stringify({
   sat_ranges: [[5000, 5500], [7000, 7500]],
 }), { status: 200, headers: { 'content-type': 'application/json' } }));
 const direct = await new OrdClient('http://ord.test/').output(TXID, 0);
-eq('ord half-open ranges become inclusive', direct.ranges, [[5000, 5499], [7000, 7499]]);
+eq('ord half-open ranges stay half-open at the adapter boundary', direct.ranges, [[5000, 5500], [7000, 7500]]);
 eq('ord carries the output value', direct.value, 1000);
 eq('ord output is exact', direct.exact, true);
 eq('ord asks the recursive UTXO endpoint', asked, [`http://ord.test/r/utxo/${TXID}:0`]);
@@ -99,7 +99,7 @@ const backend = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
 backend.indexer = { utxo: async () => shadow };
 backend.ord = new OrdClient('http://ord.test');
 const filled = await backend.utxo(TXID, 0);
-eq('ord fills an empty indexer answer', filled.ranges, [[5000, 5999]]);
+eq('ord fills an empty indexer answer', filled.ranges, [[5000, 6000]]);
 eq('ord keeps the indexer frog metadata', filled.frogs, [123]);
 eq('the indexer was asked first', asked.length, 1);
 
@@ -110,8 +110,20 @@ const backend2 = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
 backend2.indexer = { utxo: async () => { indexerCalls++; return exact; } };
 backend2.ord = { output: async () => { ordCalls++; return null; } };
 eq('an exact indexer answer is used as-is', await backend2.utxo(TXID, 0), exact);
-eq('no ord call when the indexer is exact', ordCalls, 0);
+eq('ord is cross-checked even when the indexer is exact', ordCalls, 1);
 eq('one indexer call', indexerCalls, 1);
+
+const backend2b = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
+backend2b.indexer = { utxo: async () => ({ ...exact, value: 999 }) };
+backend2b.ord = { output: async () => ({ value: 1000, ranges: [[0, 1000]], exact: true, frogs: [] }) };
+await assert.rejects(() => backend2b.utxo(TXID, 0), /disagree on .*value/);
+checks += 1;
+
+const backend2c = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
+backend2c.indexer = { utxo: async () => exact };
+backend2c.ord = { output: async () => ({ value: 1000, ranges: [[2, 1002]], exact: true, frogs: [] }) };
+await assert.rejects(() => backend2c.utxo(TXID, 0), /disagree on .*ranges/);
+checks += 1;
 
 const backend3 = new LiveBackend({ electrumUrl: 'ws://127.0.0.1:50032' });
 backend3.indexer = { utxo: async () => { throw new Error('404'); } };
@@ -156,6 +168,31 @@ eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
 
   globalThis.fetch = saved;
   checks += 1;
+}
+
+
+// --- F-10: Esplora history is paginated, not one 50-row page -------------
+{
+  const tx = (id, height) => ({
+    txid: id, status: { confirmed: true, block_height: height },
+    vout: [{ value: 1, scriptpubkey: '51' }],
+  });
+  const a = '11'.repeat(32), b = '22'.repeat(32);
+  stubFetch((url) => {
+    if (url.endsWith('/address/addr/txs')) {
+      return new Response(JSON.stringify([tx(a, 1)]), { status: 200 });
+    }
+    if (url.endsWith('/address/addr/txs/chain')) {
+      return new Response(JSON.stringify([tx(a, 1), tx(b, 2)]), { status: 200 });
+    }
+    if (url.endsWith(`/address/addr/txs/chain/${b}`)) {
+      return new Response('[]', { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  });
+  const hist = await new EsploraClient('http://esplora.test').addressHistory('addr');
+  eq('history follows the cursor and dedupes', hist.map((h) => h.txid), [a, b]);
+  eq('history keeps the confirmed height', hist[1].height, 2);
 }
 
 globalThis.fetch = realFetch;

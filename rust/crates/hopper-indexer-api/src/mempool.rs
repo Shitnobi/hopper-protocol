@@ -247,7 +247,7 @@ pub fn preview_raw_tx(
 fn envelope_dto(msg: &hopper_core::envelope::Message) -> EnvelopeDto {
     use hopper_core::envelope::Message;
     match msg {
-        Message::Mint { seed, name } => EnvelopeDto {
+        Message::Mint { seed, name, .. } => EnvelopeDto {
             kind: "mint",
             seed: Some(*seed),
             name: Some(name.clone()),
@@ -546,10 +546,10 @@ mod tests {
         assert_eq!(entry.inscriptions.len(), 1);
         let ins = &entry.inscriptions[0];
         assert_eq!(ins.input, 0);
-        assert_eq!(ins.content_type, hopper_core::V7_CONTENT_TYPE);
+        assert_eq!(ins.content_type, hopper_core::V8_CONTENT_TYPE);
         assert_eq!(
             ins.body_hash,
-            hex32(&hopper_core::live_v7_html_digest(seed, 1_000, "Victim", 1))
+            hex32(&hopper_core::live_v8_html_digest(seed, 1_000, "Victim", 1))
         );
         assert_eq!(ins.inscription_id, "cafebabei0");
     }

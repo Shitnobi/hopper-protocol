@@ -74,7 +74,7 @@ fn default_params() -> hopper_core::params::ProtocolParams {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
-            inscription_activation_height: None,
+            inscription_activation_height: Some(hopper_core::params::PROTOCOL.generations.genesis),
             params: hopper_core::params::PROTOCOL,
         }
     }
@@ -1036,15 +1036,18 @@ mod tests {
     fn ins_reveal(seed: u32, reveal_index: u32) -> InscriptionReveal {
         // The v7 mint body embeds the anchor sat and the name; these
         // fixtures all mint at SAT with name "Testfrog".
-        let body = hopper_core::live_v7_html(seed, SAT, "Testfrog", 1);
+        let body = hopper_core::live_v8_html(seed, SAT, "Testfrog", 1);
         InscriptionReveal {
-            content_type: hopper_core::V7_CONTENT_TYPE.to_string(),
+            content_type: hopper_core::V8_CONTENT_TYPE.to_string(),
             body_hash: <sha2::Sha256 as sha2::Digest>::digest(body.as_bytes()).into(),
             inscription_id: format!("{}i{reveal_index}", hex_string(&b32(2))),
             body: Some(body.into_bytes()),
             parents: Vec::new(),
             tapscript: None,
             control_block: None,
+            pointer: None,
+            inscription_count: 1,
+            valid: true,
         }
     }
 
@@ -1092,6 +1095,26 @@ mod tests {
         assert!(report.rejections.is_empty(), "{:?}", report.rejections);
         let record = idx.froggers().get(&SAT).unwrap();
         assert_eq!(record.inscription_id.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn mint_pointer_or_multiplicity_is_rejected() {
+        for mutate in [0u8, 1, 2] {
+            let mut reveal = ins_reveal(0xABCD, 0);
+            match mutate {
+                0 => reveal.pointer = Some(0),
+                1 => reveal.inscription_count = 2,
+                _ => reveal.valid = false,
+            }
+            let mut idx = enforcing_idx(100);
+            let tx = mint_tx_inscribed(2, 0xABCD, vec![Some(reveal)]);
+            let report = idx.apply_block(block_of(100, 1, vec![tx])).unwrap();
+            assert_eq!(
+                report.rejections[0].reason,
+                RejectionReason::InscriptionArtMismatch,
+                "mutation {mutate}",
+            );
+        }
     }
 
     #[test]

@@ -34,6 +34,12 @@ function retryableNetworkError(err) {
   return name === 'TypeError' || /failed to fetch|network|socket|econn|fetch failed/i.test(message);
 }
 
+function sameRangeSet(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((r, i) => Array.isArray(r) && Array.isArray(b[i])
+    && Number(r[0]) === Number(b[i][0]) && Number(r[1]) === Number(b[i][1]));
+}
+
 function corsOriginHint() {
   const origin = typeof location !== 'undefined' && location.origin
     ? location.origin
@@ -137,17 +143,37 @@ export class EsploraClient {
   }
 
   /**
-   * The address's transaction list, in the shape the history backfills
-   * need. Esplora returns up to 50 recent transactions (mempool + chain);
-   * an address with more history than that is certainly used, so the page
-   * limit cannot hide a funded fixed script.
+   * Full history for one fixed script, not just Esplora's first 50 rows.
+   * F-10: seed-only recovery must not miss a spent mint because the page
+   * changed. `/txs/chain/:last_seen_txid` is the Esplora cursor.
    */
   async addressHistory(address) {
-    const txs = await this.addressTxs(address);
-    // Include the outputs and status already present in this answer. The
-    // wallet uses them for its one-time receive backfill, so a spent
-    // deposit can be reconstructed without a /tx request per transaction.
-    return (Array.isArray(txs) ? txs : []).map((tx) => ({
+    const encoded = encodeURIComponent(address);
+    const all = [];
+    const seen = new Set();
+    const add = (list) => {
+      for (const tx of Array.isArray(list) ? list : []) {
+        if (!tx?.txid || seen.has(tx.txid)) continue;
+        seen.add(tx.txid);
+        all.push(tx);
+      }
+    };
+    add(await this.addressTxs(address));
+    let cursor = null;
+    for (let page = 0; page < 200; page += 1) {
+      const path = cursor
+        ? `/address/${encoded}/txs/chain/${encodeURIComponent(cursor)}`
+        : `/address/${encoded}/txs/chain`;
+      let rows;
+      try { rows = await (await this.req(path)).json(); } catch { break; }
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      const before = all.length;
+      add(rows);
+      const last = rows[rows.length - 1]?.txid;
+      if (last === cursor || all.length === before) break;
+      cursor = last;
+    }
+    return all.map((tx) => ({
       txid: tx.txid,
       height: tx.status?.block_height ?? null,
       status: tx.status || {},
@@ -478,8 +504,8 @@ export function effectiveOrdUrl(settings = {}, network = 'mainnet') {
  * (FROGGER uses it too); the HOPPER indexer remains the source for
  * frogs, road and events.
  *
- * `sat_ranges` is half-open [start, end); the wallet's `ranges` are
- * inclusive, so `end - 1` is deliberate.
+ * `sat_ranges` is half-open [start, end); this adapter keeps that shape.
+ * Wallet-internal ranges are inclusive and convert at the boundary.
  */
 export class OrdClient {
   constructor(baseUrl) {
@@ -503,6 +529,7 @@ export class OrdClient {
       throw new Error(`ord ${id}:${vout}: missing output value`);
     }
     let sum = 0;
+    let priorEnd = -1;
     const ranges = raw.map((pair) => {
       if (!Array.isArray(pair) || pair.length !== 2) {
         throw new Error(`ord ${id}:${vout}: malformed sat range`);
@@ -512,8 +539,10 @@ export class OrdClient {
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end) {
         throw new Error(`ord ${id}:${vout}: empty sat range`);
       }
+      if (start < priorEnd) throw new Error(`ord ${id}:${vout}: overlapping or unordered sat range`);
+      priorEnd = end;
       sum += end - start;
-      return [start, end - 1];
+      return [start, end];
     });
     if (!Number.isSafeInteger(sum) || sum !== value) {
       throw new Error(`ord ${id}:${vout}: ranges do not sum to the output value`);
@@ -623,25 +652,29 @@ export class LiveBackend {
   async froggers(params) { return this.indexer ? this.indexer.froggers(params) : { items: [], total: 0 }; }
   async utxo(txid, vout) {
     let fromIndexer = null;
+    let direct = null;
     if (this.indexer) {
-      try {
-        fromIndexer = await this.indexer.utxo(txid, vout);
-      } catch {
-        // A coin the indexer has never seen is expected on a fresh chain.
-        fromIndexer = null;
-      }
-      // Shadow/empty ranges mean the indexer cannot name the sats.
-      if (fromIndexer?.exact && fromIndexer.ranges?.length) return fromIndexer;
+      try { fromIndexer = await this.indexer.utxo(txid, vout); }
+      catch { fromIndexer = null; }
     }
     if (this.ord) {
-      try {
-        const direct = await this.ord.output(txid, vout);
-        if (direct) return { ...direct, frogs: fromIndexer?.frogs || [] };
-      } catch {
-        // Fall back to the indexer's shadow answer, if it had one.
+      try { direct = await this.ord.output(txid, vout); }
+      catch { direct = null; }
+    }
+    // F-13: two sources that disagree are not a reason to pick the nicer
+    // answer. Fail closed. ord is canonical when it answers.
+    if (direct && fromIndexer) {
+      if (Number(fromIndexer.value) !== Number(direct.value)) {
+        throw new Error(`ord/indexer disagree on ${txid}:${vout} value`);
+      }
+      if (fromIndexer.exact && fromIndexer.ranges?.length
+          && !sameRangeSet(fromIndexer.ranges, direct.ranges)) {
+        throw new Error(`ord/indexer disagree on ${txid}:${vout} sat ranges`);
       }
     }
-    return fromIndexer;
+    if (direct) return { ...direct, frogs: fromIndexer?.frogs || [] };
+    if (fromIndexer) return fromIndexer;
+    return null;
   }
   async road() { return this.indexer ? this.indexer.road() : { active: [] }; }
   async leaderboard(limit) { return this.indexer ? this.indexer.leaderboard(limit) : { entries: [] }; }

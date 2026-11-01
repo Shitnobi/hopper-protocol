@@ -32,7 +32,7 @@ async function scan() {
   const out = [];
   const fk = { address: wallet.frogAddress(), script: p2trScript(wallet.ord.outputXonly) };
   for (const u of await backend.addressUtxos(fk.address, fk.script)) {
-    out.push({ ...u, kind: 'frog', key: wallet.ord, ranges: [], exact: true, frogs: [] });
+    out.push({ ...u, kind: 'frog', key: wallet.ord, ranges: u.ranges || [], exact: true, frogs: [] });
   }
   for (const branch of ['receive', 'change']) {
     for (let i = 0; i < 5; i += 1) {
@@ -74,7 +74,7 @@ const staged = {
 };
 const doc = WalletSession.prototype.emergencyDescriptors.call(staged, { now: '2026-10-30T00:00:00Z' });
 
-eq(doc.type, 'hopper-v7-emergency', 'document type');
+eq(doc.type, 'hopper-v8-emergency', 'document type');
 eq(doc.version, 1, 'version');
 eq(doc.network, 'regtest', 'network');
 eq(doc.owner_path, `m/84'/${wallet.coinType}'/0'/2/0`, 'owner path');

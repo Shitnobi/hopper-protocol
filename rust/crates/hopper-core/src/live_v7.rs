@@ -1,4 +1,4 @@
-//! v7 mint body: a self-contained document that folds the chain.
+//! v8 mint body: a self-contained proof-checking document that folds the chain.
 //!
 //! There is **no origin**. The body embeds the Hopper's seed and sat, its
 //! name and generation hint, the whole parameter block, and [`FOLD_JS`].
@@ -11,16 +11,18 @@
 //! generation hint, and that the crossing count is unknown. It never
 //! prints a count there. (SPEC §2.3)
 
-use crate::params::{PROTOCOL, VERSION_V7};
+use crate::params::{PROTOCOL, VERSION_V7, VERSION_V8};
 use crate::{encode_png, render_sprite, FrogState, SPRITE_H, SPRITE_W};
 use sha2::{Digest, Sha256};
 
-/// Content type of a v7 mint inscription.
+/// Content type of a v8 mint inscription.
 pub const V7_CONTENT_TYPE: &str = "text/html;charset=utf-8";
+pub const V8_CONTENT_TYPE: &str = V7_CONTENT_TYPE;
 
-/// The fold, verbatim. Kept in a `.js` file so the golden-vector tests can
-/// load the *same* source with Node — no second implementation.
-pub const FOLD_JS: &str = include_str!("live_v7.js");
+/// The current v8 fold, verbatim.
+pub const FOLD_JS: &str = include_str!("live_v8.js");
+/// The frozen v7 fold, used only to re-render the grandfathered Hopper.
+pub const LEGACY_FOLD_JS: &str = include_str!("live_v7.js");
 
 /// Basis point scale used by the display helpers (kept for API parity).
 pub const BPS_SCALE: u32 = 10_000;
@@ -127,8 +129,16 @@ html[data-frogger=idle] .a,html[data-frogger=home] .a,html[data-frogger=dead] .d
 ///
 /// `gen_hint` is the generation of the height the wallet expects the mint
 /// to confirm at. It is a display hint, never consensus.
-#[must_use]
-pub fn live_v7_html(seed: u32, sat: u64, name: &str, gen_hint: u32) -> String {
+fn document_html(
+    title: &str,
+    variable: &str,
+    fold: &str,
+    seed: u32,
+    sat: u64,
+    name: &str,
+    gen_hint: u32,
+    grandfathered_sat: Option<u64>,
+) -> String {
     let alive = data_uri(&encode_png(
         SPRITE_W as u32,
         SPRITE_H as u32,
@@ -142,7 +152,7 @@ pub fn live_v7_html(seed: u32, sat: u64, name: &str, gen_hint: u32) -> String {
     // The static band proves only what the mint transaction proves.
     let band = format!("{} · G{} · 🛣 —", html_escape(name), gen_hint);
     format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>HOPPER v7</title>\
+        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title>\
 <style>{STYLE}</style>\
 <div class=\"f\">\
 <img class=\"a\" src=\"{alive}\" alt=\"\">\
@@ -150,18 +160,41 @@ pub fn live_v7_html(seed: u32, sat: u64, name: &str, gen_hint: u32) -> String {
 <div class=\"g\" id=\"gen\">G{gen_hint}</div>\
 <div class=\"t\" id=\"band\">{band}</div>\
 </div>\
-<script>var V7={{sat:{sat},genHint:{gen_hint},name:{name},p:{params}}};\n{js}</script>",
+<script>var {variable}={{sat:{sat},genHint:{gen_hint},name:{name},{legacy}p:{params}}};\n{js}</script>",
         name = js_string(name),
         params = params_literal(),
-        js = FOLD_JS,
+        js = fold,
+        legacy = grandfathered_sat
+            .map(|s| format!("grandfatheredSat:{s},"))
+            .unwrap_or_default(),
     )
 }
 
-/// SHA-256 of [`live_v7_html`] — the one digest a v7 mint may carry for
-/// `(seed, sat, name, gen_hint)` (SPEC §2.3).
+/// The frozen v7 mint body, used only to recognise the grandfathered Hopper.
+#[must_use]
+pub fn live_v7_html(seed: u32, sat: u64, name: &str, gen_hint: u32) -> String {
+    document_html("HOPPER v7", "V7", LEGACY_FOLD_JS, seed, sat, name, gen_hint, None)
+}
+
+/// The current v8 mint body.
+#[must_use]
+pub fn live_v8_html(seed: u32, sat: u64, name: &str, gen_hint: u32) -> String {
+    document_html(
+        "HOPPER v8", "V8", FOLD_JS, seed, sat, name, gen_hint,
+        (crate::params::GRANDFATHERED_SAT != 0).then_some(crate::params::GRANDFATHERED_SAT),
+    )
+}
+
+/// SHA-256 of the frozen v7 body.
 #[must_use]
 pub fn live_v7_html_digest(seed: u32, sat: u64, name: &str, gen_hint: u32) -> [u8; 32] {
     Sha256::digest(live_v7_html(seed, sat, name, gen_hint).as_bytes()).into()
+}
+
+/// SHA-256 of the current v8 body.
+#[must_use]
+pub fn live_v8_html_digest(seed: u32, sat: u64, name: &str, gen_hint: u32) -> [u8; 32] {
+    Sha256::digest(live_v8_html(seed, sat, name, gen_hint).as_bytes()).into()
 }
 
 /// Parse the `genHint` the document embeds.
@@ -170,10 +203,10 @@ pub fn live_v7_html_digest(seed: u32, sat: u64, name: &str, gen_hint: u32) -> [u
 /// parser must still be total and never panic on hostile bytes: it looks
 /// for the exact `var V7={sat:` marker and reads the decimal after the
 /// following `,genHint:`.
-#[must_use]
-pub fn parse_v7_gen_hint(html: &[u8]) -> Option<u32> {
+fn parse_gen_hint(html: &[u8], variable: &str) -> Option<u32> {
     let text = std::str::from_utf8(html).ok()?;
-    let at = text.find("var V7={sat:")? + "var V7={sat:".len();
+    let marker = format!("var {variable}={{sat:");
+    let at = text.find(&marker)? + marker.len();
     let rest = &text[at..];
     let comma = rest.find(",genHint:")? + ",genHint:".len();
     let digits = &rest[comma..];
@@ -186,8 +219,20 @@ pub fn parse_v7_gen_hint(html: &[u8]) -> Option<u32> {
     digits[..end].parse().ok()
 }
 
-/// The wire version this body belongs to (asserted at the call site).
-pub const BODY_VERSION: u8 = VERSION_V7;
+#[must_use]
+pub fn parse_v7_gen_hint(html: &[u8]) -> Option<u32> {
+    parse_gen_hint(html, "V7")
+}
+
+#[must_use]
+pub fn parse_v8_gen_hint(html: &[u8]) -> Option<u32> {
+    parse_gen_hint(html, "V8")
+}
+
+/// The current wire version this body belongs to.
+pub const BODY_VERSION: u8 = VERSION_V8;
+/// The released wire version accepted only for the grandfathered Hopper.
+pub const LEGACY_BODY_VERSION: u8 = VERSION_V7;
 
 #[cfg(test)]
 mod tests {
@@ -233,23 +278,23 @@ mod tests {
     }
 
     #[test]
-    fn the_document_owns_v7_and_the_fold_never_assigns_it() {
-        let html = live_v7_html(0x1234, 987_654_321, "Ribbit", 2);
-        assert!(html.contains("var V7={sat:987654321,genHint:2,name:\"Ribbit\",p:{"));
+    fn the_document_owns_v8_and_the_fold_never_assigns_it() {
+        let html = live_v8_html(0x1234, 987_654_321, "Ribbit", 2);
+        assert!(html.contains("var V8={sat:987654321,genHint:2,name:\"Ribbit\",p:{"));
         assert_eq!(
-            FOLD_JS.matches("var V7 = { sat:").count(),
+            FOLD_JS.matches("var V8 = { sat:").count(),
             1,
-            "the fold must declare its V7 default exactly once"
+            "the fold must declare its V8 default exactly once"
         );
         let guard = FOLD_JS
-            .find("if (typeof V7 === \"undefined\")")
+            .find("if (typeof V8 === \"undefined\")")
             .expect("the default must be guarded by a typeof check");
         let assign = FOLD_JS
-            .find("var V7 = { sat:")
+            .find("var V8 = { sat:")
             .expect("the default is declared");
         assert!(
             guard < assign,
-            "the V7 default must be the GUARDED one; an unguarded assignment clobbers the document"
+            "the V8 default must be the GUARDED one; an unguarded assignment clobbers the document"
         );
     }
 

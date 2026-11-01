@@ -480,8 +480,7 @@ pub async fn get_utxo(
     // not lose sight of a frog for the one block between broadcast and
     // confirmation. Read-only; nothing is applied to the state.
     if let Some(rpc) = state.rpc() {
-        let idx = state.read();
-        if let Some((value, ranges, exact)) = mempool_utxo_ranges(&idx, &rpc, txid, vout) {
+        if let Some((value, ranges, exact)) = mempool_utxo_ranges(&state, &rpc, txid, vout) {
             let dto = UtxoDto {
                 value,
                 ranges: ranges.into_iter().map(|r| (r.start, r.end)).collect(),
@@ -585,7 +584,7 @@ fn ranges_are_exact(ranges: &[hopper_core::satmath::SatRange]) -> bool {
 /// worse than an honest "unknown", because the wallet would hide an
 /// owned frog (FIX_CONSENSUS G4/B9).
 fn mempool_utxo_ranges(
-    idx: &crate::engine::Engine,
+    state: &SharedState,
     rpc: &crate::rpc::BitcoinRpc,
     txid: [u8; 32],
     vout: u32,
@@ -595,7 +594,7 @@ fn mempool_utxo_ranges(
     use hopper_core::satmath::{assign, SatRange};
 
     fn resolve(
-        idx: &crate::engine::Engine,
+        state: &SharedState,
         rpc: &crate::rpc::BitcoinRpc,
         txid: [u8; 32],
         vout: u32,
@@ -620,13 +619,15 @@ fn mempool_utxo_ranges(
         for input in &tx.input {
             let prev = input.previous_output;
             let prev_txid = prev.txid.to_byte_array();
-            let (ranges, input_exact) = if let Some((_v, ranges)) =
+            let known = {
+                let idx = state.read();
                 idx.utxo_ranges(prev_txid, prev.vout)
-            {
+            };
+            let (ranges, input_exact) = if let Some((_v, ranges)) = known {
                 let ex = ranges_are_exact(&ranges);
                 (ranges, ex)
             } else {
-                let (_, ranges, ex) = resolve(idx, rpc, prev_txid, prev.vout, depth + 1, stack)?;
+                let (_, ranges, ex) = resolve(state, rpc, prev_txid, prev.vout, depth + 1, stack)?;
                 (ranges, ex)
             };
             if ranges.is_empty() {
@@ -642,7 +643,7 @@ fn mempool_utxo_ranges(
         Some((value, ranges, exact))
     }
 
-    resolve(idx, rpc, txid, vout, 0, &mut Vec::new())
+    resolve(state, rpc, txid, vout, 0, &mut Vec::new())
 }
 
 /// GET /v1/params — the compiled protocol parameters (V3-FINAL-SPEC §3.7).

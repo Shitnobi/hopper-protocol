@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const canonical = readFileSync(join(here, '..', 'src', 'live_v7.js'), 'utf8');
+const canonical = readFileSync(join(here, '..', 'src', 'live_v8.js'), 'utf8');
 const generated = readFileSync(join(here, '..', '..', '..', '..', 'web', 'js', 'core', 'fold_source.js'), 'utf8');
 const marker = 'export const FOLD_JS = ';
 const at = generated.indexOf(marker);
@@ -18,4 +18,4 @@ const text = JSON.parse(generated.slice(at + marker.length).replace(/;\s*$/, '')
 if (text !== canonical) {
   throw new Error('fold_source.js is stale: run web/tools/sync-fold.mjs');
 }
-console.log('v7 fold sync: ok');
+console.log('v8 fold sync: ok');

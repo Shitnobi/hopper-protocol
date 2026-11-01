@@ -8,11 +8,13 @@
 // indexer answers, its record (state, distance, crossings) is authoritative.
 
 import { equalBytes, fromUtf8, utf8 } from '../core/hex.js';
+import { rangesValue } from '../core/satmath.js';
 import { decodeMint } from '../core/envelope.js';
 import { parseInscriptions } from '../core/inscription.js';
-import { liveV7Html } from '../core/mintdoc.js';
+import { liveV7Html, liveV8Html } from '../core/mintdoc.js';
 import {
-  ANCHOR_OUTPUT_VALUE, V7_CONTENT_TYPE, WIRE_VERSION, generationAt,
+  ANCHOR_OUTPUT_VALUE, LEGACY_WIRE_VERSION, V7_CONTENT_TYPE, V8_CONTENT_TYPE,
+  WIRE_VERSION, generationAt, isGrandfatheredSat,
 } from '../core/params.js';
 import { opReturnPush, parseTx, witnessTapscript } from './txparse.js';
 
@@ -71,14 +73,37 @@ export function parseLocalMint({ hex, utxo, script = null, mintHeight = null } =
         : fromUtf8(inscription.content_type || new Uint8Array());
       if (contentType !== V7_CONTENT_TYPE || !inscription.body) continue;
       const body = fromUtf8(inscription.body);
-      const found = /var V7=\{sat:(\d+),genHint:(\d+),name:/.exec(body);
+      const found = /var (V7|V8)=\{sat:(\d+),genHint:(\d+),name:/.exec(body);
       if (!found) continue;
-      const sat = Number(found[1]);
-      const genHint = Number(found[2]);
+      const legacyDoc = found[1] === 'V7';
+      const sat = Number(found[2]);
+      const genHint = Number(found[3]);
       if (!Number.isSafeInteger(sat) || sat <= 0) continue;
+      // A v7 document is accepted only for the one grandfathered sat. A v8
+      // document is the current protocol.
+      if (legacyDoc !== isGrandfatheredSat(sat)) continue;
+      if (legacyDoc && envelope.version !== LEGACY_WIRE_VERSION) continue;
+      if (!legacyDoc && envelope.version !== WIRE_VERSION) continue;
       // Re-render the canonical document for this seed, sat, name and
-      // hint. A random inscription that merely contains "V7" cannot pass.
-      if (!equalBytes(inscription.body, utf8(liveV7Html(envelope.seed, sat, envelope.name, genHint)))) continue;
+      // hint. A random inscription that merely contains "V7"/"V8" cannot
+      // pass.
+      const doc = legacyDoc
+        ? liveV7Html(envelope.seed, sat, envelope.name, genHint)
+        : liveV8Html(envelope.seed, sat, envelope.name, genHint);
+      if (!equalBytes(inscription.body, utf8(doc))) continue;
+      // F-07: the document's claimed sat is not proof of location. If the
+      // caller supplied complete ranges, the claimed sat must be the first
+      // sat of the 1,000-sat reveal output and the ranges must sum to its
+      // value. Without ranges the record is recognized but explicitly
+      // unverified; the wallet will not stage or spend it.
+      const ranges = Array.isArray(utxo.ranges)
+        ? utxo.ranges.map(([a, b]) => [Number(a), Number(b)]) : null;
+      let satVerified = false;
+      if (ranges && ranges.length) {
+        if (rangesValue(ranges) !== Number(out.value)) continue;
+        if (ranges[0][0] !== sat) continue;
+        satVerified = true;
+      }
       const height = Number(mintHeight ?? utxo.status?.block_height ?? 0);
       const commit = String(tx.inputs[0]?.txid || '').toLowerCase();
       return {
@@ -97,7 +122,11 @@ export function parseLocalMint({ hex, utxo, script = null, mintHeight = null } =
         mint_index: index,
         inscription_id: `${tx.txid}i${index}`,
         location: { txid: tx.txid, vout },
-        wire_version: WIRE_VERSION,
+        wire_version: legacyDoc ? LEGACY_WIRE_VERSION : WIRE_VERSION,
+        legacy_wire: legacyDoc,
+        legacy_path: utxo.legacy_path === true,
+        sat_verified: satVerified,
+        ranges_exact: satVerified,
         local: true,
         source: LOCAL_MINT_SOURCE,
       };

@@ -17,6 +17,7 @@ const {
   DEFAULT_SETTINGS, WalletSession, loadSettings,
   failureBackoffMs, isPublicEndpoint, isUnconfirmedUtxo,
 } = await import('../js/wallet/wallet.js');
+const { createVault } = await import('../js/wallet/vault.js');
 
 let checks = 0;
 function eq(what, got, want) {
@@ -61,9 +62,10 @@ class FakeBackend {
     this.tipCalls = 0;
     this.historyCalls = 0;
     this.utxoCalls = 0;
+    this.hash = 'aa'.repeat(32);
   }
   async tipHeight() { this.tipCalls += 1; return this.tip; }
-  async tipHash() { throw new Error('tip hash must not be needed for the gate'); }
+  async tipHash() { return this.hash; }
   async addressHistory() { this.historyCalls += 1; return []; }
   async addressUtxos() { this.utxoCalls += 1; return []; }
   async utxo() { return null; }
@@ -86,8 +88,9 @@ wallet.backend = fake;
 wallet._autoSync = false;
 
 await wallet.refresh({ force: true });
+const legacyExtra = wallet.keys.legacyFrogAddress() === wallet.keys.frogAddress() ? 0 : 1;
 eq('cold pass runs the two fixed history backfills', fake.historyCalls, 2);
-eq('cold pass queries the three fixed HD scripts', fake.utxoCalls, 3);
+eq('cold pass queries the fixed HD scripts plus the legacy recovery path', fake.utxoCalls, 3 + legacyExtra);
 eq('cold pass records the tip gate', wallet.fullScanTip, 100);
 eq('cold pass sets the watched tip', wallet.watchTip, 100);
 eq('cold pass is not partial', wallet.scan.partial, false);
@@ -108,15 +111,21 @@ eq('new block runs no gap walk', fake.historyCalls, beforeWarm.h);
 eq('new block asks only the fixed watch set', fake.utxoCalls - beforeWarm.u, 3);
 eq('new block watches the new tip', wallet.watchTip, 101);
 
+const beforeReorg = fake.utxoCalls;
+fake.hash = 'bb'.repeat(32);
+await wallet.refresh({ force: false });
+eq('same height with a new tip hash forces a fresh scan', fake.utxoCalls - beforeReorg, 3);
+eq('the new hash is recorded', wallet.tipHash, 'bb'.repeat(32));
+
 const beforeForced = fake.utxoCalls;
 await wallet.refresh({ force: true });
-eq('a forced pass asks the same fixed set', fake.utxoCalls - beforeForced, 3);
+eq('a forced pass asks the fixed set plus the legacy recovery path', fake.utxoCalls - beforeForced, 3 + legacyExtra);
 
 // --- RESCAN ---------------------------------------------------------------
 const beforeRescan = { h: fake.historyCalls, u: fake.utxoCalls };
 await wallet.startRescan();
 eq('rescan re-runs the fixed history backfills', fake.historyCalls - beforeRescan.h, 2);
-eq('rescan re-asks the fixed watch set', fake.utxoCalls - beforeRescan.u, 3);
+eq('rescan re-asks the fixed watch set plus the legacy path', fake.utxoCalls - beforeRescan.u, 3 + legacyExtra);
 eq('rescan has no progress line when finished', wallet.scan.rescan, null);
 eq('rescan re-arms the gate', wallet.fullScanTip, 101);
 const savedLedger = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
@@ -273,4 +282,21 @@ eq('live events are wrapped for History', liveEvents.events.length, 1);
 eq('live settle keeps its kind', liveEvents.events[0].action.kind, 'settle');
 
 wallet.stop();
+
+// --- F-11: a vault is not "created" unless the ciphertext persists --------
+{
+  const original = globalThis.localStorage.setItem;
+  globalThis.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+  let failed = null;
+  try {
+    await createVault({
+      mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      password: 'test-password', network: 'regtest', fingerprint: '00000000',
+    });
+  } catch (e) { failed = e; }
+  globalThis.localStorage.setItem = original;
+  eq('storage denial is a vault error', /could not be stored/.test(failed?.message || ''), true);
+  eq('storage denial leaves no vault', settingsStore.has('hopper.vault.v1'), false);
+}
+
 console.log(`scan: ${checks} checks passed`);

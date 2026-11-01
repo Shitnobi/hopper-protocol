@@ -62,7 +62,20 @@ pub struct InscriptionReveal {
     /// The control block of that script-path spend: `[parity|0xc0] || internal`.
     #[serde(default)]
     pub control_block: Option<Vec<u8>>,
+    /// ord pointer, when present. HOPPER state/mint envelopes must not use
+    /// one; preserving it makes a mislocated inscription a rejection.
+    #[serde(default)]
+    pub pointer: Option<u64>,
+    /// Number of inscriptions in this input. Default 1 for old fixtures.
+    #[serde(default = "one_inscription")]
+    pub inscription_count: u32,
+    /// False for duplicate/incomplete/pushnum/stutter envelopes.
+    #[serde(default = "true_value")]
+    pub valid: bool,
 }
+
+const fn one_inscription() -> u32 { 1 }
+const fn true_value() -> bool { true }
 
 /// A transaction input.
 ///

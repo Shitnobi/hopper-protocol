@@ -41,6 +41,7 @@ const ordScript = p2trScript(keys.ord.outputXonly);
 const reveal = {
   txid: built.reveal.txid, vout: 0, value: 1000, script: ordScript,
   address: keys.frogAddress(), kind: 'frog',
+  ranges: [[Number(built.sat), Number(built.sat) + 999]],
   status: { confirmed: true, block_height: 110 },
 };
 
@@ -157,6 +158,8 @@ eq('the frog survives a later pass', wallet.frogs.length, 1);
   const stateUtxo = {
     txid: prep.txid, vout: 0, value: Number(prep.stateValue),
     script: prep.stateScript, address: stateAddress,
+    ranges: [[Number(record.sat), Number(record.sat) + Number(prep.stateValue) - 1]],
+    exact: true, frogs: [Number(record.sat)],
     status: { confirmed: true, block_height: 120 },
   };
 
@@ -175,7 +178,24 @@ eq('the frog survives a later pass', wallet.frogs.length, 1);
       if (address === stateAddress) return [{ ...stateUtxo }];
       return [];
     }
-    async utxo() { return null; }
+    async utxo(txid, vout) {
+      const id = String(txid).toLowerCase();
+      if (id === stateUtxo.txid && Number(vout) === 0) {
+        return {
+          value: stateUtxo.value,
+          ranges: [[stateUtxo.ranges[0][0], stateUtxo.ranges[0][1] + 1]],
+          exact: true, frogs: stateUtxo.frogs,
+        };
+      }
+      if (id === built.reveal.txid && Number(vout) === 0) {
+        return {
+          value: 1000,
+          ranges: [[Number(built.sat), Number(built.sat) + 1000]],
+          exact: true, frogs: [],
+        };
+      }
+      return null;
+    }
     async frogger() { return null; }
     async froggers() { return { items: [] }; }
     async events() { return { events: [] }; }

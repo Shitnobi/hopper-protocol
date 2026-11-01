@@ -13,7 +13,7 @@ import vm from 'node:vm';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const embedded = readFileSync(join(here, '..', 'src', 'live_v7.js'), 'utf8');
+const embedded = readFileSync(join(here, '..', 'src', 'live_v8.js'), 'utf8');
 const embeddedFold = new Function(`${embedded}\nreturn {foldFrog};`)().foldFrog;
 const { foldFrog: jsFold } = await import(join(here, '..', '..', '..', '..', 'web', 'js', 'core', 'fold.js'));
 
@@ -21,7 +21,7 @@ const P = { g: 974_034, b: 5, gi: 144, cap: 25, hold: 3_600, gl: 6_480, fin: 6 }
 const SP = `${'aa'.repeat(32)}:0:0`;
 const id = `${'aa'.repeat(32)}i0`;
 const hashFor = (dir) => `${'00'.repeat(28)}0000000${dir}`; // internal 0..2
-const mk = (height, dir) => ({ id, height, sequence: height, satpoint: SP, bodyOk: true, dir });
+const mk = (height, dir) => ({ id: `${id}-${height}-${dir}`, height, sequence: height, satpoint: SP, bodyOk: true, proofOk: true, dir });
 
 let checks = 0;
 function eq(what, a, b) {
@@ -48,4 +48,4 @@ for (let dir = 0; dir < 3; dir += 1) {
 const idleIn = { sat: 7, tip: 974_034, me: { satpoint: SP }, children: [], hash: {}, p: P };
 eq('idle', embeddedFold(idleIn), jsFold(idleIn));
 
-console.log(`v7 fold parity: ${checks} cases OK`);
+console.log(`v8 fold parity: ${checks} cases OK`);

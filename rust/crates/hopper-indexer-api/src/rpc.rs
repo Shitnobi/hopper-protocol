@@ -455,6 +455,15 @@ fn decode_input_inscription(
     let body = first.body.as_deref().unwrap_or(&[]);
     use bitcoin::hashes::{sha256, Hash};
     let digest = sha256::Hash::hash(body);
+    let pointer = first.pointer.as_ref().and_then(|p| {
+        if p.len() > 8 { return None; }
+        let mut buf = [0u8; 8];
+        buf[..p.len()].copy_from_slice(p);
+        Some(u64::from_le_bytes(buf))
+    });
+    let count = inscriptions.len().max(1) as u32;
+    let valid = !first.duplicate_field && !first.incomplete_field
+        && !first.pushnum && !first.stutter;
     Some(crate::wire::IngestInscription {
         content_type: String::from_utf8_lossy(&first.content_type.clone().unwrap_or_default())
             .to_string(),
@@ -467,6 +476,9 @@ fn decode_input_inscription(
         parents: first.parents.iter().map(|p| hex_encode(p)).collect(),
         tapscript: Some(tapscript_hex.to_string()),
         control_block: witness.last().and_then(|c| c.as_str()).map(str::to_string),
+        pointer,
+        inscription_count: count,
+        valid,
     })
 }
 

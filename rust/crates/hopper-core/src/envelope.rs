@@ -13,8 +13,10 @@
 /// Protocol magic bytes.
 pub const MAGIC: [u8; 3] = *b"FRG";
 
-/// The only wire version: inscription-native state (`docs/V6-SPEC.md`).
-pub const VERSION: u8 = 0x07;
+/// Current wire version.
+pub const VERSION: u8 = crate::params::VERSION_V8;
+/// Released v7 version, accepted only for the one grandfathered Hopper.
+pub const LEGACY_VERSION: u8 = crate::params::VERSION_V7;
 
 /// Action bytes. `MINT` is the only one; the v2 game actions are gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +39,9 @@ impl TryFrom<u8> for Action {
 /// A decoded protocol message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
-    /// Frogger birth: art seed + optional name.
-    Mint { seed: u32, name: String },
+    /// Frogger birth: art seed + optional name. `version` is the envelope
+    /// byte; v8 is current, v7 is accepted only for the grandfathered sat.
+    Mint { seed: u32, name: String, version: u8 },
 }
 
 /// Envelope decoding errors. Malformed payloads are ignored, never
@@ -62,7 +65,7 @@ impl core::fmt::Display for DecodeError {
             DecodeError::UnknownVersion(v) => {
                 write!(
                     f,
-                    "version {v:#04x} is not supported (this build speaks 0x07)"
+                    "version {v:#04x} is not supported (this build speaks 0x08 and legacy 0x07)"
                 )
             }
             DecodeError::UnknownAction(a) => write!(f, "unknown action {a:#04x}"),
@@ -116,7 +119,7 @@ pub fn decode(push: &[u8]) -> Result<Message, DecodeError> {
     if push[..3] != MAGIC {
         return Err(DecodeError::BadMagic);
     }
-    if push[3] != VERSION {
+    if push[3] != VERSION && push[3] != LEGACY_VERSION {
         return Err(DecodeError::UnknownVersion(push[3]));
     }
     let action = Action::try_from(push[4])?;
@@ -139,6 +142,7 @@ pub fn decode(push: &[u8]) -> Result<Message, DecodeError> {
             Ok(Message::Mint {
                 seed,
                 name: name.to_owned(),
+                version: push[3],
             })
         }
     }
@@ -157,16 +161,17 @@ mod tests {
                 decode(&env),
                 Ok(Message::Mint {
                     seed,
-                    name: name.to_owned()
+                    name: name.to_owned(),
+                    version: VERSION,
                 })
             );
         }
     }
 
     #[test]
-    fn only_version_0x07_is_spoken() {
+    fn only_current_and_grandfathered_versions_are_spoken() {
         // Every earlier version byte — v2 (0x03), v3 (0x04), live art
-        // (0x05) — is simply not this protocol.
+        // (0x05), v6 (0x06) — is simply not this protocol.
         for version in [0x02u8, 0x03, 0x04, 0x05, 0x06] {
             let push = [b'F', b'R', b'G', version, 0x01, 0, 0, 0, 0, 0];
             assert_eq!(decode(&push), Err(DecodeError::UnknownVersion(version)));

@@ -275,7 +275,8 @@ fn golden_envelopes() {
         msg,
         Message::Mint {
             seed: 0x9058_D0FA,
-            name: "Hopkinson".into()
+            name: "Hopkinson".into(),
+            version: hopper_core::VERSION,
         }
     );
 }
@@ -345,46 +346,46 @@ fn golden_v7_mint_body() {
             1_000_000_000_000,
             "Hopkinson",
             1,
-            "18c566cc68856b41f4a71ac9bd0b39e57ed9ef25461798d8677ce490d1ee7dca",
+            "41fc95c1650de3bec2ee2fb0912984cb764ab1cc86c990173e48f5551ea1f6c2",
         ),
         (
             0x0000_5EED,
             2_099_999_999_999,
             "",
             1,
-            "06627a9e396bf69621015009d28f4c6e835291815c2cf7f652a89696e89a157f",
+            "08b8433b363fe4708cc882fef55c21a5485b69587d086bb40081fb69607917ee",
         ),
         (
             1,
             2,
             "Ribbit",
             2,
-            "6d92c2bfe1e9db643c11ac1c57a205debb53a7278c5c90cbb3d42cf567226e98",
+            "cfd0249c191d7ac9b57b887f6d6a9ac4bf6af1f35adfbe39e9a81ec0d11d4852",
         ),
     ];
     for (seed, sat, name, gen_hint, want) in cases {
-        let body = hopper_core::live_v7_html(*seed, *sat, name, *gen_hint);
+        let body = hopper_core::live_v8_html(*seed, *sat, name, *gen_hint);
         assert_eq!(
             &to_hex(&Sha256::digest(body.as_bytes())),
             want,
-            "seed {seed:#x}: v7 mint body drifted"
+            "seed {seed:#x}: v8 mint body drifted"
         );
         assert_eq!(
             hopper_core::mint_body_digest(*seed, *sat, name, *gen_hint),
             <[u8; 32]>::try_from(Sha256::digest(body.as_bytes()).as_slice()).unwrap()
         );
         assert_eq!(
-            hopper_core::parse_v7_gen_hint(body.as_bytes()),
+            hopper_core::parse_v8_gen_hint(body.as_bytes()),
             Some(*gen_hint)
         );
     }
 }
 
 #[test]
-fn v7_body_is_the_only_content_type_and_rejects_v6() {
+fn v8_body_is_the_only_content_type_and_rejects_v6() {
     let (ct, body) = hopper_core::mint_body(1, 2, "Frog", 1);
     assert_eq!(ct, "text/html;charset=utf-8");
     assert!(body.starts_with(b"<!doctype html>"));
-    assert!(String::from_utf8_lossy(&body).contains("var V7={sat:2,genHint:1,name:\"Frog\""));
+    assert!(String::from_utf8_lossy(&body).contains("var V8={sat:2,genHint:1,name:\"Frog\""));
     assert!(!String::from_utf8_lossy(&body).contains("STATE FROM THE CHAIN"));
 }

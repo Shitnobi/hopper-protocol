@@ -216,8 +216,8 @@ pub fn build_inscription_script_with_parents(
 #[must_use]
 pub fn mint_body(seed: u32, sat: u64, name: &str, gen_hint: u32) -> (&'static str, Vec<u8>) {
     (
-        crate::live_v7::V7_CONTENT_TYPE,
-        crate::live_v7::live_v7_html(seed, sat, name, gen_hint).into_bytes(),
+        crate::live_v7::V8_CONTENT_TYPE,
+        crate::live_v7::live_v8_html(seed, sat, name, gen_hint).into_bytes(),
     )
 }
 
@@ -239,7 +239,7 @@ pub fn build_frog_mint_script(seed: u32, sat: u64, name: &str, gen_hint: u32) ->
 /// Build a mint inscription script from an already-rendered body.
 #[must_use]
 pub fn build_frog_mint_script_from_body(body: &[u8]) -> Vec<u8> {
-    build_inscription_script(crate::live_v7::V7_CONTENT_TYPE.as_bytes(), body)
+    build_inscription_script(crate::live_v7::V8_CONTENT_TYPE.as_bytes(), body)
 }
 
 /// Parse every inscription envelope in a tapleaf script, mirroring ord
@@ -464,11 +464,11 @@ mod tests {
         let ins = &parse_inscriptions(&script)[0];
         assert_eq!(
             ins.content_type.as_deref(),
-            Some(crate::live_v7::V7_CONTENT_TYPE.as_bytes())
+            Some(crate::live_v7::V8_CONTENT_TYPE.as_bytes())
         );
         assert_eq!(
             ins.body.as_deref(),
-            Some(crate::live_v7::live_v7_html(seed, sat, "Ribbit", 2).as_bytes()),
+            Some(crate::live_v7::live_v8_html(seed, sat, "Ribbit", 2).as_bytes()),
             "the engraved body must be the fold document"
         );
         assert_eq!(

@@ -104,6 +104,9 @@ fn state_reveal(body: &StateBody) -> InscriptionReveal {
         parents: vec![encode_parent_tag(&body.mint_txid, body.mint_index)],
         tapscript: Some(script),
         control_block: Some(control),
+        pointer: None,
+        inscription_count: 1,
+        valid: true,
     }
 }
 
@@ -306,6 +309,9 @@ async fn frogger_detail_inscription_id_round_trips() {
         parents: Vec::new(),
         tapscript: None,
         control_block: None,
+        pointer: None,
+        inscription_count: 1,
+        valid: true,
     });
     let payload = envelope(Action::Mint, &encode_mint(0xABCD, "Artfrog"));
     let tx = tx_of(2, vec![inp], vec![out(CARD), out_env(payload)]);
@@ -1249,7 +1255,7 @@ async fn params_endpoint_publishes_the_schedule_and_hash() {
     let (status, body): (_, serde_json::Value) = get_json(&app, "/v1/params").await;
     assert_eq!(status, StatusCode::OK);
     let p = &hopper_core::params::PROTOCOL;
-    assert_eq!(body["wire_version"], 7);
+    assert_eq!(body["wire_version"], 8);
     assert_eq!(body["cross_finality"], p.cross_finality);
     assert_eq!(body["generations"]["base"], 5);
     assert_eq!(body["generations"]["ceiling"], 25);
