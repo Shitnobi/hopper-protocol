@@ -36,6 +36,12 @@
 - `SEND ALL` on chain: one output, recipient `total − actual fee`; the home Hopper state output was not spent.
 - The fold now reports `unverified` when `/r/tx` is unavailable instead of claiming HOME.
 
+### Deployment
+
+- Commit: `0df8fad` — “Fix the v8 fold proof path and FIFO anchor checks”.
+- Fast-forwarded `master` and `last_change`; Pages run `41266804251` succeeded.
+- Live build `hopper-v8-0-5`; fresh-profile live E2E passed with SEND ALL and no console errors.
+
 ### Residual observations
 
 - The automatic chain scan sometimes left the Road/Pond on the previous snapshot until **RESCAN FROM CHAIN**; the test harness forced a rescan after each mined block. This is a pre-existing UI refresh delay, not a consensus failure.
