@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   GENESIS, PROTOCOL, paramsHash, paramsHashHex, paramsLiteral,
   requiredAt, generationAt, generationStart, nextIncrement, foldParams,
-  hopDeathBps, completionBps,
+  hopDeathBps, completionBps, GRANDFATHERED_SAT,
 } from '../js/core/params.js';
 import { wrapOfBytes, wrapOfDisplayHex, dies } from '../js/core/wrap.js';
 import { mintEnvelope, decodeMint } from '../js/core/envelope.js';
@@ -107,6 +107,7 @@ for (const m of v.mint_bodies) {
   eq(`mint body bytes ${m.seed}`, utf8(html).length, m.html_len);
   eq(`mint body digest ${m.seed}/${m.sat}`, bytesToHex(mintBodyDigest(m.seed, m.sat, m.name, m.gen_hint)), m.digest);
   eq(`gen hint ${m.seed}`, parseV8GenHint(html), m.gen_hint);
+  assert(html.includes(`grandfatheredSat:${GRANDFATHERED_SAT},`), 'mint body names the grandfathered sat');
   // no external origin, ever
   assert(!/https?:\/\/|\/\/[a-z0-9-]+\.[a-z]/i.test(html), 'mint body must not contain an external origin');
   assert(!html.includes('STATE FROM THE CHAIN'), 'v7 has no chain caption');

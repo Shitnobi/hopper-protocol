@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn the_document_owns_v8_and_the_fold_never_assigns_it() {
         let html = live_v8_html(0x1234, 987_654_321, "Ribbit", 2);
-        assert!(html.contains("var V8={sat:987654321,genHint:2,name:\"Ribbit\",p:{"));
+        assert!(html.contains("var V8={sat:987654321,genHint:2,name:\"Ribbit\","));
         assert_eq!(
             FOLD_JS.matches("var V8 = { sat:").count(),
             1,

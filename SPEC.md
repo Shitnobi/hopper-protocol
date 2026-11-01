@@ -64,7 +64,7 @@ state magic              "FRG8CROSS"
 legacy state magic       "FRG7CROSS"
 state body length        55 bytes
 state leaf               161 bytes (index 0; 162-165 with a nonzero mint index)
-grandfathered sat         0 = none; set to the one released Hopper's ord sat
+grandfathered sat         1_965_983_893_977_665 (0 = none)
 activation height        974_034 (frozen; see §6.6)
 direction encoding       left = 0, straight = 1, right = 2
 wrap function            u32LE(H(B)[0..4]) mod 3
@@ -391,9 +391,9 @@ global `GRANDFATHERED_SAT` value:
 * Rust: `hopper_core::params::GRANDFATHERED_SAT`
 * JavaScript: `GRANDFATHERED_SAT` in `web/js/core/params.js`
 
-`0` means none; it is the only value to edit when the sat is known. The
-value is embedded into new v8 mint documents as `grandfatheredSat` so the
-fold does not need a second copy.
+The production value is `1_965_983_893_977_665`; `0` means none. It is the
+only value to edit when the sat changes, and it is embedded into new v8 mint
+documents as `grandfatheredSat` so the fold does not need a second copy.
 
 For that sat only:
 

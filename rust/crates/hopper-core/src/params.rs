@@ -133,7 +133,7 @@ pub const VERSION: u8 = VERSION_V8;
 /// The one released Hopper grandfathered into v8, identified by its
 /// ordinal sat number. Set this when the sat is known; 0 means none.
 /// This is the only place the number is edited.
-pub const GRANDFATHERED_SAT: u64 = 0;
+pub const GRANDFATHERED_SAT: u64 = 1_965_983_893_977_665;
 
 pub fn is_grandfathered_sat(sat: u64) -> bool {
     GRANDFATHERED_SAT != 0 && sat == GRANDFATHERED_SAT
@@ -384,6 +384,15 @@ mod tests {
             mutate(&mut q);
             assert_ne!(params_hash(&q), base);
         }
+    }
+
+    #[test]
+    fn only_the_recorded_hopper_is_grandfathered() {
+        assert_eq!(GRANDFATHERED_SAT, 1_965_983_893_977_665);
+        assert!(is_grandfathered_sat(GRANDFATHERED_SAT));
+        assert!(!is_grandfathered_sat(0));
+        assert!(!is_grandfathered_sat(GRANDFATHERED_SAT - 1));
+        assert!(!is_grandfathered_sat(GRANDFATHERED_SAT + 1));
     }
 
     #[test]

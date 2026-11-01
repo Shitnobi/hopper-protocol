@@ -510,7 +510,7 @@ for itself when to fetch remote rows.
 Implemented the findings in `SECURITY_AUDIT_FEEDBACK.md` on `master`, with
 the audit's `MODEL:`/`DECISION:` notes applied. The protocol is now v8
 (`0x08`); exactly one released v7 Hopper is grandfathered by the global
-`GRANDFATHERED_SAT` value (still `0` until the sat is supplied).
+`GRANDFATHERED_SAT` value, now set to `1_965_983_893_977_665`.
 
 ### Fixes
 

@@ -125,8 +125,8 @@ web/
   child's raw transaction and checking the canonical leaf, control path,
   one-envelope/input-0 shape, and finality spacing. Missing proof renders
   `NAME · 🛣 —`, never a guess.
-- **Grandfather**: exactly one released v7 Hopper is accepted. Set
-  `GRANDFATHERED_SAT` in `rust/crates/hopper-core/src/params.rs` and
+- **Grandfather**: exactly one released v7 Hopper is accepted. The sat is
+  `1_965_983_893_977_665`, set in `rust/crates/hopper-core/src/params.rs` and
   `web/js/core/params.js` (0 = none). It uses the v7 mint/body/leaf; every
   other Hopper is v8.
 - **Transfer**: an ordinary spend; it publishes no envelope and changes no

@@ -2,7 +2,7 @@
 // params_hash that differs from its own copy.
 import assert from 'node:assert/strict';
 import { WalletSession } from '../js/wallet/wallet.js';
-import { paramsHashHex } from '../js/core/params.js';
+import { paramsHashHex, GRANDFATHERED_SAT, isGrandfatheredSat } from '../js/core/params.js';
 
 let checks = 0;
 const ok = (cond, msg) => { checks += 1; if (!cond) throw new Error(msg); };
@@ -16,6 +16,9 @@ function ctx(published) {
 }
 
 const assertParams = WalletSession.prototype._assertParams;
+ok(GRANDFATHERED_SAT === 1965983893977665, 'the grandfathered sat is pinned');
+ok(isGrandfatheredSat(1965983893977665), 'the recorded sat is accepted');
+ok(!isGrandfatheredSat(1965983893977664) && !isGrandfatheredSat(0), 'neighbours are not accepted');
 
 await assertParams.call(ctx({ params_hash: paramsHashHex(), wire_version: 8, network: 'mainnet' }));
 checks += 1;

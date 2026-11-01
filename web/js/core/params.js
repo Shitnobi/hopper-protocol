@@ -21,7 +21,7 @@ export const STATE_CONTENT_TYPE = 'application/octet-stream';
 // The one Hopper explicitly grandfathered from the released v7 protocol.
 // Set this to the ordinal sat number when it is known; 0 means no legacy
 // Hopper is accepted. This is the only place the number is edited.
-export const GRANDFATHERED_SAT = 0;
+export const GRANDFATHERED_SAT = 1_965_983_893_977_665;
 
 export function isGrandfatheredSat(sat) {
   const n = Number(sat);
