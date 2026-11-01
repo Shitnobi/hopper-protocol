@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { parseMidi, Sound } from '../js/sound.js';
 import { qrModules } from '../js/ui/qr.js';
 import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../js/ui/frog-mark.js';
-import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg, roadFrogFrame } from '../js/ui/theme.js';
+import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg, roadFrogFrame, SIDE_CAR_MAP, paintSideCar } from '../js/ui/theme.js';
 import { pipPlan, pips, targetOf } from '../js/ui/dom.js';
 import { GENESIS, requiredAt } from '../js/core/params.js';
 
@@ -162,6 +162,38 @@ ok(['b', 'w', 'p', 'f'].every((ch) => POND_MARK_ROWS.some((row) => row.includes(
 const pond = pondMarkSvg(14);
 ok(pond.includes('class="pond-mark"') && pond.includes('viewBox="0 0 14 14"') && pond.includes('shape-rendering="crispEdges"'), 'the pond glyph is a crisp 14x14 SVG');
 ok(pond.includes('#3a7d89') && pond.includes('#68b270') && pond.includes('#eab0ca'), 'the pond glyph carries water, pad and flower colours');
+
+// ---- page 6's side-view car ------------------------------------------
+ok(SIDE_CAR_MAP.length === 8 && SIDE_CAR_MAP.every((row) => row.length === 16),
+  'the rules car is the cutscene 16x8 side-view grid');
+ok(['b', 'g', 'k', 'L', 'R'].every((ch) => SIDE_CAR_MAP.some((row) => row.includes(ch))),
+  'the rules car has body, glass, tyres, headlight and tail light');
+const carRects = [];
+const carCtx = {
+  _fill: '',
+  set fillStyle(value) { this._fill = value; },
+  get fillStyle() { return this._fill; },
+  fillRect(x, y, w, h) { carRects.push({ fill: this._fill, x, y, w, h }); },
+};
+paintSideCar(carCtx, 160, 80, '#c63e30', true, '#f0c83c');
+ok(carRects.length === SIDE_CAR_MAP.join('').replace(/\./g, '').length,
+  'every non-empty cutscene car cell is painted');
+ok(new Set(carRects.map((r) => r.fill)).size === 5
+  && carRects.some((r) => r.fill === '#ff4632') && carRects.some((r) => r.fill === '#f0c83c'),
+  'the rules car keeps the cutscene palette, including both lights');
+const head = carRects.filter((r) => r.fill === '#f0c83c').map((r) => r.x);
+ok(head.length > 0 && Math.min(...head) < 40,
+  'mirroring points the headlight into the direction of travel');
+const carFront = [];
+const frontCtx = {
+  _fill: '',
+  set fillStyle(value) { this._fill = value; },
+  get fillStyle() { return this._fill; },
+  fillRect(x, y, w, h) { if (this._fill === '#f0c83c') carFront.push(x); },
+};
+paintSideCar(frontCtx, 160, 80, '#c63e30', false, '#f0c83c');
+ok(carFront.length > 0 && Math.max(...carFront) > 120,
+  'the unmirrored car points its headlight the other way');
 
 // ---- crossing pips ----------------------------------------------------
 // One dot per required hop, not a fixed five-dot cap: a 5/6 frog shows

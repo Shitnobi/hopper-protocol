@@ -1,5 +1,28 @@
 # HOPPER bug log
 
+## 2026-11-01 — Rules page 6 used the top-down car, not the cutscene car
+
+**Reported:** the “THE BLOCK DECIDES” page drove the old top-down arcade car
+over the frog. The car in `hopper-cutscene.mp4` is a side view.
+
+**Build:** fixed in `hopper-v8-0-8`.
+
+### Fix
+
+- `web/js/ui/theme.js`: added `SIDE_CAR_MAP` and `paintSideCar()`, using the
+  exact 16×8 side-view grid from `.scratch/hopper-vid/cutscene.mjs`
+  (`b` body, `g` glass, `k` tyre, `L` headlight, `R` tail light).
+- `web/js/ui/tour.js`: rules page 6 now draws that car mirrored (it crosses
+  right-to-left), at the map's native 2:1 aspect and with the full cutscene
+  headlight, instead of the top-down sprite.
+- `web/tests/media.test.mjs`: pins the grid, palette, cell coverage and
+  mirroring direction.
+- `web/sw.js`, `web/js/build-guard.js`: `hopper-v8-0-8`.
+
+### Verification
+
+- Pending.
+
 ## 2026-11-01 — Emergency export used the current tree for a legacy Hopper
 
 **Found during:** the whitepaper/SPEC/PWA conformance audit.

@@ -8,7 +8,7 @@
 
 import {
   C, carBodyColor, dim, laneDashes, paintCar, paintLily, paintRoad,
-  paintSprite,
+  paintSideCar, paintSprite,
 } from './theme.js';
 import { paintFrogMark } from './frog-mark.js';
 
@@ -270,13 +270,14 @@ export function paintRulesArt(canvas, art, page, time) {
       const fy = h / 2 + (squished ? size * 0.10 : -Math.sin((p / 0.62) * Math.PI) * h * 0.15);
       paintSprite(ctx, seed, squished ? 'dead' : 'crossing', fx, fy, squished ? size * 0.92 : size);
       const carW = size * 1.9;
-      const carH = size * 0.9;
+      const carH = carW / 2;
       let carX;
       if (p < 0.62) carX = lerp(w + carW, fx, Math.min(1, (p - 0.3) / 0.32));
       else carX = lerp(fx, -carW, Math.min(1, (p - 0.62) / 0.38));
       const c = document.createElement('canvas');
       c.width = Math.round(carW); c.height = Math.round(carH);
-      paintCar(c.getContext('2d'), carW, carH, carBodyColor(seed), false, dim(C.accent, 0.45));
+      // The cutscene's side-view car, mirrored because it crosses right-to-left.
+      paintSideCar(c.getContext('2d'), carW, carH, carBodyColor(seed), true, C.accent);
       ctx.drawImage(c, carX - carW / 2, h / 2 + size * 0.06 - carH / 2, carW, carH);
       break;
     }

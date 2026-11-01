@@ -539,6 +539,41 @@ export function paintGrave(ctx, w, h) {
   }
 }
 
+/**
+ * The side-view car from `.scratch/hopper-vid/cutscene.mjs`, 16x8.
+ *
+ * `b` body, `g` glass, `k` tyre/underbody, `L` headlight, `R` tail light.
+ * The cutscene paints this grid one pixel at a time; here the same map is
+ * scaled into a canvas so the rules page and the film share one silhouette.
+ */
+export const SIDE_CAR_MAP = [
+  '................',
+  '....bbbbbbbb....',
+  '...bggggggggb...',
+  '..bbbbbbbbbbbb..',
+  'RbbbbbbbbbbbbbbL',
+  '.bbbbbbbbbbbbbb.',
+  '..kkk......kkk..',
+  '..kkk......kkk..',
+];
+
+/** Paint the cutscene's side-view car, facing right unless `mirror` is true. */
+export function paintSideCar(ctx, w, h, body, mirror = false, headlight = C.accent) {
+  const [cell, ox, oy] = gridMetrics(w, h, 16, 8);
+  const glass = '#141a22';
+  const ink = dim(C.water, 0.45);
+  const tail = '#ff4632';
+  for (let r = 0; r < SIDE_CAR_MAP.length; r += 1) {
+    const row = SIDE_CAR_MAP[r];
+    for (let c = 0; c < 16; c += 1) {
+      const ch = row[mirror ? 15 - c : c];
+      const color = ch === 'b' ? body : ch === 'g' ? glass : ch === 'k' ? ink
+        : ch === 'L' ? headlight : ch === 'R' ? tail : null;
+      if (color) fill(ctx, ox + c * cell, oy + r * cell, cell + 0.2, cell + 0.2, color);
+    }
+  }
+}
+
 /** theme.rs::draw_car_colored — the top-down arcade car, 16x8. */
 export function paintCar(ctx, w, h, body, mirror = false, headlight = C.accent) {
   const [cell, ox, oy] = gridMetrics(w, h, 16, 8);

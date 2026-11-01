@@ -551,7 +551,7 @@ curl -sN localhost:9770/v1/events/stream
 cd web
 node tests/core.test.mjs        # 142 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → hop → settlement → transfer (and no burn path)
-node tests/media.test.mjs       # 48 checks: score, QR, pixel marks, pips, animated road frame geometry
+node tests/media.test.mjs       # 54 checks: score, QR, pixel marks, pips, road-frame and cutscene-car geometry
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 40 mint-recognition and commit-checks from the reveal witness without an indexer
