@@ -21,7 +21,17 @@ over the frog. The car in `hopper-cutscene.mp4` is a side view.
 
 ### Verification
 
-- Pending.
+- `npm test`: media **54** checks, all other suites pass.
+- Local headless PWA E2E on `hopper-v8-0-8`: **pass**, `console errors:
+  none`.
+- Live `hopper-v8-0-8` E2E: **pass**, `console errors: none`.
+- Live page 6 canvas checked: the 16×8 side-view grid, red body, glass,
+  headlight, tail light and mirrored direction all render.
+
+### Deployment
+
+- Commit: `1cfdb18` — “Use the cutscene's side-view car on rules page 6”.
+- Pages run `41349974519` succeeded; live build `hopper-v8-0-8`.
 
 ## 2026-11-01 — Emergency export used the current tree for a legacy Hopper
 
