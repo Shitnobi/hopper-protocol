@@ -595,3 +595,12 @@ the audit's `MODEL:`/`DECISION:` notes applied. The protocol is now v8
 - GitHub Pages run `41256158186` completed successfully.
 - Live `hopper-v8-0-0` E2E passed: no console errors, account/recovery/history
   routes intact, and the stale-build boot reported `hopper-v8-0-0`.
+
+### Grandfathered sat set
+
+- `GRANDFATHERED_SAT` is now `1_965_983_893_977_665` in both
+  `rust/crates/hopper-core/src/params.rs` and `web/js/core/params.js`.
+- New v8 mint documents embed `grandfatheredSat:1965983893977665,`.
+- Cache/build bumped to `hopper-v8-0-1` so installed shells pick it up.
+- Commit `e70f131`; GitHub Pages run `41257267210` succeeded.
+- Live E2E on `hopper-v8-0-1`: one boot navigation, no console errors.
