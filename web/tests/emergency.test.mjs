@@ -147,6 +147,29 @@ eq(multi.descriptor, null, 'no single wallet-level descriptor for two Hopper');
 ok(multi.frogs.every((f) => descriptorChecksumOk(f.descriptor)), 'each Hopper carries its own descriptor');
 void second;
 
+// The scanned UTXO's scriptPubKey is the anchor for the export. A rebuilt
+// tree that does not match the outpoint must not be published.
+const wrongScript = WalletSession.prototype.emergencyDescriptors.call({
+  ...staged,
+  _frogUtxo: () => ({
+    kind: 'state', value: CARD_VALUE, txid: prep.txid, vout: 0,
+    script: hexToBytes('51'),
+  }),
+}, { now: '2026-10-30T00:00:01Z' });
+eq(wrongScript.frogs.length, 0, 'a state-script mismatch is not exported');
+
+// A legacy-path Hopper carries the released owner key, not the current
+// BIP86 owner, so its emergency descriptor stays spendable.
+const legacyFrog = { ...frog, legacy_path: true, legacy_wire: true };
+const legacyDoc = WalletSession.prototype.emergencyDescriptors.call({
+  ...staged,
+  frogs: [legacyFrog],
+  _frogOwner: WalletSession.prototype._frogOwner,
+  _frogLegacyPath: WalletSession.prototype._frogLegacyPath,
+  _frogLegacyWire: WalletSession.prototype._frogLegacyWire,
+}, { now: '2026-10-30T00:00:01Z' });
+eq(bytesToHex(wallet.legacyOrd.ownerXonly), legacyDoc.frogs[0]?.owner_xonly, 'legacy owner in export');
+
 // The sheet must produce a QR that a camera can actually hold: either the
 // full compact document or the one-Hopper layout summary.
 const html = emergencySheet({ w: staged }, doc);

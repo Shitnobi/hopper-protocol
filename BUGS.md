@@ -1,5 +1,44 @@
 # HOPPER bug log
 
+## 2026-11-01 — Emergency export used the current tree for a legacy Hopper
+
+**Found during:** the whitepaper/SPEC/PWA conformance audit.
+
+**Build:** fixed in `hopper-v8-0-7`.
+
+### Root causes
+
+1. `_emergencyEntry()` always rebuilt the state tree with the current BIP86
+   owner and v8 leaves. A legacy-path Hopper needs its released owner and,
+   for a v7-wire Hopper, its `FRG7CROSS` leaves; its emergency descriptor
+   would not match the on-chain state output.
+2. The export did not compare the rebuilt output key with the scanned state
+   scriptPubKey before displaying it. The SPEC required that check, but the
+   PWA relied on the caller/test to do it.
+3. Esplora address rows carry no script, so scanned state UTXOs could lose
+   the watched script even though the wallet knows it from the derivation.
+
+### Fix
+
+- `web/js/wallet/wallet.js`
+  - `_emergencyEntry()` now uses `_frogOwner(f)` and
+    `stateScripts(..., { legacy: _frogLegacyWire(f) })`, so legacy owners
+    and leaves are exported correctly.
+  - when the scanned UTXO has a scriptPubKey, the rebuilt output key must
+    match it or that frog is omitted from the export.
+  - every scanned UTXO keeps `u.script || w.script`, so an Esplora row
+    without a script still retains the watched script.
+- `web/tests/emergency.test.mjs`: a script mismatch is not exported; a
+  legacy-path Hopper exports the legacy owner.
+- `web/sw.js`, `web/js/build-guard.js`: `hopper-v8-0-7`.
+
+### Verification
+
+- `npm test`: core 142, game ok, emergency **105**, params 12, media 48,
+  scan 104, ord 50, ui 106, fees 19, preview 119, localmint 40, chainfrog 47,
+  history 134, rbf 125; v8 fold sync/parity/boot pass.
+- `cargo test --workspace`: pass.
+
 ## 2026-11-01 — UI scan lag and the ROAD LOG's premature HOME
 
 **Reported:** after a mined block the Road/Pond could stay on the previous

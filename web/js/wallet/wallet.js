@@ -917,7 +917,7 @@ export class WalletSession {
         const key = w.kind === 'frog' || isState
           ? (w.branch === 'ordLegacy' ? this.keys.legacyOrd : this.keys.ord) : w.key;
         utxos.push({
-          txid: u.txid, vout: u.vout, value: Number(u.value), script: u.script,
+          txid: u.txid, vout: u.vout, value: Number(u.value), script: u.script || w.script,
           address: w.address, kind, ranges: exact ? ranges : null, exact, frogs,
           status: u.status || null, unconfirmed: isUnconfirmedUtxo(u),
           key, keyRef: { branch: w.branch, index: w.index },
@@ -2234,12 +2234,23 @@ export class WalletSession {
   /** One staged Hopper's public layout. `txid/vout/value` is explicit so a
    *  transaction we just broadcast can be recorded before the indexer has
    *  named its new location. */
-  _emergencyEntry(f, { txid, vout, value } = {}) {
+  _emergencyEntry(f, { txid, vout, value, script } = {}) {
     if (!f || !txid || !Number.isInteger(Number(vout))) return null;
-    const ownerXonly = this.keys.ord.ownerXonly;
+    // A legacy-path Hopper must export the released owner and leaf bytes,
+    // not the current BIP86 tree. Fall back for the lightweight test stub
+    // that calls this method with only `keys`.
+    const ownerXonly = this._frogOwner ? this._frogOwner(f) : this.keys.ord.ownerXonly;
+    const legacy = this._frogLegacyWire ? this._frogLegacyWire(f) : false;
     const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
     try {
-      const scripts = stateScripts(f, ownerXonly);
+      const scripts = stateScripts(f, ownerXonly, { legacy });
+      // The export is only trustworthy for the outpoint it names. When the
+      // scanned UTXO carries its scriptPubKey, require the rebuilt tree to
+      // match it before publishing the layout.
+      if (script) {
+        const actual = typeof script === 'string' ? hexToBytes(script) : script;
+        if (!actual || !equalBytes(actual, p2trScript(scripts.outputXonly))) return null;
+      }
       const leaves = [0, 1, 2].map((dir) => ({
         dir,
         script_hex: hex(scripts.crossLeaves[dir]),
@@ -2291,6 +2302,7 @@ export class WalletSession {
       if (f.state === 'burned' || f.state === 'retired') continue;
       const entry = this._emergencyEntry(f, {
         txid: f.location?.txid, vout: Number(f.location?.vout), value: utxo.value,
+        script: utxo.script,
       });
       if (entry) frogs.push(entry);
     }
