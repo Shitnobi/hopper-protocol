@@ -162,6 +162,8 @@ ok(sendHtml.includes('PREVIEW TRANSACTION') && !sendHtml.includes('data-action="
   'send offers PREVIEW TRANSACTION, not a direct SEND');
 ok(sendHtml.includes('data-input="send-fee"'), 'send has an editable fee rate');
 ok(sendHtml.includes('data-send-spendable'), 'the send sheet marks its live spendable line');
+ok(sendHtml.includes('data-action="preview-send-all"'), 'the send sheet offers SEND ALL');
+ok(sendHtml.includes('Hopper cards and state outputs are never used'), 'SEND ALL explains what it excludes');
 
 const receive = screens.receiveSheet({
   w: {

@@ -158,10 +158,13 @@ sat would land in its fee.
 
 Ordinary **SEND**, sending a Hopper (**TRANSFER**) and minting are two-step
 in the browser UI. SEND and TRANSFER start with **PREVIEW TRANSACTION**; the
-mint keeps its **MINT!** button and opens the same review screen. The preview
-builds and signs the exact transaction(s) without broadcasting: destination
-address and amount, change address and amount, chosen fee rate, actual fee in
-sats, and transaction size. A mint preview shows both the **commit** and
+mint keeps its **MINT!** button and opens the same review screen. SEND also
+offers **SEND ALL**: it sweeps every eligible plain-BTC coin into a single
+recipient output, deducts the actual fee from the total, and leaves no
+change. Hopper cards, state outputs and protected sats are never selected.
+The preview builds and signs the exact transaction(s) without broadcasting:
+destination address and amount, change address and amount, chosen fee rate,
+actual fee in sats, and transaction size. A mint preview shows both the **commit** and
 **reveal** txids, both change outputs, both fees and the total. **CANCEL** (or
 ✕, Escape and the backdrop) discards it. **APPROVE & BROADCAST** rechecks
 every input against a fresh scan and broadcasts exactly once; a stale preview
@@ -540,17 +543,17 @@ curl -sN localhost:9770/v1/events/stream
 
 ```sh
 cd web
-node tests/core.test.mjs        # 64 checks against Rust vectors
+node tests/core.test.mjs        # 142 checks against Rust vectors
 node tests/game.test.mjs        # mint → prepare → hop → settlement → transfer (and no burn path)
-node tests/media.test.mjs       # 40 checks: score, QR, pixel marks, pips, animated road frame geometry
+node tests/media.test.mjs       # 48 checks: score, QR, pixel marks, pips, animated road frame geometry
 node tests/scan.test.mjs        # FROGGER scan policy: cold/warm plan, tip gate, mempool rows, rescan
 node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, indexer→ord fallback
 node tests/localmint.test.mjs   # 40 mint-recognition and commit-checks from the reveal witness without an indexer
-node tests/chainfrog.test.mjs   # 45 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP, settled road release
+node tests/chainfrog.test.mjs   # 47 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP, settled road release
 node tests/history.test.mjs     # 134 checks: deposits, copy targets, causal journey, mempool HOP order, change labels
-node tests/ui.test.mjs          # 66 checks: pond, settled/in-flight road cards, no demo controls in live mode
+node tests/ui.test.mjs          # 104 checks: pond, settled/in-flight road cards, no demo controls in live mode
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
-node tests/preview.test.mjs     # 53 send/transfer/mint preview and stale-preview checks
+node tests/preview.test.mjs     # 117 send/send-all/transfer/mint preview and stale-preview checks
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved
 node tests/indexer-e2e.mjs http://127.0.0.1:9770   # JS tx bytes into the Rust indexer
 ```

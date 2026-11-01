@@ -1015,6 +1015,17 @@ const handlers = {
       openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
     });
   },
+  'preview-send-all'() {
+    if (app.busy) return;
+    const to = (document.querySelector('[data-input=send-to]')?.value || '').trim();
+    const feeRate = readFeeRate('send-fee');
+    if (!to) { toast('Enter a recipient address first', 'err'); return; }
+    run('building the send-all preview', async () => {
+      const preview = await app.w.previewSendAll(to, { feeRate });
+      app.previewTx = preview;
+      openOverlay(screens.txPreviewSheet(app, preview), { lily: 'accent' });
+    });
+  },
   'preview-transfer'(el) {
     if (app.busy) return;
     const f = app.w.frogBySat(el.dataset.sat);
@@ -1054,6 +1065,8 @@ const handlers = {
         sound.sfx('cross');
         toast(`HOP ${direction} confirmed at H ${sats(app.w.tipHeight)} — the next block decides, settlement in 6`, 'ok');
         navigate('road');
+      } else if (preview.sendAll) {
+        toast(`Sent the full spendable balance (${sats(preview.amountNumber)} sats) in ${shortHash(built.txid, 6)}`, 'ok');
       } else {
         toast(`Sent ${sats(preview.amountNumber)} sats in ${shortHash(built.txid, 6)}`, 'ok');
       }

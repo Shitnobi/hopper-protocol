@@ -403,6 +403,31 @@ await waitFor('document.getElementById("overlay").hidden', 5000, 'cancelled prev
 const cancelled = await evaluate(`document.querySelector('#toasts')?.innerText || ''`);
 if (!/transaction cancelled/i.test(cancelled)) errors.push(`cancel toast missing: ${JSON.stringify(cancelled)}`);
 
+// 1a-ter. SEND ALL sweeps every plain coin with no change output. Preview
+// only, then cancel, so the normal send below still has funds.
+await click('sheet-send');
+await waitFor('document.querySelector("[data-input=send-fee]")', 5000, 'send fee field for send all');
+await fill('send-to', autoReceive);
+await fill('send-fee', '2');
+await click('preview-send-all');
+await waitFor(`document.querySelector('.overlay')?.innerText.includes('SEND ALL BITCOIN')`, 15000, 'send-all preview');
+const sendAllPreview = await evaluate(`(() => {
+  const t = document.querySelector('.overlay')?.innerText || '';
+  return {
+    text: t,
+    oneOutput: t.includes('none — this transaction has one output'),
+    funding: t.includes('plain coins'),
+    hasApprove: Boolean(document.querySelector('.overlay [data-action=do-approve-tx]')),
+  };
+})()`);
+console.log('send all preview:', sendAllPreview.text.replace(/\n/g, ' | ').slice(0, 380));
+if (!sendAllPreview.text.includes('Destination amount') || !sendAllPreview.oneOutput
+  || !sendAllPreview.funding || !sendAllPreview.hasApprove) {
+  errors.push(`send-all preview is incomplete: ${JSON.stringify(sendAllPreview.text.slice(0, 700))}`);
+}
+await click('abort-preview');
+await waitFor('document.getElementById("overlay").hidden', 5000, 'send-all preview closed');
+
 await click('sheet-send');
 await waitFor('document.querySelector("[data-input=send-fee]")', 5000, 'send fee field after cancel');
 await fill('send-to', autoReceive);

@@ -28,7 +28,7 @@ import {
 } from './recovery.js';
 import {
   anchorOffsetOf, buildCross, buildMint, buildMintRefund, buildPrepare, buildSend,
-  buildTransfer, proveAssignment, stateScripts,
+  buildSendAll, buildTransfer, proveAssignment, stateScripts,
 } from './actions.js';
 import {
   RBF_POLICY, buildReplacement, buildSendRbfEnvelope, safeBumpFunding,
@@ -2715,6 +2715,43 @@ export class WalletSession {
       destinationAmount: built.tx.outputs[0].value,
       changeAddress: changeOut ? change.address : null,
       changeAmount: changeOut ? changeOut.value : 0n,
+      usesUnconfirmed: built.inputs.some((i) => unconfirmedOutpoints.has(`${i.txid}:${i.vout}`)),
+    };
+  }
+
+  /** Build a sweep of every eligible plain-BTC coin without broadcasting.
+   *  The only output is the recipient's; the actual fee is deducted from the
+   *  total. Hopper/state outputs and protected sats are never selected. */
+  async previewSendAll(address, { feeRate = null } = {}) {
+    await this.refresh();
+    const recipient = decodeAddress(address, this.network);
+    const rate = rateOr(feeRate ?? this.settings.feeRate);
+    const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
+    const built = buildSendAll({
+      utxos: this._sendFunding(), recipientScript: recipient.script,
+      feeRate: rate, allowUnconfirmed: spendUnconfirmed,
+      protectedSats: [...this._protectedSats()],
+    });
+    const unconfirmedOutpoints = new Set(this.utxos
+      .filter((u) => u.unconfirmed)
+      .map((u) => `${u.txid}:${u.vout}`));
+    const amount = built.valueToRecipient;
+    return {
+      kind: 'send',
+      sendAll: true,
+      built,
+      to: address,
+      amount,
+      amountNumber: Number(amount),
+      totalIn: built.totalIn,
+      fundingCount: built.inputs.length,
+      feeRate: rate,
+      fee: built.fee,
+      vsize: built.vsize,
+      effectiveFeeRate: Number(built.fee) / Math.max(1, built.vsize),
+      destinationAmount: amount,
+      changeAddress: null,
+      changeAmount: 0n,
       usesUnconfirmed: built.inputs.some((i) => unconfirmedOutpoints.has(`${i.txid}:${i.vout}`)),
     };
   }

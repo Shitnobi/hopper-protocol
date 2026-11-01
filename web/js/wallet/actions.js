@@ -740,3 +740,58 @@ export function buildSend({
     inputs: picked.map(({ key, ...rest }) => rest),
   };
 }
+
+/** Sweep every eligible plain-BTC coin into one recipient output. There is
+ *  no change: the recipient gets the sum of the inputs minus the actual fee.
+ *  Hopper/state outputs and every protected sat are excluded by the same
+ *  fail-closed funding predicate as a normal SEND. */
+export function buildSendAll({
+  utxos, recipientScript, feeRate = 2, allowUnconfirmed = false, protectedSats = [],
+}) {
+  const rate = Math.max(FEE_FLOOR, feeRate);
+  const picked = utxos
+    .filter((u) => isFundingUtxo(u, { allowUnconfirmed }))
+    .sort((a, b) => b.value - a.value);
+  if (!picked.length) throw new Error('no spendable plain BTC to send');
+  const totalIn = picked.reduce((a, u) => a + BigInt(u.value), 0n);
+  const tx = makeTx({
+    inputs: picked.map((u) => inputFromUtxo(u, RBF_SEQUENCE)),
+    // `finalize` treats output 0 as its change target, so it computes the
+    // recipient amount as totalIn - fee. The recipient's script never changes.
+    outputs: [output(0n, recipientScript)],
+  });
+  const final = finalize({
+    tx,
+    inputs: picked,
+    inputTypes: picked.map(() => ({ type: 'p2wpkh' })),
+    changeIndex: 0,
+    rate,
+    sign: (t) => picked.forEach((u, i) => signP2wpkh(t, i, u.key.privateKey, u.key.publicKey, u.value)),
+  });
+  if (final.tx.outputs.length !== 1) {
+    throw new Error('the fee would consume the entire balance');
+  }
+  const amount = final.tx.outputs[0].value;
+  if (amount < DUST_P2WPKH) {
+    throw new Error(`the fee leaves only ${amount} sats, below the ${DUST_P2WPKH}-sat dust limit`);
+  }
+  proveAssignment({
+    inputs: picked,
+    outputValues: final.tx.outputs.map((o) => Number(o.value)),
+    protectedSats,
+    label: 'send all',
+  });
+  return {
+    tx: final.tx,
+    hex: bytesToHex(serializeTx(final.tx, true)),
+    txid: txid(final.tx),
+    fee: final.fee,
+    vsize: vsize(final.tx),
+    totalIn,
+    valueToRecipient: amount,
+    changeIndex: null,
+    // Public funding metadata for the RBF envelope. Never return the
+    // private key objects that coin selection happens to hold.
+    inputs: picked.map(({ key, ...rest }) => rest),
+  };
+}

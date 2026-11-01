@@ -2052,16 +2052,19 @@ export function sendSheet(app) {
     <label class="field"><span>Amount (sats)</span><input type="number" data-input="send-amount" min="546" value="10000"></label>
     <div class="hint" data-send-spendable>Spendable: ${sats(app.w.balance.spendable)} sats. Fees come from the tail of the change.</div>
     ${feePicker(app, { input: 'send-fee' })}
-    <div class="mt14">${logBtn('PREVIEW TRANSACTION', 'preview-send', { edge: 'accent', cls: 'block' })}</div>`;
+    <div class="mt14">${logBtn('PREVIEW TRANSACTION', 'preview-send', { edge: 'accent', cls: 'block' })}</div>
+    <div class="mt8">${logBtn('SEND ALL', 'preview-send-all', { edge: 'dim', cls: 'small' })}</div>
+    <div class="hint">SEND ALL ignores the amount field and sweeps every plain BTC coin. The recipient gets the total minus the fee; Hopper cards and state outputs are never used.</div>`;
 }
 
 export function txPreviewSheet(app, p) {
   const hopper = p.kind === 'transfer';
   const mint = p.kind === 'mint';
   const title = mint ? 'REVIEW MINT' : 'REVIEW TRANSACTION';
+  const sendAll = p.kind === 'send' && p.sendAll === true;
   const subtitle = mint
     ? 'MINT HOPPER · nothing is broadcast until you approve.'
-    : `${hopper ? 'SEND HOPPER' : 'SEND BITCOIN'} · nothing is broadcast until you approve.`;
+    : `${hopper ? 'SEND HOPPER' : sendAll ? 'SEND ALL BITCOIN' : 'SEND BITCOIN'} · nothing is broadcast until you approve.`;
   const changeRow = (label, address, amount) => (address
     ? `<dt>${esc(label)}</dt><dd class="tiny wrap">${esc(address)}</dd>
        <dt>${esc(label)} amount</dt><dd>${sats(amount)} sats</dd>`
@@ -2085,6 +2088,7 @@ export function txPreviewSheet(app, p) {
       <dt>Fee rate</dt><dd>${esc(feeRate)}</dd>` : `
       <dt>Destination address</dt><dd class="tiny wrap">${esc(p.to)}</dd>
       <dt>Destination amount</dt><dd>${sats(p.destinationAmount)} sats</dd>
+      ${sendAll ? `<dt>Funding</dt><dd>all ${sats(p.fundingCount || p.built.inputs.length)} plain coins · ${sats(p.totalIn)} sats in</dd>` : ''}
       <dt>Change address</dt>${p.changeAddress
         ? `<dd class="tiny wrap">${esc(p.changeAddress)}</dd>`
         : '<dd>none — this transaction has one output</dd>'}
@@ -2108,7 +2112,7 @@ export function txPreviewSheet(app, p) {
     </div>
     <div class="warnbox mt10">${warning}</div>
     <div class="hint">Actual fee is what these signed transactions pay, not an estimate. Effective rate:
-      ${esc(feeRateLabel(p.effectiveFeeRate))}.${mint ? ' The reveal cannot confirm before its commit.' : ''}${p.usesUnconfirmed ? ' Some funding is unconfirmed, so this transaction can only confirm after its parent.' : ''}</div>
+      ${esc(feeRateLabel(p.effectiveFeeRate))}.${sendAll ? ' The fee was deducted from the swept balance; there is no change output.' : ''}${mint ? ' The reveal cannot confirm before its commit.' : ''}${p.usesUnconfirmed ? ' Some funding is unconfirmed, so this transaction can only confirm after its parent.' : ''}</div>
     <div class="actions mt14">
       ${logBtn('CANCEL', 'abort-preview', { edge: 'dim', cls: 'small' })}
       ${logBtn('APPROVE & BROADCAST', 'do-approve-tx', { edge: 'accent' })}

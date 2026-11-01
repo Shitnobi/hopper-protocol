@@ -2,7 +2,7 @@
 // record an action, or touch the mempool. Approval broadcasts exactly once.
 import assert from 'node:assert/strict';
 import { vsize } from '../js/wallet/tx.js';
-import { buildSend, isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
+import { buildSend, buildSendAll, isFundingUtxo, selectFunding } from '../js/wallet/actions.js';
 
 const store = new Map();
 globalThis.localStorage = {
@@ -58,6 +58,54 @@ function counter(w) {
   eq('approval records a send', w.actions[0].kind, 'send');
   eq('the action keeps the actual fee', w.actions[0].fee, Number(p.fee));
   ok(w.actions[0].rbf?.eligible === true, 'the approved send carries its RBF envelope');
+}
+
+{
+  const w = await wallet('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong');
+  const destination = w.keys.receive(8).address;
+  const pool = w._sendFunding();
+  const total = pool.reduce((a, u) => a + BigInt(u.value), 0n);
+  const p = await w.previewSendAll(destination, { feeRate: 3 });
+  eq('send all kind', p.kind, 'send');
+  eq('send all flag', p.sendAll, true);
+  eq('send all destination', p.to, destination);
+  eq('send all uses every eligible coin', p.built.inputs.length, pool.length);
+  eq('send all has one output', p.built.tx.outputs.length, 1);
+  eq('send all has no change', p.built.changeIndex, null);
+  eq('send all deducts the fee', p.destinationAmount, total - p.fee);
+  eq('send all amount number matches', p.amountNumber, Number(total - p.fee));
+  ok(p.fee >= BigInt(Math.ceil(vsize(p.built.tx) * 3)), 'send all pays the requested rate');
+  ok(p.changeAddress === null, 'send all preview shows no change address');
+  const b = counter(w);
+  const built = await w.broadcastPreview(p);
+  eq('send all broadcasts once', b.count, 1);
+  eq('send all returns the preview txid', built.txid, p.built.txid);
+  eq('send all records a send', w.actions[0].kind, 'send');
+}
+
+{
+  const w = await wallet('legal winner thank year wave sausage worth useful legal winner thank yellow');
+  const pool = w._sendFunding();
+  const total = pool.reduce((a, u) => a + BigInt(u.value), 0n);
+  const fakeState = {
+    txid: '11'.repeat(32), vout: 0, value: 50000, kind: 'state', exact: true,
+    spendable: false, ranges: [[5000000000000000, 5000000000049999]], frogs: [5000000000000000],
+  };
+  const marked = {
+    ...pool[0], txid: '22'.repeat(32), vout: 1, frogs: [pool[0].ranges[0][0]],
+  };
+  const built = buildSendAll({
+    utxos: [...pool, fakeState, marked], recipientScript: w.keys.receive(8).script,
+    feeRate: 2, protectedSats: [5000000000000000],
+  });
+  eq('send all ignores Hopper/state coins', built.inputs.length, pool.length);
+  eq('send all total is plain BTC only', built.totalIn, total);
+  ok(!built.inputs.some((u) => u.txid === fakeState.txid || u.txid === marked.txid),
+    'send all never spends a Hopper or frog-marked coin');
+  assert.throws(() => buildSendAll({
+    utxos: [fakeState, marked], recipientScript: w.keys.receive(8).script, feeRate: 2,
+  }), /no spendable plain BTC/);
+  checks += 1;
 }
 
 {
