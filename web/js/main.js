@@ -495,6 +495,7 @@ async function boot() {
       } finally {
         setBusy(false);
         render();
+        flushScanRefresh();
       }
     }
   } catch {
@@ -645,6 +646,7 @@ async function run(label, fn) {
   } finally {
     setBusy(false);
     render();
+    flushScanRefresh();
   }
 }
 
@@ -1543,11 +1545,20 @@ function refreshOpenOverlayLive() {
   }
 }
 
-window.addEventListener('hopper:refresh', () => {
+// A scan can finish while a foreground action holds the busy overlay. Dropping
+// that repaint leaves the view stale until the next block (or a manual
+// REFRESH), so remember it and apply it as soon as run() releases the UI.
+let scanRefreshQueued = false;
+
+function applyScanRefresh() {
   if (!app.w) return;
+  // A foreground action owns the next render; queue behind it.
+  if (app.busy) { scanRefreshQueued = true; return; }
   refreshOpenOverlayLive();
   const mode = screens.scanRefreshMode(app);
-  if (mode === 'none' || mode === 'defer') return;
+  if (mode === 'none') return;
+  if (mode === 'defer') { scanRefreshQueued = true; return; }
+  scanRefreshQueued = false;
   if (mode === 'settings') {
     // Do not re-render the whole settings form while the user is editing
     // a URL; the scan and recovery windows are the live parts.
@@ -1561,7 +1572,15 @@ window.addEventListener('hopper:refresh', () => {
   }
   render();
   if (mode === 'data') void ensureViewData(app.view);
-});
+}
+
+function flushScanRefresh() {
+  if (!scanRefreshQueued || app.busy) return;
+  scanRefreshQueued = false;
+  applyScanRefresh();
+}
+
+window.addEventListener('hopper:refresh', applyScanRefresh);
 
 
 // A ledger repair can land while History is already on screen. Repaint it

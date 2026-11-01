@@ -106,10 +106,24 @@ eq('unchanged tip queries no addresses', fake.utxoCalls, beforeGate.u);
 
 const beforeWarm = { h: fake.historyCalls, u: fake.utxoCalls };
 fake.tip = 101;
-await wallet.refresh({ force: false });
+fake.hash = 'cc'.repeat(32);
+await wallet.refresh({ force: false, auto: true });
 eq('new block runs no gap walk', fake.historyCalls, beforeWarm.h);
 eq('new block asks only the fixed watch set', fake.utxoCalls - beforeWarm.u, 3);
 eq('new block watches the new tip', wallet.watchTip, 101);
+eq('new block owes two index-catch-up passes', wallet._recheckLeft, 2);
+
+// A tip can arrive before the address index has the block's transactions.
+// The two grace passes must bypass the same-tip gate and ask again.
+const beforeCatchUp = fake.utxoCalls;
+await wallet.refresh({ force: false, auto: true });
+eq('first index-catch-up pass ignores the tip gate', fake.utxoCalls - beforeCatchUp, 3);
+eq('first catch-up consumed', wallet._recheckLeft, 1);
+await wallet.refresh({ force: false, auto: true });
+eq('second index-catch-up pass ignores the tip gate', fake.utxoCalls - beforeCatchUp, 6);
+eq('catch-up window closed', wallet._recheckLeft, 0);
+await wallet.refresh({ force: false, auto: true });
+eq('after the grace passes the same tip is gated again', fake.utxoCalls - beforeCatchUp, 6);
 
 const beforeReorg = fake.utxoCalls;
 fake.hash = 'bb'.repeat(32);

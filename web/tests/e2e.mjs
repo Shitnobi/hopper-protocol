@@ -1276,6 +1276,13 @@ await evaluate(`document.querySelector('[data-action=mine][data-n="6"]').click()
 await sleep(2500);
 const after = await evaluate('document.body.innerText');
 console.log('after settle:', after.split('\n').filter(Boolean).slice(0, 10).join(' | '));
+// At genesis the target is 5; one settled hop is a survival, not HOME.
+if (!/Test Hopper survived/.test(after)) {
+  errors.push('ROAD LOG did not call the non-final settle survived');
+}
+if (/Test Hopper came home/.test(after)) {
+  errors.push('ROAD LOG called a non-final settle came home');
+}
 
 // The whole journey must read as one dependency chain. History is newest
 // first, so the non-CHANGE labels read bottom-up as

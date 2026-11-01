@@ -418,4 +418,47 @@ const demoSettled = WalletSession.prototype._localRoadEntries.call(hopWallet);
 ok(demoSettled.length === 0,
 'the demo chain releases a local HOP at its deterministic T+6 settlement');
 
+// ---- ROAD LOG distinguishes SURVIVED from came home ---------------------
+const logSat = 9000000003;
+const settleHeight = GENESIS + 26;
+const settleRow = (sat) => ({
+  height: settleHeight, txid: 'cc'.repeat(32), kind: 'settle',
+  payload: { kind: 'settle', frogger_sat: sat, outcome: 'crossed', dir: 1 },
+});
+const survivedFrog = {
+  sat: logSat, name: 'Road Roo', state: 'idle', seed: 21, gen: 1, dist: 2,
+};
+const survivedLog = screens.road({
+  w: {
+    ...demo,
+    tipHeight: settleHeight,
+    frogs: [survivedFrog],
+    history: [settleRow(logSat)],
+    frogBySat: (sat) => (Number(sat) === logSat ? survivedFrog : null),
+  },
+  settings: demo.settings,
+  road: [],
+});
+ok(survivedLog.includes('Road Roo survived') && !survivedLog.includes('Road Roo came home'),
+  'a survived non-HOME hop says survived, not came home');
+
+const homeSat = 9000000004;
+const homeFrogLog = {
+  sat: homeSat, name: 'Crown Roo', state: 'home', seed: 22, gen: 1, dist: 5,
+  immortal_height: settleHeight - 6,
+};
+const homeLog = screens.road({
+  w: {
+    ...demo,
+    tipHeight: settleHeight,
+    frogs: [homeFrogLog],
+    history: [settleRow(homeSat)],
+    frogBySat: (sat) => (Number(sat) === homeSat ? homeFrogLog : null),
+  },
+  settings: demo.settings,
+  road: [],
+});
+ok(homeLog.includes('Crown Roo came home') && !homeLog.includes('Crown Roo survived'),
+  'the settle that reaches HOME still says came home');
+
 console.log(`ui: ${checks} checks passed (fee/preview/road/emergency/hop)`);

@@ -1,5 +1,58 @@
 # HOPPER bug log
 
+## 2026-11-01 — UI scan lag and the ROAD LOG's premature HOME
+
+**Reported:** after a mined block the Road/Pond could stay on the previous
+snapshot until **RESCAN FROM CHAIN**, and every successful ROAD LOG row said
+“came home”, even when the hop only advanced one pad.
+
+**Build:** fixed in `hopper-v8-0-6`.
+
+### Root causes
+
+1. **The tip gate could permanently skip a lagging index.** `/blocks/tip/height`
+   and `/blocks/tip/hash` can publish a block before the address index has its
+   transactions. The first pass at the new height read the old UTXO set, then
+   recorded that height/hash as fully scanned. Every later pass at the same
+   tip hit the gate and asked no addresses, so the view stayed stale until the
+   next block or a forced RESCAN.
+2. **A scan repaint could be dropped while the UI was busy.** `hopper:refresh`
+   returned early with `defer`; if that landed while a foreground action held
+   the busy overlay, the pending repaint was forgotten.
+3. **ROAD LOG equated “not dead” with HOME.** Every settled `crossed` row was
+   rendered as “came home”; it never checked whether that hop reached the
+   frozen target.
+
+### Fix
+
+- `web/js/wallet/wallet.js`
+  - after an automatic pass that sees a new tip, owes **two short full passes**
+    at `TIP_RECHECK_MS = 1200`; those passes bypass the tip gate, then the gate
+    closes again. This picks up an index that was behind the tip endpoint.
+  - no extra passes on an unchanged tip or on the initial cold pass.
+- `web/js/main.js`
+  - `hopper:refresh` during a busy action is queued, not dropped; `run()`
+    flushes it after releasing the overlay.
+- `web/js/ui/screens.js`
+  - ROAD LOG says **survived** for a successful non-final hop and **came home**
+    only when `immortal_height` equals that row's crossing height
+    (`settle height − cross_finality`). The icon is HOME only for that row.
+- `web/sw.js`, `web/js/build-guard.js`: `hopper-v8-0-6`.
+- Tests
+  - `scan.test.mjs`: new tip owes two gate-bypassing passes; the third
+    unchanged-tip pass is gated again.
+  - `ui.test.mjs`: survived vs came-home ROAD LOG rows.
+  - `e2e.mjs`: a one-hop settle at genesis renders “survived”, not “came home”.
+
+### Verification
+
+- `npm test`: core 142, game ok, emergency 103, params 12, media 48,
+  scan **104**, ord 50, ui **106**, fees 19, preview 119, localmint 40,
+  chainfrog 47, history 134, rbf 125; v8 fold sync/parity/boot pass.
+- Local headless PWA E2E, build `hopper-v8-0-6`: **pass**; the settle rendered
+  “Test Hopper survived”, `console errors: none`, `e2e: ok`.
+- No protocol, wire-version, or consensus change.
+
 ## 2026-11-01 — v8 regtest E2E found three proof/anchor defects
 
 **Reported:** Full end-to-end run of the v8 consensus patches on regtest: mint, PREPARE, survive/death/HOME, SEND ALL, RBF bump, TRANSFER, recipient recovery, reorg, indexer restart, and the on-chain fold viewer.

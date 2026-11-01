@@ -10,7 +10,8 @@ import {
   btc, esc, frogImg, pips, sats, seedText, targetOf,
 } from './dom.js';
 import {
-  completionBps, generationAt, hopDeathBps, MAX_TARGET, nextIncrement, paramsHashHex, requiredAt,
+  completionBps, generationAt, hopDeathBps, MAX_TARGET, nextIncrement, paramsHashHex,
+  PROTOCOL, requiredAt,
 } from '../core/params.js';
 import { canBumpSend } from '../wallet/rbf.js';
 import { stateScripts } from '../wallet/actions.js';
@@ -401,13 +402,23 @@ function roadLog(app) {
     const name = frogName(app.w, r.sat);
     const dead = r.kind === 'settle' && String(r.outcome || '').toLowerCase() === 'dead';
     const crossed = r.kind === 'settle' && !dead;
+    // A settle row is one hop. It only says "came home" when that hop was
+    // the one that reached HOME: the mint's immortal_height is the crossing
+    // height, and this row is crossing height + cross_finality. Every other
+    // survived row is just "survived". A row for an absent/transferred
+    // record is conservative and says "survived".
+    const f = app.w.frogBySat?.(r.sat);
+    const home = crossed && f && String(f.state) === 'home'
+      && f.immortal_height != null
+      && Number.isInteger(Number(f.immortal_height))
+      && Number(f.immortal_height) === Number(r.height) - PROTOCOL.crossFinality;
     const icon = dead
       ? '<canvas data-squished width="36" height="26" style="width:36px;height:26px"></canvas>'
-      : frogImg(r.seed ?? frogSeed(app.w, r.sat), crossed ? 'home' : 'crossing', 'sprite', name);
+      : frogImg(r.seed ?? frogSeed(app.w, r.sat), home ? 'home' : (crossed ? 'idle' : 'crossing'), 'sprite', name);
     const label = dead
       ? `<span style="color:#d98a80">💀 ${esc(name)} died</span>`
       : crossed
-        ? `<span>${esc(name)} came home</span>`
+        ? `<span>${esc(name)} ${home ? 'came home' : 'survived'}</span>`
         : `<span>${esc(name)} hops on</span>`;
     return `
       <div class="card-row" data-action="bio" data-sat="${r.sat ?? ''}" style="cursor:pointer">

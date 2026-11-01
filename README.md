@@ -325,7 +325,8 @@ hop, landing with a squash and a dust puff. A `DEAD SEALED` card is a still
 dead sprite, not a hopping one. `prefers-reduced-motion` gets a still frame
 instead. Once the crossing settles at `T+6`, the frog returns to
 the direction picker with HOP available again; the settled row stays in the
-road log and History.
+road log and History. The road log says **survived** for every successful hop
+and **came home** only for the settle that reached HOME.
 
 The crossing pips are a real progress display: one dot for every hop in
 the current target (5 at genesis, rising to 25), filled to the Hopper's
@@ -481,7 +482,11 @@ curl -sN localhost:9770/v1/events/stream
   each staged Hopper. There is no HD gap walk, no receive rotation, and no
   `EXTEND`. A cold boot and every later pass ask the same scripts; only the
   one-time receive/change history backfills run on a cold pass or RESCAN. A
-  tip gate means an unchanged block asks the chain **nothing**. Public
+  tip gate means an unchanged block asks the chain **nothing**. A new tip
+  starts two short grace passes at a 1.2 s cadence: the tip endpoint can
+  publish a block before the address index has its transactions, and without
+  those passes the gate would keep the old UTXO set until the next block.
+  Public
   sources get one tip probe every ten minutes while idle, and a 30 s cadence
   only while one of our transactions is confirming. A failed tip aborts a
   background pass before any address query; a failed address stops the pass
@@ -551,7 +556,7 @@ node tests/ord.test.mjs         # public Esplora/ord defaults, ord ranges, index
 node tests/localmint.test.mjs   # 40 mint-recognition and commit-checks from the reveal witness without an indexer
 node tests/chainfrog.test.mjs   # 47 state-address replay checks: TRAVEL, HOP, settlement, mempool HOP, settled road release
 node tests/history.test.mjs     # 134 checks: deposits, copy targets, causal journey, mempool HOP order, change labels
-node tests/ui.test.mjs          # 104 checks: pond, settled/in-flight road cards, no demo controls in live mode
+node tests/ui.test.mjs          # 106 checks: pond, settled/in-flight road cards, road-log wording, no demo controls in live mode
 node tests/fees.test.mjs        # 19 fee-band/floor/cache checks
 node tests/preview.test.mjs     # 119 send/send-all/transfer/mint preview and stale-preview checks
 node tests/rbf.test.mjs         # 125 BIP125/ordinal-safety checks: plain sends only, outputs preserved

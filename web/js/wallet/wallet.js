@@ -42,6 +42,11 @@ import {
 export const PUBLIC_IDLE_TICK_MS = 10 * 60 * 1000;
 export const PUBLIC_BUSY_TICK_MS = 30 * 1000;
 export const LOCAL_TICK_MS = 3000;
+// A block hash can reach us before the address index has caught up. After a
+// new tip, do two extra full passes at this cadence, bypassing the tip gate.
+// Without them a scan that saw the new height but the old UTXO set would
+// record the tip as done and then skip every later pass at that height.
+export const TIP_RECHECK_MS = 1200;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
  *  A public source is being rate-limited when it fails, so start at a
@@ -206,6 +211,8 @@ export class WalletSession {
     this.fullScanTip = null;
     this.watchTip = null;
     this._scanTipHash = null;
+    // Extra full passes still owed after a new tip (index-catch-up grace).
+    this._recheckLeft = 0;
     this.forceWatch = false;
     this.cold = true;
     this.fails = 0;
@@ -454,6 +461,7 @@ export class WalletSession {
     this.fullScanTip = null;
     this.watchTip = null;
     this._scanTipHash = null;
+    this._recheckLeft = 0;
     this.cold = true;
     this.forceWatch = true;
     this.scan.note = note;
@@ -699,7 +707,7 @@ export class WalletSession {
           this._wakeQueued = false;
           this._scheduleNext(0);
         } else {
-          this._scheduleNext();
+          this._scheduleNext(this._recheckLeft > 0 ? TIP_RECHECK_MS : this.tickIntervalMs());
         }
       }
       this.dispatch('scan', this.scanState());
@@ -757,9 +765,21 @@ export class WalletSession {
     let force = !!forceOpt || this.forceWatch;
     this.forceWatch = false;
 
+    // A new tip starts an index-catch-up grace period. The block can reach
+    // the tip endpoint before the address index sees its transactions; if
+    // the first pass at that height records it as done, the gate below would
+    // keep serving the old UTXO set until the next block (or a manual
+    // RESCAN). Two extra passes bypass the gate and pick up the indexed
+    // result. Compare before the gate updates `_scanTipHash`.
+    const newTip = auto && this.fullScanTip != null
+      && this.tipHash != null && this._scanTipHash !== this.tipHash;
+    const recheck = this._recheckLeft > 0;
+    if (recheck) this._recheckLeft -= 1;
+
     // THE GATE. A settled answer can change only with a block. While
-    // nothing of ours is in flight, an unchanged tip costs one request.
-    if (!force && !this.scan.rescan && this.fullScanTip != null
+    // nothing of ours is in flight, an unchanged tip costs one request —
+    // except during the short recheck window after a new tip.
+    if (!force && !recheck && !this.scan.rescan && this.fullScanTip != null
         && this.watchTip === tip
         && (this.tipHash == null || this._scanTipHash === this.tipHash)
         && !this._inFlight()) {
@@ -1138,6 +1158,9 @@ export class WalletSession {
       this.fails = 0;
       this.watchTip = tip;
       this._scanTipHash = this.tipHash;
+      // The initial pass at a new tip may have read a lagging address index.
+      // Owe two full passes at the same tip; they ignore the gate.
+      if (newTip) this._recheckLeft = Math.max(this._recheckLeft, 2);
     }
     if (this.cold && !watchFailed && !pausedMidPass) {
       this.fullScanTip = tip;
