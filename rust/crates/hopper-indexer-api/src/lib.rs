@@ -170,6 +170,14 @@ impl ApiState {
                 store_engine = idx.is_store();
             }
             idx.seed_utxo(outpoint, ranges);
+            // Seeds are operator/oracle ground truth and must survive a
+            // restart even when no block has arrived since the last
+            // snapshot. Without this, a lazy ord seed lived only in the
+            // current state image and `/v1/state/root` changed on restart
+            // (the coin map lost the seed while frogs/status survived).
+            if let Err(e) = self.snapshots.force(&idx) {
+                eprintln!("[snapshot] seed {e}");
+            }
         }
         #[cfg(feature = "redb")]
         if !store_engine {

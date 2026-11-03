@@ -518,4 +518,29 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
       'CROSSED THE ROAD', 'HOPPED RIGHT']);
 }
 
+
+// A plain funding receive that happens to contain the sat later minted must
+// stay a RECEIVE. Older ledgers marked every coin containing a Hopper sat as
+// an arrival, which turned 20m-sat funding coins into HOPPER ARRIVED rows.
+{
+  const base = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
+  const txid = 'a'.repeat(64);
+  localStorage.setItem(KEYS.ledger(base.fingerprint), JSON.stringify({
+    network: 'regtest',
+    actions: [],
+    receives: [{
+      txid, amount: 20000000, address: base.receiveAddress(), height: 230,
+      frog: true, sat: 5033000000, name: 'E2E Alpha', seed: 1,
+      confirmed: true, at: '2026-11-03T16:40:14.100Z',
+    }],
+  }));
+  const w = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
+  eq('a 20m coin is not a Hopper arrival', w.receives[0].frog, false);
+  eq('the false arrival keeps its ordinary amount', w.receives[0].amount, 20000000);
+  const text = plain(history({ w }));
+  ok(/RECEIVE/.test(text), 'the demoted funding row renders as RECEIVE');
+  ok(!/HOPPER ARRIVED/.test(text), 'the demoted funding row is not a Hopper arrival');
+  localStorage.removeItem(KEYS.ledger(base.fingerprint));
+}
+
 console.log(`history: ${checks} checks passed`);

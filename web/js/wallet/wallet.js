@@ -250,7 +250,16 @@ export class WalletSession {
     if (!l) return;
     this.actions = l.actions || [];
     this.receives = Array.isArray(l.receives)
-      ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
+      ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0).map((r) => {
+        // Older ledgers could mark any coin that *contained* a minted sat as
+        // a Hopper arrival. A real arrival is the ord-address reveal/transfer
+        // output (1,000 sats or a 25,000-sat card minus fee); a 20m funding
+        // coin is an ordinary receive that merely held the future sat.
+        if (r.frog && Number(r.amount) > CARD_VALUE) {
+          return { ...r, frog: false, sat: null, name: null, seed: null };
+        }
+        return r;
+      }) : [];
     this.receivesVersion = Number(l.receivesVersion) || 0;
     this.changes = Array.isArray(l.changes)
       ? l.changes.filter((r) => r && r.txid && Number(r.amount) >= 0) : [];
@@ -1654,7 +1663,7 @@ export class WalletSession {
       if (!u?.address || u.kind === 'state' || u.unconfirmed) continue;
       const txid = String(u.txid || '').toLowerCase();
       const record = frogAt.get(`${txid}:${Number(u.vout)}`)
-        || (Array.isArray(u.frogs) && u.frogs.length
+        || (u.kind === 'frog' && Array.isArray(u.frogs) && u.frogs.length
           ? { sat: Number(u.frogs[0]), name: null, seed: null } : null);
       if (record) frogForTx.set(txid, record);
     }
@@ -1665,7 +1674,7 @@ export class WalletSession {
       if (!txid || commits.has(txid)) continue;
       const action = actions.get(txid) || null;
       const record = frogAt.get(`${txid}:${Number(u.vout)}`)
-        || (Array.isArray(u.frogs) && u.frogs.length
+        || (u.kind === 'frog' && Array.isArray(u.frogs) && u.frogs.length
           ? { sat: Number(u.frogs[0]), name: null, seed: null } : null);
       // A transaction we built has no receive row for its ordinary change.
       // Its frog output is still a real arrival and gets its own row.

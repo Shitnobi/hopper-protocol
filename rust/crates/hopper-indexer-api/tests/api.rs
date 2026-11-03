@@ -13,6 +13,7 @@ use hopper_core::wrap::dies;
 use hopper_core::{encode_parent_tag, StateBody};
 use hopper_indexer::state_machine::{Indexer, IndexerConfig};
 use hopper_indexer::types::{Block, InscriptionReveal, OutPoint, Tx, TxInput, TxOut};
+use hopper_indexer_api::persist::SnapshotStore;
 use hopper_indexer_api::{app, ApiState};
 use http_body_util::BodyExt;
 use std::sync::Arc;
@@ -1377,4 +1378,30 @@ async fn serve_refuses_a_public_bind_without_an_admin_token() {
         .await
         .expect_err("public bind without a token must be refused");
     assert!(err.to_string().contains("HOPPER_ADMIN_TOKEN"), "{err}");
+}
+
+#[test]
+fn lazy_ord_seed_forces_a_snapshot() {
+    let dir = std::env::temp_dir().join(format!("hopper-lazy-seed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("snap.bin");
+    let state = Arc::new(ApiState::with_snapshots(
+        Indexer::new(seeded_config()),
+        SnapshotStore::new(path.clone(), 1000, None),
+    ));
+
+    // The lazy `/v1/utxo` ord oracle path calls this without a block. Before
+    // the fix the seed lived only in the live state image, so a restart at
+    // the same tip returned a different `/v1/state/root`.
+    state.seed_utxo(op(7, 0), vec![SatRange::new(SAT, SAT + CARD)]);
+    let root = state.read().state_root();
+    assert_eq!(state.read().seeds().len(), 1);
+
+    let restored = SnapshotStore::load_with_params(&path, &ProtocolParams::fixture_fast())
+        .expect("snapshot load")
+        .expect("a lazy seed must write a snapshot");
+    assert_eq!(restored.state_root(), root);
+    assert_eq!(restored.seeds().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
 }

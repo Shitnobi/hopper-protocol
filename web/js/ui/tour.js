@@ -76,6 +76,7 @@ export function playIntro(host, onDone) {
 // ---------------------------------------------------------------------------
 
 const DESIGNS = [3, 11, 29, 47, 61, 88];
+const lerp = (a, b, t) => a + (b - a) * t;
 
 export function paintRulesArt(canvas, art, page, time) {
   if (!canvas) return;

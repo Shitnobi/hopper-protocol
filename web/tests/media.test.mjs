@@ -8,6 +8,7 @@ import { FROG_MARK_ROWS, FROG_MARK_SIZE, frogMarkSvg, paintFrogMark } from '../j
 import { POND_MARK_ROWS, POND_MARK_SIZE, pondMarkSvg, roadFrogFrame, SIDE_CAR_MAP, paintSideCar } from '../js/ui/theme.js';
 import { pipPlan, pips, targetOf } from '../js/ui/dom.js';
 import { GENESIS, requiredAt } from '../js/core/params.js';
+import { paintRulesArt } from '../js/ui/tour.js';
 
 let checks = 0;
 const ok = (cond, message) => {
@@ -214,5 +215,36 @@ ok(targetOf({ state: 'idle', dist: 5, last_target_hops: 5 }, tip) === requiredAt
 ok(targetOf({ state: 'crossing', in_flight: { target_hops: 5 }, last_target_hops: 5 }, tip) === 5, 'an in-flight frog keeps its frozen target');
 ok(targetOf({ state: 'dead', dist: 4, last_target_hops: 5 }, tip) === 5, 'a dead frog keeps the last target it faced');
 ok(targetOf({ state: 'home', dist: 5 }, tip) === 5, 'a home frog shows the target it reached');
+
+
+// ---- rules art smoke --------------------------------------------------
+// Page 6's side-view car uses the same cutscene sprite; the animated rules
+// painter must run without a browser-side helper being left undefined.
+{
+  const noop = () => {};
+  const ctx = new Proxy({}, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (prop === 'measureText') return () => ({ width: 12 });
+      if (prop === 'createImageData') return (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      if (prop === 'getImageData') return (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
+        return () => ({ addColorStop: noop });
+      }
+      return noop;
+    },
+    set(target, prop, value) { target[prop] = value; return true; },
+  });
+  const canvas = () => ({
+    width: 0, height: 0,
+    getBoundingClientRect: () => ({ width: 600, height: 190 }),
+    getContext: () => ctx,
+  });
+  globalThis.window = { devicePixelRatio: 1 };
+  globalThis.document = { createElement: () => canvas() };
+  const target = canvas();
+  paintRulesArt(target, 'squish', 5, 1.9);
+  ok(target.width === 600 && target.height === 190, 'the rules canvas uses its measured size');
+}
 
 console.log(`media: ${checks} checks passed`);

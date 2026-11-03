@@ -1,5 +1,40 @@
 # HOPPER bug log
 
+## 2026-11-03 — Regtest E2E found three defects (rules car, false arrivals, seed snapshots)
+
+**Found during:** the full v8 browser E2E against Bitcoin Core 31.1 + electrs/Esplora + ord 0.22.2 on regtest.
+
+**Build:** fixed in `hopper-v8-0-10`.
+
+### 1. Rules page 6 threw `ReferenceError: lerp is not defined`
+
+`web/js/ui/tour.js` used a `lerp` helper in the `squish` car animation but never defined it. The page still painted its static parts, so the unit suite passed; the browser console errored on every animation tick.
+
+Fix: define `lerp(a, b, t)`. `web/tests/media.test.mjs` now runs `paintRulesArt()` against a fake canvas so an undefined painter helper fails the suite.
+
+### 2. History turned any coin containing a minted sat into HOPPER ARRIVED
+
+`_recordObservedReceives()` treated `u.frogs` on an ordinary BIP84 coin as a Hopper arrival. Funding/change coins that merely contained a future frog sat therefore became 20,000,000-sat or 59,920,110-sat “HOPPER ARRIVED” rows. Older ledgers persisted the bad rows.
+
+Fix: only the ord-address (`kind: 'frog'`) output can become a Hopper arrival; `_loadLedger()` demotes legacy `frog` rows whose amount exceeds `CARD_VALUE` back to ordinary RECEIVE. `web/tests/history.test.mjs` covers the migration.
+
+### 3. Lazy ord seeds lived only in memory until the next block snapshot
+
+`ApiState::seed_utxo()` (the `/v1/utxo` ord-oracle path) did not force a snapshot. `/v1/state/root` could change after a restart at the same tip because the coin map lost the seed while frogs/status survived.
+
+Fix: force a snapshot after every lazy seed, matching `/v1/admin/seed`. `crates/hopper-indexer-api/tests/api.rs` asserts the snapshot exists and restores the same root.
+
+### Verification
+
+- `npm test`: core 142, game ok, emergency 105, params 12, media **55**, scan 104, ord 50, ui 106, fees 19, preview 119, localmint 40, chainfrog 47, history **138**, rbf 125; v8 fold sync/parity/doc boot pass.
+- `cargo test --workspace`: pass.
+- Real-regtest full E2E: pass after the fixes; see the report in `~/AI/regtest-e2e-v8-009/E2E-REPORT.md`.
+- Local PWA smoke on `hopper-v8-0-10`: no console errors; cache serves the new build.
+
+### Deployment
+
+- `web/sw.js`, `web/js/build-guard.js`: `hopper-v8-0-10`.
+
 ## 2026-11-01 — Rules page 6 used the top-down car, not the cutscene car
 
 **Reported:** the “THE BLOCK DECIDES” page drove the old top-down arcade car
