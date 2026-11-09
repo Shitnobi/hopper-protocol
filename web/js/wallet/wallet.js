@@ -7,6 +7,7 @@
 import {
   bytesToHex, equalBytes, hexToBytes, reverseBytes,
 } from '../core/hex.js';
+import { containsSat } from '../core/satmath.js';
 import {
   CARD_VALUE, GENESIS, NUMS_XONLY, WIRE_VERSION, generationAt, isGrandfatheredSat,
   paramsHashHex, requiredAt,
@@ -198,6 +199,10 @@ export class WalletSession {
     // F-04: a mint commit is a funded on-chain output. Persist the signed
     // reveal and the recovery material before the commit is broadcast.
     this.pendingMints = [];
+    // Mints whose commit+reveal are already broadcast but whose reveal output
+    // is not attributable yet (ord/indexer lag). Kept so the pond can show
+    // the sat INSCRIBING until the record is discovered, then pruned.
+    this.inflightMints = [];
     this.imported = new Set();
     // State outputs sit at scripts that are not on an HD index. Once a local
     // mint reveals one, remember its address/script/outpoint so the warm
@@ -270,6 +275,8 @@ export class WalletSession {
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
     this.pendingMints = Array.isArray(l.pendingMints)
       ? l.pendingMints.filter((p) => p && p.commitTxid && p.revealHex) : [];
+    this.inflightMints = Array.isArray(l.inflightMints)
+      ? l.inflightMints.filter((p) => p && Number.isSafeInteger(Number(p.sat))) : [];
     this.history = l.history || [];
     this.mempool = Array.isArray(l.mempool)
       ? l.mempool.filter((m) => m && m.txid && Number.isSafeInteger(m.amount) && m.amount > 0)
@@ -305,6 +312,7 @@ export class WalletSession {
       chainMints: this.chainMints.slice(-300),
       pending: this.pending.slice(-24),
       pendingMints: this.pendingMints.slice(-12),
+      inflightMints: this.inflightMints.slice(-12),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
       imported: [...this.imported],
@@ -885,7 +893,14 @@ export class WalletSession {
       // F-07/F-13: a state script does not prove which sats it holds. Ask
       // the same range source as any other coin and require value agreement.
       const dtos = await mapLimit(list, 2, async (u) => {
-        try { return await this.backend.utxo(u.txid, u.vout); } catch { return null; }
+        // Transient oracle failures (429 bursts, an indexer restart) are not
+        // an answer. Retry briefly before treating the coin as unanswerable.
+        for (let attempt = 0; ; attempt++) {
+          try { return await this.backend.utxo(u.txid, u.vout); } catch (e) {
+            if (attempt >= 2) return null;
+            await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+          }
+        }
       });
       // The UTXO answer already carries mempool status. Aggregate outputs
       // from one transaction into one history row; nothing here asks the
@@ -902,7 +917,19 @@ export class WalletSession {
         mempoolByTx.set(txid, row);
       });
       list.forEach((u, i) => {
-        const dto = dtos[i];
+        let dto = dtos[i];
+        // A range oracle that does not answer (rate limit, restart, hiccup)
+        // is not evidence that a still-unspent coin lost its ranges: sat
+        // composition is immutable for a fixed outpoint. Carry the previous
+        // pass's answer forward so a 429 burst cannot blank the balance and
+        // brick coin selection until the next lucky pass.
+        if (!dto) {
+          const prev = previousUtxos.find((p) => String(p.txid).toLowerCase() === String(u.txid).toLowerCase()
+            && Number(p.vout) === Number(u.vout));
+          if (prev && prev.exact === true && Array.isArray(prev.ranges) && prev.ranges.length) {
+            dto = { value: Number(prev.value), ranges: prev.ranges.map(([a, b]) => [a, b + 1]), exact: true, frogs: prev.frogs || [] };
+          }
+        }
         // The backend's `ranges` are inclusive in this app; DemoBackend and
         // the indexer DTO already use inclusive ends.
         // Prefer the range oracle. A chain adapter may already carry
@@ -1019,6 +1046,33 @@ export class WalletSession {
     // Fill in mints whose reveal is already spent. The parse above wins for
     // a reveal still in `utxos`; these rows only add missing sats.
     this._seedChainMints(records, candidates, previousFrogs, utxos);
+    // Pending mints: the commit/reveal pair is broadcast but the reveal
+    // output is not attributable yet (ord/indexer lag while it is
+    // unconfirmed). The sat still owns a pond slot — as an INSCRIBING
+    // record — so the GUI shows the mint as in flight instead of silently
+    // missing until confirmation. The discovered record always wins.
+    this._pruneInflightMints(records);
+    for (const pkg of [...(this.pendingMints || []), ...(this.inflightMints || [])]) {
+      const sat = Number(pkg.sat);
+      if (!Number.isSafeInteger(sat) || records.has(sat)) continue;
+      records.set(sat, {
+        sat,
+        seed: pkg.seed >>> 0,
+        name: pkg.name || '',
+        state: 'idle',
+        dist: 0,
+        crossings_entered: 0,
+        crossings_settled: 0,
+        deaths: 0,
+        mint_height: 0,
+        mint_txid: String(pkg.revealTxid || '').toLowerCase(),
+        commit: String(pkg.commitTxid || '').toLowerCase(),
+        location: { txid: String(pkg.revealTxid || '').toLowerCase(), vout: 0 },
+        wire_version: WIRE_VERSION,
+        commit_pending: true,
+      });
+      candidates.add(sat);
+    }
     if (localMints.length) {
       notes.push(`${localMints.length} Hopper mint${localMints.length === 1 ? '' : 's'} recognized from the ord address`);
     }
@@ -1108,6 +1162,11 @@ export class WalletSession {
     for (const u of utxos) unique.set(`${u.txid}:${u.vout}`, u);
     this.utxos = [...unique.values()].sort((a, b) => b.value - a.value);
     this.frogs = frogs.sort((a, b) => b.dist - a.dist || a.sat - b.sat);
+    // A mining reward is not spendable for 100 blocks. Classify before the
+    // balance and the funding pools are computed, or coin selection picks a
+    // coin the node rejects (bad-txns-premature-spend-of-coinbase).
+    await this._classifyCoinbases({ tip });
+    this._tagImportedSats();
     // Keep the automatic layout packs beside the live state. The snapshot
     // only replaces a pack when the state outpoint or tree actually moves;
     // a partial scan never deletes a copy.
@@ -1170,6 +1229,25 @@ export class WalletSession {
       // The initial pass at a new tip may have read a lagging address index.
       // Owe two full passes at the same tip; they ignore the gate.
       if (newTip) this._recheckLeft = Math.max(this._recheckLeft, 2);
+      // Indexer catch-up: a just-confirmed mint lands in the frogger store a
+      // few passes after the block, and once the recheck window closes the
+      // tip gate would keep serving the empty pond until the next block (or
+      // a manual rescan). While sats we own still have no record, keep one
+      // extra pass alive — bounded per tip so a permanently ignorant index
+      // cannot turn into an endless poll.
+      const ownWithoutRecord = [...this.imported]
+        .map(Number).filter(Number.isSafeInteger)
+        .filter((sat) => !(this.frogs || []).some((f) => Number(f.sat) === sat));
+      if (ownWithoutRecord.length && this.tipHash) {
+        const key = this.tipHash;
+        this._catchupPasses = this._catchupPasses || new Map();
+        const n = (this._catchupPasses.get(key) || 0) + 1;
+        this._catchupPasses.set(key, n);
+        for (const k of this._catchupPasses.keys()) {
+          if (k !== key) this._catchupPasses.delete(k);
+        }
+        if (n <= 24) this._recheckLeft = Math.max(this._recheckLeft, 1);
+      }
     }
     if (this.cold && !watchFailed && !pausedMidPass) {
       this.fullScanTip = tip;
@@ -2215,7 +2293,8 @@ export class WalletSession {
     const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
     for (const u of this.utxos) {
       const value = BigInt(u.value);
-      const plain = u.kind === 'p2wpkh' && !(u.frogs && u.frogs.length);
+      const protectedHits = (u.importedSats && u.importedSats.length) || (u.frogs && u.frogs.length);
+      const plain = u.kind === 'p2wpkh' && !protectedHits;
       total += value;
       if (u.unconfirmed) pending += value;
       // Exact ranges keep a coin safe from sweeping an ordinal into a fee.
@@ -2230,6 +2309,28 @@ export class WalletSession {
       else unspendable += value;
     }
     this.balance = { total, spendable, cards, unspendable, pending };
+  }
+
+  /** A sat this wallet imported (recovery import) without a frog record can
+   *  sit inside an ordinary plain coin. The indexer only attributes FROGGERS
+   *  to coins, so the wallet must attribute its own imported sats: spending
+   *  such a coin to an ordinary recipient would send the protected sat away,
+   *  and the last-line proveAssignment guard would refuse the build — the
+   *  user would see sends fail with a cryptic refusal instead of an honest
+   *  balance. Tag the coin, hold it out of plain funding, and bucket it with
+   *  the cards. */
+  _tagImportedSats() {
+    if (!(this.imported instanceof Set) || !this.imported.size) return;
+    for (const u of this.utxos) {
+      if (u.kind !== 'p2wpkh' || !u.exact || !Array.isArray(u.ranges) || !u.ranges.length) continue;
+      if (u.frogs && u.frogs.length) continue;
+      const hits = [...this.imported].map(Number)
+        .filter((s) => Number.isSafeInteger(s) && containsSat(u.ranges, s));
+      if (hits.length) {
+        u.importedSats = hits;
+        u.spendable = false;
+      }
+    }
   }
 
   /** Format the fingerprint exactly as the export does. */
@@ -2398,10 +2499,81 @@ export class WalletSession {
     // Funding inputs are BIP84 P2WPKH, never the frog address or a card.
     // A confirmed coin needs exact sat ranges. An unconfirmed exact coin is
     // usable only when the user allows mempool funds; this same pool feeds
-    // mint/travel/hop, so the opt-out is global.
+    // mint/travel/hop, so the opt-out is global. Immature coinbases are
+    // marked spendable:false by _classifyCoinbases and never selected.
     const spendUnconfirmed = this.settings.spendUnconfirmed !== false;
     return this.utxos.filter((u) => u.kind === 'p2wpkh' && u.exact
-      && !(u.frogs && u.frogs.length) && (!u.unconfirmed || spendUnconfirmed));
+      && u.spendable !== false
+      && !(u.frogs && u.frogs.length) && !(u.importedSats && u.importedSats.length)
+      && (!u.unconfirmed || spendUnconfirmed));
+  }
+
+  /** Coinbase outputs need COINBASE_MATURITY (100) confirmations before the
+   *  node will let anyone spend them. Classify every confirmed plain coin
+   *  whose funding transaction is not yet known: a coinbase funding tx is
+   *  one with a single all-zero prevout. The answer is immutable per txid,
+   *  so it is cached for the session. An immature coin is marked
+   *  spendable:false with a maturity countdown the UI can show. */
+  async _classifyCoinbases({ tip }) {
+    if (typeof this.backend?.getTxHex !== 'function') return;
+    if (!this._coinbaseTxs) this._coinbaseTxs = new Map();
+    const COINBASE_MATURITY = 100;
+    const ZERO = '0'.repeat(64);
+    const todo = this.utxos.filter((u) => u.kind === 'p2wpkh'
+      && !u.unconfirmed && !this._coinbaseTxs.has(u.txid));
+    await mapLimit(todo, 4, async (u) => {
+      if (this._coinbaseTxs.has(u.txid)) return;
+      let coinbase = false;
+      try {
+        const hex = await this.backend.getTxHex(u.txid);
+        if (hex) {
+          const inputs = parseTx(hex).inputs;
+          coinbase = inputs.length === 1 && inputs[0].txid === ZERO;
+        }
+      } catch { /* an unanswerable tx stays unclassified, not a coinbase */ }
+      this._coinbaseTxs.set(u.txid, coinbase);
+    });
+    for (const u of this.utxos) {
+      if (this._coinbaseTxs.get(u.txid) !== true) continue;
+      const height = Number(u.status?.block_height ?? u.status?.height);
+      const confirms = Number.isInteger(height) && height > 0 && Number(tip) >= height
+        ? tip - height + 1 : 0;
+      u.coinbase = true;
+      if (confirms < COINBASE_MATURITY) {
+        u.spendable = false;
+        u.maturity = { required: COINBASE_MATURITY, confirms, remaining: COINBASE_MATURITY - confirms };
+      } else {
+        delete u.maturity;
+        // Restore the scan-time spendable rule now that maturity is not
+        // holding the coin back (a live session can watch a coin mature).
+        u.spendable = u.exact !== false && !(u.frogs && u.frogs.length);
+      }
+    }
+  }
+
+  /** After a successful broadcast, remove the spent outpoints from the
+   *  session coin set immediately. The refresh that follows may be gated by
+   *  an unchanged tip, and a still-cached coin would let the next preview
+   *  rebuild a conflicting transaction the node rejects. If the broadcast is
+   *  later evicted, the next scan re-adds the coins. */
+  _dropSpentCoins(...hexes) {
+    const spent = new Set();
+    for (const hex of hexes) {
+      if (!hex) continue;
+      try {
+        for (const vin of parseTx(hex).inputs) {
+          if (!vin.txid || /^0{64}$/.test(vin.txid)) continue;
+          spent.add(`${vin.txid.toLowerCase()}:${vin.vout >>> 0}`);
+        }
+      } catch { /* unparsable hex cannot mark anything */ }
+    }
+    if (!spent.size) return;
+    const kept = this.utxos.filter((u) =>
+      !spent.has(`${String(u.txid).toLowerCase()}:${Number(u.vout)}`));
+    if (kept.length !== this.utxos.length) {
+      this.utxos = kept;
+      this._computeBalance();
+    }
   }
 
   /** SEND uses the same fail-closed funding pool as every other action.
@@ -2473,6 +2645,32 @@ export class WalletSession {
     return (this.pendingMints || []).map((p) => ({ ...p }));
   }
 
+  /** A broadcast mint whose reveal is not attributable yet. The pond shows
+   *  this sat as INSCRIBING; discovery (or age) retires the row. */
+  _addInflightMint({ sat, seed, name, commitTxid, revealTxid }) {
+    if (!Number.isSafeInteger(Number(sat))) return;
+    const row = {
+      sat: Number(sat), seed: Number(seed) >>> 0, name: String(name || ''),
+      commitTxid: String(commitTxid || '').toLowerCase(),
+      revealTxid: String(revealTxid || '').toLowerCase(),
+      at: Date.now(),
+    };
+    this.inflightMints = [row, ...(this.inflightMints || [])
+      .filter((p) => Number(p.sat) !== row.sat)].slice(0, 12);
+    this._saveLedger();
+  }
+
+  /** Retire in-flight mints once their record is discoverable (or stale). */
+  _pruneInflightMints(records) {
+    if (!(this.inflightMints || []).length) return;
+    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+    const keep = this.inflightMints.filter((p) => !records.has(Number(p.sat)) && Number(p.at) > cutoff);
+    if (keep.length !== this.inflightMints.length) {
+      this.inflightMints = keep;
+      this._saveLedger();
+    }
+  }
+
   /** Re-broadcast a persisted commit/reveal pair. Replaying the same signed
    *  bytes is safe; repricing needs a fresh preview. */
   async retryPendingMint(commitTxid) {
@@ -2482,6 +2680,7 @@ export class WalletSession {
     if (!pkg.commitAccepted) {
       await this.backend.broadcast(pkg.commitHex);
       pkg.commitAccepted = true;
+      this._dropSpentCoins(pkg.commitHex, pkg.revealHex);
       this._upsertPendingMint(pkg);
     }
     try {
@@ -2983,6 +3182,7 @@ export class WalletSession {
         rbf = { eligible: false, reason: e.message || String(e), policy: RBF_POLICY };
       }
       await this.backend.broadcast(preview.built.hex);
+      this._dropSpentCoins(preview.built.hex);
       this._recordAction({
         kind: 'send', txid: preview.built.txid, to: preview.to, amount: String(preview.amountNumber),
         fee: Number(preview.built.fee), rbf,
@@ -3017,6 +3217,7 @@ export class WalletSession {
       }
       pkg.commitAccepted = true;
       this._upsertPendingMint(pkg);
+      this._dropSpentCoins(built.commit.hex, built.reveal.hex);
       try {
         await this.backend.broadcast(built.reveal.hex);
       } catch (e) {
@@ -3029,6 +3230,8 @@ export class WalletSession {
         throw err;
       }
       this._dropPendingMint(pkg.commitTxid);
+      this._addInflightMint({ sat: built.sat, seed: preview.seed, name: preview.name,
+        commitTxid: built.commit.txid, revealTxid: built.reveal.txid });
       // The reveal is the mint. Tell the UI immediately so its seed draft can
       // rotate even if the post-broadcast refresh (below) fails.
       if (onMintBroadcast) {
@@ -3045,12 +3248,14 @@ export class WalletSession {
       this.imported.add(Number(built.sat));
     } else if (preview.kind === 'transfer') {
       await this.backend.broadcast(preview.built.hex);
+      this._dropSpentCoins(preview.built.hex);
       this._recordAction({
         kind: 'transfer', sat: preview.frogSat, txid: preview.built.txid, to: preview.to,
       });
       this.imported.delete(Number(preview.frogSat));
     } else if (preview.kind === 'hop') {
       await this.backend.broadcast(preview.built.hex);
+      this._dropSpentCoins(preview.built.hex);
       this._recordAction({
         kind: 'cross', sat: preview.frogSat, txid: preview.built.txid, dir: preview.dir,
         settled: false, at: new Date().toISOString(),
@@ -3130,8 +3335,23 @@ export class WalletSession {
       throw new Error('that transaction is already confirmed');
     }
     let live;
-    try { live = await this.backend.getTx(txid); } catch {
-      throw new Error('the original transaction is no longer in the mempool');
+    try { live = await this.backend.getTx(txid); } catch (e) {
+      // Some Electrum servers (the Blockstream esplora-electrs fork) refuse
+      // verbose answers entirely: "verbose transactions are currently
+      // unsupported". For that error — and only that error — fall back to a
+      // plain hex fetch; any other failure (404, transport) means the
+      // transaction is gone.
+      if (!/verbose/i.test(e?.message || '')) {
+        throw new Error('the original transaction is no longer in the mempool');
+      }
+      let liveHexOnly = null;
+      try { liveHexOnly = await this.backend.getTxHex(txid); } catch { liveHexOnly = null; }
+      if (liveHexOnly) {
+        live = { txid, hex: liveHexOnly, outputs: [], status: {} };
+      } else {
+        throw new Error('the original transaction is no longer in the mempool'
+          + ' (the chain source answered neither the transaction nor its bytes)');
+      }
     }
     if (!live) throw new Error('the original transaction is no longer in the mempool');
     const st = live.status || {};

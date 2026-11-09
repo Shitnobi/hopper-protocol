@@ -65,7 +65,7 @@ function safeRanges(raw, what) {
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new RbfSafetyError(`${what} has no known sat ranges`);
   }
-  return raw.map((pair) => {
+  const parsed = raw.map((pair) => {
     if (!Array.isArray(pair) || pair.length !== 2) {
       throw new RbfSafetyError(`${what} has a malformed sat range`);
     }
@@ -74,6 +74,19 @@ function safeRanges(raw, what) {
     if (a < 0 || b < a) throw new RbfSafetyError(`${what} has an empty sat range`);
     return [a, b];
   });
+  // Canonical form: ascending by start, adjacent/overlapping ranges merged.
+  // The indexer's FIFO assignment walks a transaction's inputs in input
+  // order, so a coin descended from a multi-input send can legitimately
+  // carry a lower range after a higher one. The sat SET is what safety
+  // checks reason about; order is not a security property.
+  parsed.sort((p, q) => p[0] - q[0]);
+  const merged = [];
+  for (const [a, b] of parsed) {
+    const last = merged[merged.length - 1];
+    if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+    else merged.push([a, b]);
+  }
+  return merged;
 }
 
 export function rangesContainAny(ranges, sats) {
@@ -86,8 +99,20 @@ export function rangesContainAny(ranges, sats) {
 
 /** Snapshot only the fields a later bump may trust. No private keys. */
 export function fundingSnapshot(u, protectedSats = []) {
-  const ranges = Array.isArray(u?.ranges) && u.ranges.length
+  const rawRanges = Array.isArray(u?.ranges) && u.ranges.length
     ? u.ranges.map(([a, b]) => [Number(a), Number(b)])
+    : null;
+  // Canonical form: ascending, adjacent merged. The indexer's FIFO
+  // assignment can emit a lower range after a higher one on coins descended
+  // from multi-input sends; the sat set is what safety reasons about.
+  const ranges = rawRanges
+    ? (rawRanges.sort((p, q) => p[0] - q[0]),
+       rawRanges.reduce((acc, [a, b]) => {
+         const last = acc[acc.length - 1];
+         if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+         else acc.push([a, b]);
+         return acc;
+       }, []))
     : null;
   const keyRef = u?.keyRef && Number.isInteger(Number(u.keyRef.branch))
     && Number.isInteger(Number(u.keyRef.index))

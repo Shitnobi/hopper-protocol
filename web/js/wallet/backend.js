@@ -40,6 +40,22 @@ function sameRangeSet(a, b) {
     && Number(r[0]) === Number(b[i][0]) && Number(r[1]) === Number(b[i][1]));
 }
 
+/** Canonical half-open range list: ascending by start, adjacent/overlapping
+ *  merged. The sat SET is the only thing the F-13 disagreement check reasons
+ *  about — the indexer emits merged ranges while ord splits fee-adjacent
+ *  pieces, and neither source guarantees order. */
+function canonicalRangeSet(ranges) {
+  if (!Array.isArray(ranges)) return [];
+  const sorted = ranges.map((r) => [Number(r[0]), Number(r[1])]).sort((p, q) => p[0] - q[0]);
+  const out = [];
+  for (const [a, b] of sorted) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
 function corsOriginHint() {
   const origin = typeof location !== 'undefined' && location.origin
     ? location.origin
@@ -662,18 +678,19 @@ export class LiveBackend {
       catch { direct = null; }
     }
     // F-13: two sources that disagree are not a reason to pick the nicer
-    // answer. Fail closed. ord is canonical when it answers.
+    // answer. Fail closed. ord is canonical when it answers. The comparison
+    // is set-based: merged, order-insensitive.
     if (direct && fromIndexer) {
       if (Number(fromIndexer.value) !== Number(direct.value)) {
         throw new Error(`ord/indexer disagree on ${txid}:${vout} value`);
       }
       if (fromIndexer.exact && fromIndexer.ranges?.length
-          && !sameRangeSet(fromIndexer.ranges, direct.ranges)) {
+          && !sameRangeSet(canonicalRangeSet(fromIndexer.ranges), canonicalRangeSet(direct.ranges))) {
         throw new Error(`ord/indexer disagree on ${txid}:${vout} sat ranges`);
       }
     }
-    if (direct) return { ...direct, frogs: fromIndexer?.frogs || [] };
-    if (fromIndexer) return fromIndexer;
+    if (direct) return { ...direct, ranges: canonicalRangeSet(direct.ranges), frogs: fromIndexer?.frogs || [] };
+    if (fromIndexer) return { ...fromIndexer, ranges: canonicalRangeSet(fromIndexer.ranges) };
     return null;
   }
   async road() { return this.indexer ? this.indexer.road() : { active: [] }; }
