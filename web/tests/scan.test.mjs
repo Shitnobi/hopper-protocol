@@ -313,4 +313,192 @@ wallet.stop();
   eq('storage denial leaves no vault', settingsStore.has('hopper.vault.v1'), false);
 }
 
+// --- coinbase maturity and broadcast coin hygiene -------------------------
+{
+  // A different mnemonic keeps this session's ledger out of the main one's.
+  const w2 = new WalletSession({
+    mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  const coinTxid = 'cd'.repeat(32);
+  const cb = (height, over = {}) => ({
+    txid: coinTxid, vout: 0, value: 5000000000,
+    script: w2.keys.receive(0).script, address: w2.keys.receive(0).address,
+    kind: 'p2wpkh', exact: true, spendable: true, frogs: [],
+    ranges: [[9000000, 9000000 + 5000000000 - 1]],
+    key: w2.keys.receive(0), keyRef: { branch: 0, index: 0 },
+    status: { confirmed: true, block_height: height },
+    unconfirmed: false, ...over,
+  });
+  class CoinbaseBackend extends FakeBackend {
+    async addressUtxos() { return [cb(151)]; }
+    async getTxHex() {
+      // A real coinbase transaction: one all-zero prevout, one output.
+      return '01000000' + '01' + '00'.repeat(32) + 'ffffffff' + '00' + 'ffffffff'
+        + '01' + '00f2052a01000000' + '00' + '00000000';
+    }
+  }
+  w2.backend = new CoinbaseBackend(200);
+  w2._autoSync = false;
+  w2.utxos = [cb(151)];
+  await w2._classifyCoinbases({ tip: 200 });
+  eq('a coinbase coin is classified', w2.utxos[0].coinbase, true);
+  eq('an immature coinbase is unspendable', w2.utxos[0].spendable, false);
+  eq('the maturity countdown is exact', w2.utxos[0].maturity, { required: 100, confirms: 50, remaining: 50 });
+  eq('an immature coinbase is out of the funding pool', w2._funding(), []);
+  await w2._classifyCoinbases({ tip: 260 });
+  eq('a matured coinbase returns to the funding pool', w2._funding().length, 1);
+  eq('the maturity countdown clears', w2.utxos[0].maturity, undefined);
+
+  // The same classification must ignore a plain transaction.
+  class PlainBackend extends CoinbaseBackend {
+    async getTxHex() {
+      return '01000000' + '01' + '11'.repeat(32) + '00000000' + '00' + 'ffffffff'
+        + '01' + '00f2052a01000000' + '00' + '00000000';
+    }
+  }
+  const w3 = new WalletSession({
+    mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  w3.backend = new PlainBackend(200);
+  w3._autoSync = false;
+  w3.utxos = [cb(151)];
+  await w3._classifyCoinbases({ tip: 200 });
+  eq('a plain funding tx is not a coinbase', w3.utxos[0].coinbase, undefined);
+  eq('a plain funding tx stays spendable', w3.utxos[0].spendable, true);
+
+  // A broadcast must drop its own spent outpoints at once, or a second
+  // send before the next scan rebuilds a conflicting transaction.
+  const spendHex = '02000000' + '01' + Buffer.from(coinTxid, 'hex').reverse().toString('hex')
+    + '00000000' + '00' + 'ffffffff' + '01' + '40420f0000000000' + '00' + '00000000';
+  const other = { ...cb(151), txid: 'ee'.repeat(32), vout: 1 };
+  w2.utxos = [cb(151), other];
+  w2._coinbaseTxs = new Map();
+  w2._computeBalance();
+  const totalBefore = w2.balance.total;
+  w2._dropSpentCoins(spendHex);
+  eq('the broadcast input leaves the coin set at once', w2.utxos.length, 1);
+  eq('the untouched coin stays', w2.utxos[0].txid, other.txid);
+  eq('the balance follows the dropped coin', String(w2.balance.total), String(totalBefore - 5000000000n));
+  w2._dropSpentCoins('zz');
+  eq('unparsable hex marks nothing', w2.utxos.length, 1);
+
+  // An imported sat (recovery import, no frog record) can sit inside an
+  // ordinary plain coin. The wallet must attribute it to the coin: hold it
+  // out of plain funding and bucket it with the cards — otherwise coin
+  // selection keeps offering the coin and the last-line protection refuses
+  // every send with a cryptic error while the GUI shows a healthy balance.
+  const w4 = new WalletSession({
+    mnemonic: 'legal winner thank year wave sausage worth useful legal winner thank yellow',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  w4.backend = new FakeBackend(200);
+  w4._autoSync = false;
+  const carrier = { ...cb(151), ranges: [[9000000, 9000000 + 5000000000 - 1]] };
+  w4.utxos = [carrier];
+  w4.imported = new Set([9000010]); // a sat inside the carrier's range
+  w4._tagImportedSats();
+  eq('a coin carrying an imported sat loses spendable', w4.utxos[0].spendable, false);
+  eq('the imported sat is named on the coin', JSON.stringify(w4.utxos[0].importedSats), '[9000010]');
+  eq('a coin carrying an imported sat is not plain funding', w4._funding().length, 0);
+  w4._computeBalance();
+  eq('an imported-sat coin is bucketed as a card, not spendable', String(w4.balance.cards), String(w4.balance.total));
+  eq('an imported-sat coin adds nothing to spendable', String(w4.balance.spendable), '0');
+  // A coin that does not carry it stays plain funding.
+  const clean = { ...cb(151), txid: 'ff'.repeat(32), ranges: [[10000000, 10000000 + 5000000000 - 1]] };
+  w4.utxos = [carrier, clean];
+  w4._tagImportedSats();
+  eq('an untouched coin stays funding-eligible', w4._funding().length, 1);
+  eq('the clean coin keeps spendable', w4.utxos[1].spendable, true);
+}
+
+// --- in-flight mints ------------------------------------------------------
+// A mint is broadcast, but the reveal output is not attributable until the
+// indexer/ord sees it. The pending package is dropped the moment the reveal
+// goes out, so the ledger must remember the sat on its own: otherwise the
+// pond shows nothing at all for the whole confirmation window.
+{
+  const w5 = new WalletSession({
+    mnemonic: 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  w5.backend = new FakeBackend(300);
+  w5._autoSync = false;
+  const sat5 = 612345678901;
+  const ledgerKey = `hopper.ledger.${w5.fingerprint}.v1`;
+  w5._addInflightMint({ sat: sat5, seed: 4242, name: 'In Flight Frog',
+    commitTxid: 'AA'.repeat(32), revealTxid: 'BB'.repeat(32) });
+  eq('an in-flight mint is remembered', w5.inflightMints.length, 1);
+  eq('the in-flight sat is a number', w5.inflightMints[0].sat, sat5);
+  eq('the in-flight txids are lowercase', w5.inflightMints[0].revealTxid, 'bb'.repeat(32));
+  const saved5 = JSON.parse(settingsStore.get(ledgerKey));
+  eq('the in-flight mint persists with the ledger', saved5.inflightMints[0].sat, sat5);
+  eq('the persisted seed survives', saved5.inflightMints[0].seed, 4242);
+
+  // Re-adding the same sat replaces the row instead of duplicating it.
+  w5._addInflightMint({ sat: sat5, seed: 4242, name: 'In Flight Frog',
+    commitTxid: 'AA'.repeat(32), revealTxid: 'CC'.repeat(32) });
+  eq('the same sat is not duplicated', w5.inflightMints.length, 1);
+  eq('the newest reveal txid wins', w5.inflightMints[0].revealTxid, 'cc'.repeat(32));
+  // A non-integer sat is ignored outright.
+  w5._addInflightMint({ sat: 'nope', seed: 1, name: 'x' });
+  eq('a non-integer sat is ignored', w5.inflightMints.length, 1);
+
+  // The pond paints an INSCRIBING placeholder while the sat is undiscovered.
+  // The reveal output itself is unconfirmed on the ord address — that is what
+  // makes the placeholder owned before the frogger record exists.
+  const reveal5 = 'cc'.repeat(32);
+  w5.inflightMints[0].revealTxid = reveal5;
+  w5.backend.addressUtxos = async (address) => (address === w5.keys.ordInfo().address
+    ? [{ txid: reveal5, vout: 0, value: 1000, status: { confirmed: false } }]
+    : []);
+  await w5.refresh({ force: true });
+  const placed = w5.frogs.find((f) => Number(f.sat) === sat5);
+  eq('the in-flight mint owns a pond slot', !!placed, true);
+  eq('the placeholder is marked commit_pending', placed && placed.commit_pending, true);
+  eq('the placeholder carries the name', placed && placed.name, 'In Flight Frog');
+  eq('the placeholder points at the reveal txid', placed && placed.mint_txid, reveal5);
+
+  // Discovery retires the row; a stale row expires at six hours.
+  w5._pruneInflightMints(new Set([sat5]));
+  eq('a discovered mint leaves the in-flight list', w5.inflightMints.length, 0);
+  const oldSat = 612345678902;
+  w5._addInflightMint({ sat: oldSat, seed: 7, name: 'Stale Frog',
+    commitTxid: 'DD'.repeat(32), revealTxid: 'EE'.repeat(32) });
+  w5.inflightMints[0].at = Date.now() - 7 * 60 * 60 * 1000;
+  w5._pruneInflightMints(new Set());
+  eq('a seven-hour-old in-flight mint expires', w5.inflightMints.length, 0);
+
+  // The list is bounded: a wallet cannot accumulate unbounded placeholders.
+  for (let i = 0; i < 20; i++) {
+    w5._addInflightMint({ sat: sat5 + 1000 + i, seed: i, name: `F${i}`,
+      commitTxid: 'AA'.repeat(32), revealTxid: reveal5 });
+  }
+  eq('the in-flight list is capped', w5.inflightMints.length, 12);
+  eq('the newest mint is first', w5.inflightMints[0].name, 'F19');
+
+  // A reload restores the list from the ledger and the pond stays populated.
+  const w6 = new WalletSession({
+    mnemonic: 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  w6.backend = new FakeBackend(300);
+  w6._autoSync = false;
+  eq('a reload restores the in-flight mints', w6.inflightMints.length, 12);
+  await w6.refresh({ force: true });
+  // Reload: same unconfirmed reveal output must be visible to the fake chain.
+  w6.backend.addressUtxos = w5.backend.addressUtxos;
+  await w6.refresh({ force: true });
+  eq('a reloaded pond still shows an in-flight mint',
+    w6.frogs.some((f) => f.commit_pending), true);
+  eq('the restored placeholder keeps a name',
+    /^F\d+$/.test(String(w6.frogs.find((f) => f.commit_pending)?.name || '')), true);
+}
+
 console.log(`scan: ${checks} checks passed`);

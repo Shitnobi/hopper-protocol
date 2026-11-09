@@ -332,8 +332,12 @@ for (const kind of ['mint', 'prepare', 'cross', 'transfer']) {
 }
 {
   const f = fixture();
-  const overlapping = { ...f.two, ranges: [[f.two.ranges[0][0], f.two.ranges[0][1]], [f.two.ranges[0][1], f.two.ranges[0][1]]] };
-  reject(() => replacement(f, { addedInputs: [overlapping] }), /overlapping|ranges do not sum|not a plain/i, 'a top-up with overlapping ranges is rejected');
+  // Degenerate overlap ([a,b] + empty [b,b]) normalizes to the same sat set
+  // and is accepted; an overlap that changes the total is rejected.
+  const degenerate = { ...f.two, ranges: [[f.two.ranges[0][0], f.two.ranges[0][1]], [f.two.ranges[0][1], f.two.ranges[0][1]]] };
+  replacement(f, { addedInputs: [degenerate] });
+  const corrupting = { ...f.two, ranges: [[f.two.ranges[0][0], f.two.ranges[0][1]], [f.two.ranges[0][1], f.two.ranges[0][1] + 5]] };
+  reject(() => replacement(f, { addedInputs: [corrupting] }), /ranges do not sum|not a plain/i, 'a top-up whose overlapping ranges change its sat total is rejected');
 }
 {
   const f = fixture();
@@ -453,6 +457,28 @@ await walletReject(({ w, f }) => { w.utxos = [{ ...f.two, status: { confirmed: f
 await walletReject(({ w, f }) => { w.frogs = [{ sat: 6, location: { txid: f.one.txid, vout: 0 } }]; }, /known Hopper|contains Hopper/i, 'a current frog outpoint blocks the wallet bump');
 await walletReject(({ w, f }) => { w.imported = new Set([f.one.ranges[0][0] + 3]); }, /contains Hopper sat/i, 'a current frog sat in an input blocks the wallet bump');
 
+// A Blockstream esplora-electrs server answers verbose tx with
+// "verbose transactions are currently unsupported". The bump must fall
+// back to the plain hex fetch instead of declaring the send dead.
+{
+  const f = fixture();
+  const w = await ledgerWallet();
+  const action = structuredClone(f.action);
+  w.actions = [action];
+  w.pending = [{ txid: f.send.txid, sinceTip: 100, at: Date.now() }];
+  w.utxos = [f.one, f.two, f.three];
+  w.frogs = [];
+  let broadcasts = 0;
+  w.backend = {
+    getTx: async () => { throw new Error('verbose transactions are currently unsupported'); },
+    getTxHex: async () => action.rbf.hex,
+    broadcast: async () => { broadcasts += 1; return 'ok'; },
+  };
+  const built = await w.bumpFee(f.send.txid, { feeRate: 4 });
+  ok(broadcasts === 1, 'a verbose-unsupported Electrum server still allows the bump via the hex fallback');
+  ok(parseTx(built.hex).inputs.length === f.send.inputs.length + 1, 'the fallback replacement spends the original inputs plus one');
+}
+
 // --- UI gate --------------------------------------------------------------
 {
   const f = fixture();
@@ -476,6 +502,17 @@ await walletReject(({ w, f }) => { w.imported = new Set([f.one.ranges[0][0] + 3]
   ok(fundingSnapshot(f.one).assetFree === true, 'a normal funding snapshot is safe');
   ok(fundingSnapshot({ ...f.one, ranges: [[f.one.ranges[0][0], f.one.ranges[0][1] - 1]] }).assetFree === false,
     'a snapshot whose ranges undercount its value is not eligible');
+  {
+    // The indexer's FIFO assignment can emit a lower range after a higher
+    // one on coins descended from multi-input sends. The snapshot must
+    // normalize (sort + merge adjacent) instead of failing safe — otherwise
+    // a perfectly bumpable send loses its BUMP FEE button.
+    const [a, b] = f.one.ranges[0];
+    const mid = Math.floor((a + b) / 2);
+    const scrambled = fundingSnapshot({ ...f.one, ranges: [[mid + 1, b], [a, mid]] });
+    ok(scrambled.assetFree === true && scrambled.ranges[0][0] === a && scrambled.ranges.at(-1)[1] === b,
+      'an out-of-order range list is normalized, not refused');
+  }
   ok(containsSat(f.two.ranges, f.two.ranges[0][0]), 'the fixture ranges are usable by the range audit');
   ok(RBF_POLICY === 'plain-send-v1', 'the policy id is stable');
 }
