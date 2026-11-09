@@ -58,6 +58,11 @@ pub struct StatusDto {
     pub active_crossings: usize,
     /// The only wire version this deployment speaks.
     pub wire_version: u8,
+    /// The chain source forked deeper than the retained window and the
+    /// indexer could not follow: the tip above is a dead branch of the real
+    /// chain. Clients must not act on anything served until this clears
+    /// (fresh snapshot + re-sync).
+    pub stale_tip: bool,
 }
 
 /// `GET /v1/froggers` item and `GET /v1/frogger/{sat}` base.
@@ -498,6 +503,26 @@ mod tests {
         bytes[31] = 0xAB;
         assert!(hex_bytes(&bytes).starts_with("cd"));
         assert!(hex_bytes(&bytes).ends_with("ab"));
+    }
+
+    #[test]
+    fn status_dto_carries_stale_tip() {
+        // The deep-fork flag must reach the wire so clients can refuse to
+        // act on a dead-branch tip.
+        let mut dto = StatusDto {
+            tip_height: Some(4106),
+            tip_hash: Some("ab".repeat(32)),
+            finality_depth: 6,
+            froggers: 0,
+            active_crossings: 0,
+            wire_version: hopper_core::VERSION,
+            stale_tip: true,
+        };
+        let json = serde_json::to_string(&dto).expect("status dto serializes");
+        assert!(json.contains("\"stale_tip\":true"), "json: {json}");
+        dto.stale_tip = false;
+        let json = serde_json::to_string(&dto).expect("status dto serializes");
+        assert!(json.contains("\"stale_tip\":false"), "json: {json}");
     }
 
     #[test]

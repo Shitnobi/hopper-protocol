@@ -44,6 +44,10 @@ fn parse_sat(sat: &str) -> Result<u64, ApiError> {
 /// GET /v1/status
 pub async fn status(State(state): State<SharedState>) -> Json<StatusDto> {
     let idx = state.read();
+    let stale_tip = state
+        .metrics
+        .stale_tip
+        .load(std::sync::atomic::Ordering::Relaxed);
     Json(StatusDto {
         tip_height: idx.tip_height(),
         tip_hash: idx.tip_hash().map(|h| crate::dto::hex_display(&h)),
@@ -51,6 +55,7 @@ pub async fn status(State(state): State<SharedState>) -> Json<StatusDto> {
         froggers: idx.frog_count(),
         active_crossings: idx.in_flight().len(),
         wire_version: hopper_core::VERSION,
+        stale_tip,
     })
 }
 
@@ -443,10 +448,10 @@ pub async fn get_utxo(
         use hopper_indexer::store::StateView;
         let outpoint = hopper_indexer::types::OutPoint { txid, vout };
         if let Some(entry) = store.coin(&outpoint).map_err(store_error)? {
-            let exact = ranges_are_exact(&entry.ranges);
+            let exact = ranges_are_exact(&entry.ranges, entry.value);
             let dto = UtxoDto {
                 value: entry.value,
-                ranges: entry.ranges.into_iter().map(|r| (r.start, r.end)).collect(),
+                ranges: canonical_ranges(entry.ranges),
                 exact,
                 frogs: entry.frogs.to_vec(),
             };
@@ -461,10 +466,10 @@ pub async fn get_utxo(
     {
         let idx = state.read();
         if let Some((value, ranges)) = idx.utxo_ranges(txid, vout) {
-            let exact = ranges_are_exact(&ranges);
+            let exact = ranges_are_exact(&ranges, value);
             let dto = UtxoDto {
                 value,
-                ranges: ranges.into_iter().map(|r| (r.start, r.end)).collect(),
+                ranges: canonical_ranges(ranges),
                 exact,
                 frogs: idx.utxo_frogs(txid, vout),
             };
@@ -483,7 +488,7 @@ pub async fn get_utxo(
         if let Some((value, ranges, exact)) = mempool_utxo_ranges(&state, &rpc, txid, vout) {
             let dto = UtxoDto {
                 value,
-                ranges: ranges.into_iter().map(|r| (r.start, r.end)).collect(),
+                ranges: canonical_ranges(ranges),
                 exact,
                 frogs: Vec::new(),
             };
@@ -558,7 +563,7 @@ async fn seed_from_ord(state: &SharedState, txid: [u8; 32], vout: u32) -> Option
     }
     let dto = UtxoDto {
         value,
-        ranges: ranges.iter().map(|r| (r.start, r.end)).collect(),
+        ranges: canonical_ranges(ranges.iter().cloned().collect()),
         exact: true,
         frogs: Vec::new(),
     };
@@ -567,12 +572,59 @@ async fn seed_from_ord(state: &SharedState, txid: [u8; 32], vout: u32) -> Option
     Some(dto)
 }
 
-/// True if every span is a real ordinal range (no shadow placeholder).
-fn ranges_are_exact(ranges: &[hopper_core::satmath::SatRange]) -> bool {
+/// True if every span is a real ordinal range (no shadow placeholder) AND
+/// the spans account for the coin's whole value.
+///
+/// The second half matters: a coin whose inputs were only partly modelled
+/// can carry a real-looking range that covers just a fraction of its value.
+/// Answering `exact: true` there is a lie that makes the wallet reject the
+/// coin (its own sum check), and, worse, stops the ord fallback from ever
+/// naming the full set. Treat "ranges do not sum to the value" like a
+/// shadow: fail-safe, and let ord answer.
+fn ranges_are_exact(ranges: &[hopper_core::satmath::SatRange], value: u64) -> bool {
     // Empty ranges are not "exactly no sats": a coin the tracker
     // created from an untracked input has no assignment yet. Treat it
     // like a shadow so ord gets a chance to name it.
-    !ranges.is_empty() && !ranges.iter().any(|r| hopper_indexer::is_shadow(r.start))
+    if ranges.is_empty() || ranges.iter().any(|r| hopper_indexer::is_shadow(r.start)) {
+        return false;
+    }
+    // Compare against the canonical (sorted, merged) set: overlapping
+    // stored spans must not double-count.
+    let canonical = canonical_ranges(ranges.to_vec());
+    let mut sum: u64 = 0;
+    for (start, end) in canonical {
+        if end <= start {
+            return false;
+        }
+        let Some(next) = sum.checked_add(end - start) else {
+            return false;
+        };
+        sum = next;
+    }
+    sum == value
+}
+
+/// Canonical wire form for a coin's sat ranges: ascending by start, with
+/// adjacent or overlapping ranges merged. The FIFO assignment walks inputs
+/// in input order, so a multi-input spend can emit a lower range after a
+/// higher one; wallets that validate range order (the RBF funding snapshot
+/// does) would then fail-safe and refuse to bump a perfectly bumpable
+/// send. The sat SET is unchanged by sorting and merging.
+fn canonical_ranges(ranges: Vec<hopper_core::satmath::SatRange>) -> Vec<(u64, u64)> {
+    let mut sorted = ranges;
+    sorted.sort_by_key(|r| r.start);
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(sorted.len());
+    for r in sorted {
+        match out.last_mut() {
+            // half-open [start, end): merge when the next range starts at or
+            // before the current end
+            Some(last) if r.start <= last.1 => {
+                last.1 = last.1.max(r.end);
+            }
+            _ => out.push((r.start, r.end)),
+        }
+    }
+    out
 }
 
 /// Resolve an unconfirmed output from bitcoind's mempool.
@@ -623,8 +675,8 @@ fn mempool_utxo_ranges(
                 let idx = state.read();
                 idx.utxo_ranges(prev_txid, prev.vout)
             };
-            let (ranges, input_exact) = if let Some((_v, ranges)) = known {
-                let ex = ranges_are_exact(&ranges);
+            let (ranges, input_exact) = if let Some((v, ranges)) = known {
+                let ex = ranges_are_exact(&ranges, v);
                 (ranges, ex)
             } else {
                 let (_, ranges, ex) = resolve(state, rpc, prev_txid, prev.vout, depth + 1, stack)?;
@@ -1001,17 +1053,59 @@ mod tests {
 
     #[test]
     fn exact_rejects_shadow_ranges() {
-        assert!(!ranges_are_exact(&[]));
-        assert!(ranges_are_exact(&[SatRange::new(0, 100)]));
-        assert!(ranges_are_exact(&[SatRange::new(MAX_SAT, MAX_SAT + 1)]));
-        assert!(!ranges_are_exact(&[SatRange::new(
-            SHADOW_START,
-            SHADOW_START + 1
-        )]));
-        assert!(!ranges_are_exact(&[
-            SatRange::new(0, 100),
-            SatRange::new(SHADOW_START, SHADOW_START + 1)
-        ]));
+        assert!(!ranges_are_exact(&[], 0));
+        assert!(ranges_are_exact(&[SatRange::new(0, 100)], 100));
+        assert!(ranges_are_exact(&[SatRange::new(MAX_SAT, MAX_SAT + 1)], 1));
+        assert!(!ranges_are_exact(&[SatRange::new(SHADOW_START, SHADOW_START + 1)], 1));
+        assert!(!ranges_are_exact(
+            &[SatRange::new(0, 100), SatRange::new(SHADOW_START, SHADOW_START + 1)],
+            101
+        ));
+    }
+
+    /// A coin whose inputs were only partly modelled can carry a real-looking
+    /// span that covers a fraction of its value. That must not be called
+    /// exact: the wallet would reject the coin, and the ord fallback would
+    /// never be asked to name the full set.
+    #[test]
+    fn exact_rejects_ranges_that_do_not_cover_the_value() {
+        let partial = vec![SatRange::new(1_610_000_060_000, 1_610_000_065_000)];
+        assert!(!ranges_are_exact(&partial, 30_000_000));
+        assert!(ranges_are_exact(&partial, 5_000));
+        // Adjacent spans merge, their sum still has to match.
+        let split = vec![SatRange::new(0, 100), SatRange::new(100, 250)];
+        assert!(ranges_are_exact(&split, 250));
+        assert!(!ranges_are_exact(&split, 100));
+        // Overlapping spans must not double-count.
+        let overlap = vec![SatRange::new(0, 100), SatRange::new(50, 100)];
+        assert!(ranges_are_exact(&overlap, 100));
+        assert!(!ranges_are_exact(&overlap, 150));
+    }
+
+    #[test]
+    fn canonical_ranges_sorts_and_merges() {
+        // FIFO assignment walks inputs in input order, so a multi-input spend
+        // can emit a lower range after a higher one.
+        let scrambled = vec![
+            SatRange::new(2000, 3000),
+            SatRange::new(0, 1000),
+            SatRange::new(1000, 2000), // adjacent to (0,1000): merges
+            SatRange::new(5000, 6000),
+        ];
+        assert_eq!(
+            canonical_ranges(scrambled),
+            vec![(0, 3000), (5000, 6000)]
+        );
+        // Overlapping ranges merge without changing the covered sat set.
+        assert_eq!(
+            canonical_ranges(vec![SatRange::new(0, 1000), SatRange::new(500, 1500)]),
+            vec![(0, 1500)]
+        );
+        // Gaps are preserved.
+        assert_eq!(
+            canonical_ranges(vec![SatRange::new(0, 1000), SatRange::new(2000, 3000)]),
+            vec![(0, 1000), (2000, 3000)]
+        );
     }
 
     /// `hopper_indexer::SHADOW_BASE` — the synthetic ordinal base. A

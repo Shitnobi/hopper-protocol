@@ -15,7 +15,7 @@
 //! computed under the caller's read lock and passed in, keeping this
 //! module pure and trivially testable.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{ AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Gauges read from the indexer at scrape time. Plain values so the
@@ -52,6 +52,10 @@ pub struct Metrics {
     pub rejections: AtomicU64,
     /// Sync pass failures (RPC/transport errors).
     pub sync_errors: AtomicU64,
+    /// The chain forked deeper than the retained window and the indexer is
+    /// knowingly serving a stale (dead-branch) tip. Set by the ingest loop
+    /// on `SyncError::DeepFork`, cleared by the next successful sync.
+    pub stale_tip: AtomicBool,
     /// ZMQ `hashblock` notifications received.
     pub zmq_notifications: AtomicU64,
     /// Mempool preview fetches served.

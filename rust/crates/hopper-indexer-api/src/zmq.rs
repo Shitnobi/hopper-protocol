@@ -130,7 +130,28 @@ fn sync_pass(state: &SharedState, cfg: &IngestConfig) {
             let report = {
                 let mut target = state.sync_target(&mut idx);
                 match sync_to_tip(&mut rpc, &mut target, cfg.start_height) {
-                    Ok(report) => report,
+                    Ok(report) => {
+                        state
+                            .metrics
+                            .stale_tip
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        report
+                    }
+                    Err(e @ crate::sync::SyncError::DeepFork { .. }) => {
+                        state
+                            .metrics
+                            .sync_errors
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // The tip we are serving is no longer the chain's
+                        // best. Say so on /v1/status instead of failing
+                        // silently: a wallet must not act on a dead branch.
+                        state
+                            .metrics
+                            .stale_tip
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("[zmq] sync error: {e}");
+                        return;
+                    }
                     Err(e) => {
                         state
                             .metrics
