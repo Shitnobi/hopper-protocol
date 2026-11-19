@@ -48,6 +48,10 @@ export const LOCAL_TICK_MS = 3000;
 // Without them a scan that saw the new height but the old UTXO set would
 // record the tip as done and then skip every later pass at that height.
 export const TIP_RECHECK_MS = 1200;
+// A tab-focus wake must not bypass the idle cadence more often than this.
+// Focus storms (tab toggling, mobile app switching) used to fire a full pass
+// per switch; the scheduler still reacts to real block pushes immediately.
+export const WAKE_FLOOR_MS = 60 * 1000;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
  *  A public source is being rate-limited when it fails, so start at a
@@ -551,11 +555,11 @@ export class WalletSession {
     }
     this._autoSync = true;
     if (typeof document !== 'undefined' && !this._visHandler) {
-      this._visHandler = () => { if (!document.hidden) this._wake(); };
+      this._visHandler = () => { if (!document.hidden) this._wake('focus'); };
       document.addEventListener('visibilitychange', this._visHandler);
     }
     if (this.backend?.onNewBlock) {
-      this._blockUnsub = this.backend.onNewBlock(() => this._wake());
+      this._blockUnsub = this.backend.onNewBlock(() => this._wake('block'));
     }
   }
 
@@ -616,14 +620,23 @@ export class WalletSession {
     });
   }
 
-  _wake() {
+  _wake(reason = 'focus') {
     if (!this._autoSync || this._stopped || this.settings.scanPaused === true) return;
-    this._wakeQueued = true;
+    this._wakeQueued = reason;
     if (this._refreshing) return;
     this._wakeQueued = false;
     if (this._timer) clearTimeout(this._timer);
     this._timer = null;
-    this._scheduleNext(250);
+    this._scheduleNext(this._wakeDelayMs(reason));
+  }
+
+  /** Block pushes are real news (ask in 250 ms). A focus wake only gets to
+   *  shortcut the idle cadence if the last pass is WAKE_FLOOR_MS old; the
+   *  pass still happens — just not on the 12th tab toggle in a minute. */
+  _wakeDelayMs(reason) {
+    const since = Date.now() - (this.scan.lastPass || 0);
+    if (reason === 'block' || since >= WAKE_FLOOR_MS) return 250;
+    return WAKE_FLOOR_MS - since + 250;
   }
 
   scanState() {
@@ -721,8 +734,9 @@ export class WalletSession {
       this.scan.busy = false;
       if (this._autoSync && !this._stopped) {
         if (this._wakeQueued) {
+          const reason = this._wakeQueued;
           this._wakeQueued = false;
-          this._scheduleNext(0);
+          this._scheduleNext(this._wakeDelayMs(reason));
         } else {
           this._scheduleNext(this._recheckLeft > 0 ? TIP_RECHECK_MS : this.tickIntervalMs());
         }
@@ -798,15 +812,29 @@ export class WalletSession {
     // except during the short recheck window after a new tip.
     if (!force && !recheck && !this.scan.rescan && this.fullScanTip != null
         && this.watchTip === tip
-        && (this.tipHash == null || this._scanTipHash === this.tipHash)
-        && !this._inFlight()) {
+        && (this.tipHash == null || this._scanTipHash === this.tipHash)) {
+      if (!this._inFlight()) {
+        this.scan.lastPass = Date.now();
+        this.scan.lastTip = tip;
+        this._scanTipHash = this.tipHash;
+        this.scan.partial = false;
+        this.scan.note = tipNote
+          ? `${tipNote} · no address queries`
+          : `tip ${tip} unchanged — ${this.publicSource ? 'public source' : 'local node'} asked nothing`;
+        return this;
+      }
+      // Something of ours is in flight, but the tip has not moved: a repeated
+      // full sweep would ask every address and every range oracle for data
+      // that cannot have changed without a new block. Watch cheaply instead —
+      // the pending-transaction reconciler (mempool drops, confirmations) —
+      // and leave the full sweep to the tip-change pass (or a forced one).
+      await this._reconcilePending(tip);
+      if (this._stopped) return this;
       this.scan.lastPass = Date.now();
       this.scan.lastTip = tip;
       this._scanTipHash = this.tipHash;
       this.scan.partial = false;
-      this.scan.note = tipNote
-        ? `${tipNote} · no address queries`
-        : `tip ${tip} unchanged — ${this.publicSource ? 'public source' : 'local node'} asked nothing`;
+      this.scan.note = `in flight — watching ${tip}, addresses skipped until a new block`;
       return this;
     }
 
@@ -1102,9 +1130,15 @@ export class WalletSession {
 
     let recordFailed = false;
     const missing = [...candidates].filter((sat) => !records.has(sat));
-    const fetched = await mapLimit(missing, 4, async (sat) => {
-      try { return [sat, await this.backend.frogger(sat)]; } catch { return [sat, null]; }
-    });
+    // Without a HOPPER indexer, frogger() statically returns null (no HTTP):
+    // "fetching" would only mark every pass partial and starve the catch-up
+    // gate. Records still arrive from local mint records and chain replay.
+    const canFetchRecords = this.backend?.recordSourceAvailable !== false;
+    const fetched = canFetchRecords
+      ? await mapLimit(missing, 4, async (sat) => {
+          try { return [sat, await this.backend.frogger(sat)]; } catch { return [sat, null]; }
+        })
+      : [];
     for (const [sat, record] of fetched) {
       if (record) records.set(sat, record);
       else recordFailed = true;
@@ -1234,8 +1268,11 @@ export class WalletSession {
       // tip gate would keep serving the empty pond until the next block (or
       // a manual rescan). While sats we own still have no record, keep one
       // extra pass alive — bounded per tip so a permanently ignorant index
-      // cannot turn into an endless poll.
-      const ownWithoutRecord = [...this.imported]
+      // cannot turn into an endless poll. With NO record source configured
+      // (default live setup, no indexer), records can never arrive, so the
+      // burst would be 24 futile full sweeps per block — skip it entirely.
+      const ownWithoutRecord = this.backend?.recordSourceAvailable === false ? []
+        : [...this.imported]
         .map(Number).filter(Number.isSafeInteger)
         .filter((sat) => !(this.frogs || []).some((f) => Number(f.sat) === sat));
       if (ownWithoutRecord.length && this.tipHash) {

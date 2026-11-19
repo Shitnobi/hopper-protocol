@@ -195,5 +195,42 @@ eq('an unknown coin can remain unknown', await backend3.utxo(TXID, 0), null);
   eq('history keeps the confirmed height', hist[1].height, 2);
 }
 
+
+// --- rate-limit courtesy: cooldown ladder ---------------------------------
+{
+  stubFetch(() => new Response('rate limited', { status: 429 }));
+  const oc = new OrdClient('http://ord.test');
+  await oc.output(TXID, 0).catch(() => {});
+  eq('a 429 starts a cooldown', oc.backoffMs > 0, true);
+  const asksAfter429 = asked.length;
+  await oc.output(TXID, 0).catch(() => {});
+  eq('during the cooldown the ord server is not asked', asked.length, asksAfter429);
+  eq('output() reports no answer during cooldown', await oc.output(TXID, 0), null);
+
+  stubFetch(() => new Response('nope', { status: 500 }));
+  const oc5 = new OrdClient('http://ord.test');
+  await oc5.output(TXID, 0).catch(() => {});
+  eq('a 5xx also starts the ladder', oc5.backoffMs > 0, true);
+  const first = oc5.backoffMs;
+  oc5._cooldownUntil = 0; // simulate the wait elapsing
+  await oc5.output(TXID, 0).catch(() => {});
+  eq('the ladder doubles while the server keeps failing', oc5.backoffMs > first, true);
+
+  stubFetch(() => new Response(JSON.stringify({ value: 500, sat_ranges: [[5000, 5500]] }),
+    { status: 200, headers: { 'content-type': 'application/json' } }));
+  const ocOk = new OrdClient('http://ord.test');
+  ocOk._noteFailure(); // pretend it just failed
+  ocOk._cooldownUntil = 0; // the wait elapses
+  await ocOk.output(TXID, 0);
+  eq('a success resets the ladder', ocOk.backoffMs, 0);
+
+  stubFetch(() => new Response('gone', { status: 404 }));
+  const oc404 = new OrdClient('http://ord.test');
+  oc404._noteFailure(); // a cooldown is running...
+  await oc404.output(TXID, 0);
+  eq('an unknown outpoint neither extends nor clears the cooldown — it is asked nothing while cooling down',
+    oc404.backoffMs > 0, true);
+}
+
 globalThis.fetch = realFetch;
 console.log(`ord: ${checks} checks passed`);

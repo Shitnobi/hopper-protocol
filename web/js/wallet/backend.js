@@ -526,17 +526,53 @@ export function effectiveOrdUrl(settings = {}, network = 'mainnet') {
 export class OrdClient {
   constructor(baseUrl) {
     this.base = String(baseUrl || '').trim().replace(/\/+$/, '');
+    // Rate-limit courtesy: ordinals.com and friends 429 under load, and a
+    // wallet that keeps the same cadence turns a soft limit into a ban.
+    // After a transient failure (429 / 5xx / network), stop asking for a
+    // cooldown that doubles 30 s -> 10 min; callers already carry the last
+    // good answer forward, and 'sats without ranges' is a first-class UI
+    // state. A success resets the ladder.
+    this._cooldownUntil = 0;
+    this._backoffMs = 0;
+    this.cooldownCount = 0; // diagnostics: how many times a cooldown started
+  }
+
+  /** Milliseconds until the ord server is asked again (0 = now). */
+  get backoffMs() {
+    return Math.max(0, this._cooldownUntil - Date.now());
+  }
+
+  _noteFailure() {
+    this._backoffMs = Math.min(this._backoffMs ? this._backoffMs * 2 : 30_000, 600_000);
+    this._cooldownUntil = Date.now() + this._backoffMs;
+    this.cooldownCount += 1;
+  }
+
+  _noteSuccess() {
+    this._backoffMs = 0;
+    this._cooldownUntil = 0;
   }
 
   async output(txid, vout) {
+    if (Date.now() < this._cooldownUntil) return null; // cooldown: ask nothing
     const id = String(txid || '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(id) || !Number.isSafeInteger(Number(vout)) || Number(vout) < 0) {
       return null;
     }
     const url = `${this.base}/r/utxo/${id}:${Number(vout)}`;
-    const res = await timedFetch(url, { headers: { accept: 'application/json' } });
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`ord ${id}:${vout}: ${res.status}`);
+    let res;
+    try {
+      res = await timedFetch(url, { headers: { accept: 'application/json' } });
+    } catch (err) {
+      this._noteFailure(); // network error / timeout: the server is not answering
+      throw err;
+    }
+    if (res.status === 404) return null; // unknown outpoint, not a failure
+    if (!res.ok) {
+      this._noteFailure(); // 429 / 403 / 5xx: back off before the next ask
+      throw new Error(`ord ${id}:${vout}: ${res.status}`);
+    }
+    this._noteSuccess();
     const json = await res.json();
     const raw = json?.sat_ranges;
     if (!Array.isArray(raw) || raw.length === 0) return null;
@@ -616,6 +652,7 @@ export class DemoBackend {
   async status() { return this.chain.status(); }
   async frogger(sat) { return this.chain.record(sat); }
   async froggers(params = {}) { return this.chain.listFrogs(params); }
+  get recordSourceAvailable() { return true; } // the demo chain answers frogger()
   async utxo(txid, vout) { return this.chain.utxoDto(txid, vout); }
   async road() { return { active: this.chain.road() }; }
   async leaderboard(limit = 25) { return { entries: this.chain.leaderboard(limit) }; }
@@ -665,6 +702,11 @@ export class LiveBackend {
 
   async status() { return this.indexer ? this.indexer.status() : null; }
   async frogger(sat) { return this.indexer ? this.indexer.frogger(sat) : null; }
+
+  /** Whether `frogger()` can ever answer. With no HOPPER indexer configured
+   *  it statically returns null — scheduler catch-up passes would poll for
+   *  records that can never arrive. (F-13 fail-closed is unaffected.) */
+  get recordSourceAvailable() { return !!this.indexer; }
   async froggers(params) { return this.indexer ? this.indexer.froggers(params) : { items: [], total: 0 }; }
   async utxo(txid, vout) {
     let fromIndexer = null;

@@ -501,4 +501,56 @@ wallet.stop();
     /^F\d+$/.test(String(w6.frogs.find((f) => f.commit_pending)?.name || '')), true);
 }
 
+
+// --- API-courtesy scheduler (2026-11: rate-limit fixes) --------------------
+{
+  const w = new WalletSession({
+    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    network: 'regtest',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  const fb = new FakeBackend(500);
+  w.backend = fb;
+  w._autoSync = false;
+  await w.refresh({ force: true });
+  const utxosBefore = fb.utxoCalls;
+
+  // (2) No record source configured -> no catch-up burst. Imported sats
+  //     without records must NOT keep recheck passes alive per tip.
+  fb.recordSourceAvailable = false; // mirrors a live backend with no indexer
+  w.imported.add(424_242);          // an owned sat no record will ever cover
+  fb.tip = 501; fb.hash = '11'.repeat(32);
+  await w.refresh({ force: false, auto: true });
+  const grace = w._recheckLeft;     // 2 from the new tip, by design
+  await w.refresh({ force: false, auto: true });
+  await w.refresh({ force: false, auto: true });
+  await w.refresh({ force: false, auto: true });
+  eq('no indexer: the catch-up window closes after the grace passes',
+    w._recheckLeft, 0);
+  eq('no indexer: nothing extends the sweep past the grace window',
+    fb.utxoCalls - utxosBefore > 0, true);
+  const afterCatchup = fb.utxoCalls;
+  await w.refresh({ force: false, auto: true });
+  eq('no indexer: the settled tip asks nothing again', fb.utxoCalls, afterCatchup);
+
+  // (3) In-flight cheap watch: a pending tx at an unchanged tip costs no
+  //     address queries and no range-oracle queries.
+  fb.recordSourceAvailable = undefined; // restore generic backend
+  w.pending = [{ txid: '22'.repeat(32), at: Date.now(), kind: 'send' }];
+  const uBefore = fb.utxoCalls;
+  await w.refresh({ force: false, auto: true });
+  eq('in-flight pass at an unchanged tip asks no addresses', fb.utxoCalls, uBefore);
+  eq('the in-flight note says so', /in flight/.test(w.scan.note), true);
+  w.pending = [];
+
+  // (4) The focus wake is floored; block pushes are not.
+  w.scan.lastPass = Date.now() - 5_000;
+  eq('a focus wake right after a pass waits out the floor',
+    w._wakeDelayMs('focus') > 30_000, true);
+  eq('a block wake is immediate', w._wakeDelayMs('block'), 250);
+  w.scan.lastPass = Date.now() - 120_000;
+  eq('a focus wake after a quiet stretch is immediate',
+    w._wakeDelayMs('focus'), 250);
+}
+
 console.log(`scan: ${checks} checks passed`);
