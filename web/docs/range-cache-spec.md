@@ -1,6 +1,6 @@
 # Range-cache query logic — specification
 
-Status: **proposal** (client-side only; no protocol change).
+Status: **shipped** in `b996fb7` (client-side only; no protocol change).
 Target: `web/js/wallet/wallet.js` pass loop + ledger persistence; `OrdClient` unchanged.
 Author: session 2026-11-19.
 
