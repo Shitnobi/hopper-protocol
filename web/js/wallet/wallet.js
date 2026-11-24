@@ -88,6 +88,11 @@ export function isPublicEndpoint(url) {
 
 export function settingsPublicSource(settings = {}) {
   if (settings.mode === 'demo') return false;
+  // TEST HOOK (revertible, no UI writes it): a local regtest rig is "free" by
+  // design, so the public-source paths (10-minute idle cadence, metered
+  // Esplora pacing, the 1-minute failure ladder) never fire against it.
+  // `forcePublicSource: true` makes them fire anyway, for rig testing.
+  if (settings.forcePublicSource === true) return true;
   return [settings.esploraUrl, settings.indexerUrl, settings.electrumUrl, settings.ordUrl]
     .some((url) => isPublicEndpoint(url));
 }
@@ -422,7 +427,7 @@ export class WalletSession {
         indexerUrl: this.settings.indexerUrl,
         electrumUrl: this.settings.electrumUrl,
         ordUrl: effectiveOrdUrl(this.settings, this.network),
-        esploraMetered: isPublicEndpoint(esploraUrl),
+        esploraMetered: isPublicEndpoint(esploraUrl) || this.settings.forcePublicSource === true,
       });
     }
     const effective = {
