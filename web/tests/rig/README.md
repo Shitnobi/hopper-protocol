@@ -32,7 +32,34 @@ chromium --headless=new --no-sandbox --remote-debugging-port=9222 \
 # 4. tests
 node web/tests/rig/query-logic-e2e.mjs   # scheduler logic against the rig (19 checks)
 node web/tests/rig/live-e2e.mjs          # the real PWA: fund, mint, monitor
+node web/tests/rig/full-e2e.mjs          # everything: cache, mint, play, send, 429s
 ```
+
+Or run the whole thing — backends, browser, E2E, teardown — in one command:
+
+```bash
+bash web/tests/rig/run-full-e2e.sh        # 37 checks, exit 1 if any failed
+```
+
+`full-e2e.mjs` is the regression gate for the product, not just the scheduler:
+
+| phase | what it proves |
+| --- | --- |
+| P0 | a wallet is created and funded on regtest |
+| P1 | idle costs tip bookkeeping only; a new block asks ord **zero** times for cached coins; a reload re-asks nothing |
+| P2 | a mint goes through preview → approve → broadcast → pond |
+| P3 | TRAVEL TO ROAD stages the state output, a HOP is signed and sealed, 6 blocks settle it with a recorded outcome |
+| P4 | an ordinary BTC send previews, broadcasts, moves the balance and lands in History |
+| P5 | a genuinely new outpoint reaches ord; a 429 starts the cooldown, later asks stop, and the oracle recovers after it |
+| P6 | no unexpected page errors |
+
+One check is expected to fail today: `staging keeps the Hopper on the road
+without a manual rescan`. `_discoverStaged()` only runs on a cold/forced pass
+and only once, inside `prepare()`'s refresh — usually before ord can name the
+brand-new state output. Warm passes never retry, so the Hopper disappears
+from The Road until a RESCAN (or reload). The harness records the failure and
+then recovers with SETTINGS → RESCAN FROM CHAIN so the rest of P3 still runs
+against real backends.
 
 `POST /__fault {"match":"/r/utxo","status":429,"times":100}` on either the
 shim or the proxy injects failures; `DELETE /__fault` clears them.
