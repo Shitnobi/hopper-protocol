@@ -76,5 +76,6 @@ export const KEYS = {
   settings: 'hopper.settings.v1',
   ledger: (fp) => `hopper.ledger.${fp}.v1`,
   recovery: (fp) => `hopper.recovery.${fp}.v1`,
+  rangeCache: (fp) => `hopper.ranges.${fp}.v1`,
   mock: 'hopper.mockchain.v1',
 };

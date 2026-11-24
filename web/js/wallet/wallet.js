@@ -23,6 +23,7 @@ import { frogTxRole, replayFrogChain } from './chainfrog.js';
 import { parseTx } from './txparse.js';
 import { buildMintOffThread } from './mint-client.js';
 import { KEYS, loadJson, saveJson } from './storage.js';
+import { RangeCache, outpointKey } from './rangecache.js';
 import {
   emptyRecoveryStore, normalizeRecoveryStore, reconcileRecoveryStore,
   recoveryPackDoc, recoverySummary,
@@ -52,6 +53,14 @@ export const TIP_RECHECK_MS = 1200;
 // Focus storms (tab toggling, mobile app switching) used to fire a full pass
 // per switch; the scheduler still reacts to real block pushes immediately.
 export const WAKE_FLOOR_MS = 60 * 1000;
+// Sat ranges are immutable per outpoint, so a verified answer is reused for
+// the life of the coin and the range oracle is asked only for outpoints the
+// wallet has never named. Public sources get a hard ask ceiling (a token
+// bucket, not a per-pass cap) so a cold wallet fills in tranches instead of
+// bursting: 24 asks of capacity, 24 more per minute, 15 s between tranches.
+export const RANGE_ASK_BURST = 24;
+export const RANGE_ASK_PER_MIN = 24;
+export const RANGE_BACKLOG_TICK_MS = 15_000;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
  *  A public source is being rate-limited when it fails, so start at a
@@ -244,6 +253,13 @@ export class WalletSession {
     this._blockUnsub = null;
     this._visHandler = null;
     this._txCache = new Map();
+    // Verified sat ranges by outpoint (rangecache.js). A live coin's ranges
+    // cannot change, so this survives passes, rechecks and reloads.
+    this.rangeCache = new RangeCache();
+    this._rangeCacheDirty = false;
+    this._rangeBudget = { tokens: RANGE_ASK_BURST, at: Date.now() };
+    this._rangeBacklog = 0;
+    this.rangeStats = { hits: 0, asked: 0, misses: 0, backlog: 0 };
     this._localMintCache = new Map();
     // Chain-derived frog history is bounded to the state address, but the
     // same transaction/header can be needed by several frogs. Keep the
@@ -253,6 +269,7 @@ export class WalletSession {
     this._chainReconTip = null;
     this._loadLedger();
     this._loadRecovery();
+    this._loadRangeCache();
   }
 
   // --- persistence -------------------------------------------------------
@@ -574,6 +591,9 @@ export class WalletSession {
     if (this.fails > 0) {
       return failureBackoffMs(this.fails, { publicSource: this.publicSource });
     }
+    // A cold cache with more coins than one tranche allows keeps a short
+    // cadence until it is filled: 24 asks/min instead of one 10-minute pass.
+    if (this._rangeBacklog > 0) return RANGE_BACKLOG_TICK_MS;
     if (!this.publicSource) return LOCAL_TICK_MS;
     return this._inFlight() ? PUBLIC_BUSY_TICK_MS : PUBLIC_IDLE_TICK_MS;
   }
@@ -656,6 +676,12 @@ export class WalletSession {
       partial: this.scan.partial,
       publicSource: this.publicSource,
       fails: this.fails,
+      ranges: {
+        ...this.rangeStats,
+        cached: this.rangeCache.size,
+        backlog: this._rangeBacklog,
+        enabled: this._rangeCacheEnabled(),
+      },
       pending: (this.pending || []).length,
       tip: this.tipHeight,
       fullScanTip: this.fullScanTip,
@@ -708,6 +734,119 @@ export class WalletSession {
     const tx = await this.backend.getTx(txid).catch(() => null);
     if (tx) this._txCache.set(txid, tx);
     return tx;
+  }
+
+  // --- range cache --------------------------------------------------------
+  //
+  // The chain adapter is the only thing asked whether a coin still exists;
+  // sat ranges are asked once per outpoint, ever. See rangecache.js for why
+  // that is sound (a txid commits to its inputs, so ranges are immutable).
+
+  _rangeCacheEnabled() { return this.settings?.rangeCache !== false; }
+
+  _loadRangeCache() {
+    if (!this._rangeCacheEnabled()) return;
+    const doc = loadJson(KEYS.rangeCache(this.fingerprint), null);
+    if (doc) this.rangeCache.load(doc);
+  }
+
+  _saveRangeCache(force = false) {
+    if (!this._rangeCacheEnabled()) return;
+    if (!force && !this._rangeCacheDirty) return;
+    this.rangeCache.prune();
+    saveJson(KEYS.rangeCache(this.fingerprint), this.rangeCache.toJSON());
+    this._rangeCacheDirty = false;
+  }
+
+  /** Token bucket for public sources: 24 asks of capacity, refilled over a
+   *  minute. Only real requests spend a token. A local node is not capped. */
+  _takeRangeTokens(wanted) {
+    if (wanted <= 0) return 0;
+    const now = Date.now();
+    const b = this._rangeBudget || (this._rangeBudget = { tokens: RANGE_ASK_BURST, at: now });
+    const dt = Math.max(0, now - (Number(b.at) || now));
+    b.tokens = Math.min(RANGE_ASK_BURST, b.tokens + (dt * RANGE_ASK_PER_MIN) / 60_000);
+    b.at = now;
+    const take = Math.max(0, Math.min(wanted, Math.floor(b.tokens)));
+    b.tokens -= take;
+    return take;
+  }
+
+  /** True while ord is in its own cooldown ladder. With no indexer to fall
+   *  back on, a pass would spend latency for answers it cannot get. */
+  _ordCoolingDown() {
+    const ord = this.backend?.ord;
+    return !!(ord && Number(ord.backoffMs) > 0);
+  }
+
+  /** Resolve sat ranges for one address's live outputs, cache first. Returns
+   *  one DTO (or null) per input, in order — the same shape `backend.utxo()`
+   *  returns, so callers cannot tell a hit from a fresh answer. */
+  async _rangeAnswers(list, stats, address = '') {
+    const out = new Array(list.length).fill(null);
+    if (!Array.isArray(list) || !list.length) return out;
+    const ask = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const hit = this._rangeFromCache(list[i]);
+      if (hit) { out[i] = hit; stats.hits += 1; } else ask.push(i);
+    }
+    if (!ask.length) return out;
+
+    // Rollback flag: behave exactly like the pre-cache wallet.
+    if (!this._rangeCacheEnabled()) {
+      await mapLimit(ask, 2, async (i) => {
+        out[i] = await this._askRange(list[i].txid, list[i].vout);
+      });
+      return out;
+    }
+    if (this._ordCoolingDown() && !this.backend?.indexer) {
+      // Every call would return without a request; leave these for the next
+      // normal pass instead of spending latency on nothing.
+      stats.misses += ask.length;
+      return out;
+    }
+    const budget = this.publicSource ? this._takeRangeTokens(ask.length) : ask.length;
+    if (budget < ask.length) stats.backlog += ask.length - budget;
+    await mapLimit(ask.slice(0, budget), 2, async (i) => {
+      const u = list[i];
+      const dto = await this._askRange(u.txid, u.vout);
+      if (!dto) { stats.misses += 1; return; }
+      out[i] = dto;
+      stats.asked += 1;
+      if (dto.exact !== false && Number(dto.value) === Number(u.value)
+          && this.rangeCache.put(u.txid, u.vout, { value: dto.value, ranges: dto.ranges, address })) {
+        this._rangeCacheDirty = true;
+      }
+    });
+    return out;
+  }
+
+  _rangeFromCache(u) {
+    if (!this._rangeCacheEnabled()) return null;
+    const e = this.rangeCache.get(u.txid, u.vout);
+    if (!e) return null;
+    if (Number(e.v) !== Number(u.value)) {
+      // The same txid:vout cannot have two values. A disagreement is a
+      // corrupt or foreign entry: forget it and ask again.
+      this.rangeCache.drop(u.txid, u.vout);
+      this._rangeCacheDirty = true;
+      return null;
+    }
+    return { value: e.v, ranges: e.r.map(([a, b]) => [a, b]), exact: true, frogs: [] };
+  }
+
+  /** One range ask with the existing transient-failure retry. A 429 burst or
+   *  an indexer restart is not an answer; after three tries the caller keeps
+   *  the previous ranges (carry-forward) and nothing is cached. */
+  async _askRange(txid, vout) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.backend.utxo(txid, vout);
+      } catch (e) {
+        if (attempt >= 2) return null;
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
   }
 
   /** A user-facing refresh is forced; the scheduler calls with force:false
@@ -812,10 +951,15 @@ export class WalletSession {
     const recheck = this._recheckLeft > 0;
     if (recheck) this._recheckLeft -= 1;
 
+    // A range backlog is real work at an unchanged tip: coins the ask
+    // budget has not covered yet. It bypasses the gate until it drains.
+    const backlog = this._rangeBacklog > 0;
+    this._rangeBacklog = 0;
+
     // THE GATE. A settled answer can change only with a block. While
     // nothing of ours is in flight, an unchanged tip costs one request —
     // except during the short recheck window after a new tip.
-    if (!force && !recheck && !this.scan.rescan && this.fullScanTip != null
+    if (!force && !recheck && !backlog && !this.scan.rescan && this.fullScanTip != null
         && this.watchTip === tip
         && (this.tipHash == null || this._scanTipHash === this.tipHash)) {
       if (!this._inFlight()) {
@@ -855,6 +999,7 @@ export class WalletSession {
     let pausedMidPass = false;
     let asked = 0;
     let hits = 0;
+    const rangeStats = { hits: 0, asked: 0, misses: 0, backlog: 0 };
 
     // 1. WATCH SET. Three fixed HD scripts, plus one derived state script
     //    for every staged Hopper. Cold and warm passes ask the same set;
@@ -925,16 +1070,17 @@ export class WalletSession {
       const isState = w.kind === 'state';
       // F-07/F-13: a state script does not prove which sats it holds. Ask
       // the same range source as any other coin and require value agreement.
-      const dtos = await mapLimit(list, 2, async (u) => {
-        // Transient oracle failures (429 bursts, an indexer restart) are not
-        // an answer. Retry briefly before treating the coin as unanswerable.
-        for (let attempt = 0; ; attempt++) {
-          try { return await this.backend.utxo(u.txid, u.vout); } catch (e) {
-            if (attempt >= 2) return null;
-            await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
-          }
-        }
-      });
+      // Sat ranges are immutable per outpoint: a coin this wallet has
+      // already named costs no request at all. Only outputs new to the
+      // wallet are asked about, and never more than the ask budget allows.
+      const dtos = await this._rangeAnswers(list, rangeStats, w.address);
+      if (this._rangeCacheEnabled() && queriedOk.has(w.address)) {
+        // A COMPLETE answer for this address: an outpoint that is no longer
+        // live was spent. Partial passes never reach here, so absence is
+        // never treated as evidence.
+        const liveKeys = new Set(list.map((u) => outpointKey(u.txid, u.vout)).filter(Boolean));
+        if (this.rangeCache.dropMissing(w.address, liveKeys)) this._rangeCacheDirty = true;
+      }
       // The UTXO answer already carries mempool status. Aggregate outputs
       // from one transaction into one history row; nothing here asks the
       // backend anything new.
@@ -1303,6 +1449,10 @@ export class WalletSession {
     this.scan.note = this.settings.scanPaused === true
       ? `scanning paused — automatic passes are off · ${notes.join(' · ')}`
       : notes.join(' · ');
+    this.rangeStats = rangeStats;
+    this._rangeBacklog = this._ordCoolingDown() && !this.backend?.indexer
+      ? 0 : rangeStats.backlog;
+    this._saveRangeCache();
     this._saveLedger();
     this.dispatch('refresh', this.summary());
     return this;
@@ -1325,6 +1475,13 @@ export class WalletSession {
     this.changesVersion = 0;
     this._changeBackfillFailedAt = 0;
     this.scan.rescan = { asked: 0, hits: 0 };
+    // A rescan is the user asking for chain truth: drop every cached range
+    // and refill the ask budget so the rebuild is not throttled by a bucket
+    // that was drained by earlier passes.
+    if (this.rangeCache.clear()) this._rangeCacheDirty = true;
+    this._saveRangeCache(true);
+    this._rangeBudget = { tokens: RANGE_ASK_BURST, at: Date.now() };
+    this._rangeBacklog = 0;
     this.scan.note = 'rescanning the fixed watch set';
     this.fullScanTip = null;
     this.cold = true;

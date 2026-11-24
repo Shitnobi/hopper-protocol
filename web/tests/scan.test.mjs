@@ -553,4 +553,246 @@ wallet.stop();
     w._wakeDelayMs('focus'), 250);
 }
 
+
+// --- range cache: ask the range oracle once per outpoint, ever -----------
+//
+// The chain adapter is the only thing polled about existence; sat ranges are
+// immutable for a live outpoint, so a verified answer is reused across
+// passes, rechecks and reloads, and only new/spent outpoints touch ord.
+
+{
+  const { RangeCache, normalizeRanges, outpointKey } = await import('../js/wallet/rangecache.js');
+  const { RANGE_ASK_BURST, RANGE_BACKLOG_TICK_MS } = await import('../js/wallet/wallet.js');
+
+  // Validation: only provably exact answers are cacheable.
+  eq('valid ranges normalize', normalizeRanges([[0, 1000]], 1000), [[0, 1000]]);
+  eq('a short sum is rejected', normalizeRanges([[0, 999]], 1000), null);
+  eq('overlapping ranges are rejected', normalizeRanges([[0, 600], [500, 1000]], 1100), null);
+  eq('unordered ranges are rejected', normalizeRanges([[500, 1000], [0, 500]], 1000), null);
+  eq('an empty answer is rejected', normalizeRanges([], 1000), null);
+  eq('outpoint keys normalize txid case', outpointKey('AB'.repeat(32), 3), `${'ab'.repeat(32)}:3`);
+  eq('a malformed txid has no key', outpointKey('nope', 0), null);
+
+  const lru = new RangeCache();
+  for (let i = 0; i < 5; i += 1) {
+    lru.put('ab'.repeat(32), i, { value: 10, ranges: [[0, 10]] });
+    lru.entries.get(`${'ab'.repeat(32)}:${i}`).t = 1000 + i;
+  }
+  eq('LRU evicts down to the cap', (lru.prune(3), lru.size), 3);
+  eq('LRU keeps the newest entries', [...lru.entries.keys()].sort(),
+    [`${'ab'.repeat(32)}:2`, `${'ab'.repeat(32)}:3`, `${'ab'.repeat(32)}:4`].sort());
+
+  // A backend with real live outputs and a counted range oracle.
+  class RangeBackend {
+    constructor() {
+      this.tip = 200;
+      this.hash = 'aa'.repeat(32);
+      this.live = new Map();   // address -> [{txid, vout, value}]
+      this.ranges = new Map(); // "txid:vout" -> [[start, end)] (exclusive)
+      this.rangeCalls = 0;
+      this.utxoCalls = 0;
+      this.failAddress = null;
+      this.throwOnRange = false;
+      this.ord = null;
+      this.indexer = null;
+    }
+    async tipHeight() { return this.tip; }
+    async tipHash() { return this.hash; }
+    async addressHistory() { return []; }
+    async addressUtxos(address) {
+      this.utxoCalls += 1;
+      if (this.failAddress === address) throw new Error('index down');
+      return (this.live.get(address) || []).map((u) => ({ ...u, status: { confirmed: true } }));
+    }
+    async utxo(txid, vout) {
+      this.rangeCalls += 1;
+      if (this.throwOnRange) throw new Error('ord 429');
+      const ranges = this.ranges.get(outpointKey(txid, vout));
+      if (!ranges) return null;
+      return { value: ranges.value, ranges: ranges.ranges, exact: true, frogs: [] };
+    }
+    add(address, txid, vout, value, ranges) {
+      const list = this.live.get(address) || [];
+      list.push({ txid, vout, value });
+      this.live.set(address, list);
+      this.ranges.set(outpointKey(txid, vout), { value, ranges });
+    }
+    spend(address, txid, vout) {
+      this.live.set(address, (this.live.get(address) || [])
+        .filter((u) => !(u.txid === txid && Number(u.vout) === Number(vout))));
+    }
+    async frogger() { return null; }
+    async froggers() { return { items: [] }; }
+    async events() { return { events: [] }; }
+    async getTx() { return null; }
+    async broadcast() { throw new Error('not used'); }
+    async leaderboard() { return { entries: [] }; }
+    async road() { return { active: [] }; }
+  }
+
+  const mnemonic = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+  const mk = (settings = {}) => {
+    const w = new WalletSession({
+      mnemonic, network: 'regtest',
+      settings: { ...DEFAULT_SETTINGS, mode: 'demo', ...settings },
+    });
+    w._autoSync = false;
+    return w;
+  };
+  let rc = mk();
+  let rb = new RangeBackend();
+  rc.backend = rb;
+  rc.publicSource = false; // local node: no ask ceiling
+  const ordAddr = rc.keys.frogAddress();
+  const recv = rc.keys.receive(0).address;
+  const change = rc.keys.change(0).address;
+  const t1 = '11'.repeat(32);
+  const t2 = '22'.repeat(32);
+  rb.add(recv, t1, 0, 1000, [[0, 1000]]);
+  rb.add(recv, t2, 1, 2000, [[1000, 3000]]);
+
+  await rc.refresh({ force: true });
+  eq('cold pass asks the oracle once per live coin', rb.rangeCalls, 2);
+  eq('cold pass caches both coins', rc.rangeCache.size, 2);
+  eq('cold pass reports the asks', rc.rangeStats.asked, 2);
+  eq('cache counters are visible in scan state', rc.scanState().ranges.cached, 2);
+
+  // The big win: a new tip runs three passes and a settled wallet asks ord
+  // NOTHING. Existence still comes from the chain adapter.
+  rb.tip = 201;
+  rb.hash = 'bb'.repeat(32);
+  const addrBefore = rb.utxoCalls;
+  await rc.refresh({ force: false, auto: true });
+  await rc.refresh({ force: false, auto: true });
+  await rc.refresh({ force: false, auto: true });
+  eq('a new tip still walks the address set', rb.utxoCalls - addrBefore, 9);
+  eq('a new tip asks the range oracle nothing', rb.rangeCalls, 2);
+  eq('the pass reports cache hits', rc.rangeStats.hits, 2);
+  eq('the pass reports no new asks', rc.rangeStats.asked, 0);
+
+  // A new coin is asked exactly once, then served from the cache by the
+  // index-catch-up passes at the same tip.
+  const t3 = '33'.repeat(32);
+  rb.add(change, t3, 0, 500, [[5000, 5500]]);
+  rb.tip = 202;
+  rb.hash = 'cc'.repeat(32);
+  await rc.refresh({ force: false, auto: true });
+  await rc.refresh({ force: false, auto: true });
+  await rc.refresh({ force: false, auto: true });
+  eq('a new outpoint costs exactly one oracle ask', rb.rangeCalls, 3);
+  eq('the new coin is cached', rc.rangeCache.size, 3);
+
+  // Spent: a complete answer evicts the outpoint.
+  rb.spend(recv, t1, 0);
+  rb.tip = 203;
+  rb.hash = 'dd'.repeat(32);
+  const spentCalls = rb.rangeCalls;
+  await rc.refresh({ force: false, auto: true });
+  eq('a spent coin is evicted', rc.rangeCache.get(t1, 0), null);
+  eq('eviction costs no oracle ask', rb.rangeCalls, spentCalls);
+  eq('the surviving coins stay cached', rc.rangeCache.size, 2);
+
+  // Partial pass: absence is not evidence.
+  rb.failAddress = recv;
+  rb.spend(recv, t2, 1);
+  rb.tip = 204;
+  rb.hash = 'ee'.repeat(32);
+  await rc.refresh({ force: false, auto: true }).catch(() => {});
+  eq('a failed address pass keeps its cached coins', rc.rangeCache.get(t2, 1) !== null, true);
+  rb.failAddress = null;
+
+  // A value disagreement is a corrupt entry: drop it and ask again.
+  const t3key = outpointKey(t3, 0);
+  rc.rangeCache.entries.get(t3key).v = 999999;
+  rb.tip = 205;
+  rb.hash = 'ff'.repeat(32);
+  const beforeMismatch = rb.rangeCalls;
+  await rc.refresh({ force: false, auto: true });
+  eq('a value mismatch re-asks the oracle', rb.rangeCalls, beforeMismatch + 1);
+  eq('the re-ask repairs the entry', rc.rangeCache.get(t3, 0).v, 500);
+
+  // Reliability: 429s are retried, then left uncached (never poisoned).
+  const t4 = '44'.repeat(32);
+  rb.add(recv, t4, 0, 700, [[7000, 7700]]);
+  rb.throwOnRange = true;
+  rb.tip = 206;
+  rb.hash = 'ab'.repeat(32);
+  await rc.refresh({ force: false, auto: true });
+  eq('a failing oracle is retried three times', rb.rangeCalls, beforeMismatch + 1 + 3);
+  eq('a failed answer is not cached', rc.rangeCache.get(t4, 0), null);
+  rb.throwOnRange = false;
+
+  // Persistence: a reload answers from the cache, no oracle traffic.
+  rc._saveRangeCache(true);
+  const reloaded = mk();
+  const rb2 = new RangeBackend();
+  rb2.tip = rb.tip;
+  rb2.hash = rb.hash;
+  rb2.live = new Map([...rb.live].map(([k, v]) => [k, v.map((u) => ({ ...u }))]));
+  rb2.ranges = new Map(rb.ranges);
+  reloaded.backend = rb2;
+  reloaded.publicSource = false;
+  // Only the change coin survives: the spent receive coins were evicted by
+  // the complete passes that followed, exactly as they should be.
+  eq('a reloaded session loads the cache', reloaded.rangeCache.size, 1);
+  await reloaded.refresh({ force: true });
+  // Two live coins are known from the reloaded cache; the coin whose ask
+  // failed before the reload is the only one asked.
+  eq('a reloaded cold pass asks only the uncached coin', rb2.rangeCalls, 1);
+
+  // RESCAN is the rebuild escape hatch: clear the cache, refill the budget.
+  const beforeRescan = rb2.rangeCalls;
+  await reloaded.startRescan();
+  eq('a rescan clears the cache first', reloaded.rangeCache.size >= 2, true);
+  eq('a rescan re-asks every live coin', rb2.rangeCalls - beforeRescan, 2);
+
+  // Ask budget: a public source fills a cold cache in tranches.
+  const budget = mk();
+  const rb3 = new RangeBackend();
+  budget.backend = rb3;
+  budget.publicSource = true;
+  const many = '55'.repeat(32);
+  for (let i = 0; i < 30; i += 1) {
+    rb3.add(budget.keys.receive(0).address, many, i, 1000, [[i * 1000, i * 1000 + 1000]]);
+  }
+  await budget.refresh({ force: true });
+  eq('the ask budget caps one tranche', rb3.rangeCalls, RANGE_ASK_BURST);
+  eq('the rest is queued as backlog', budget._rangeBacklog, 30 - RANGE_ASK_BURST);
+  eq('a backlog shortens the next pass', budget.tickIntervalMs(), RANGE_BACKLOG_TICK_MS);
+  const firstTranche = rb3.rangeCalls;
+  await budget.refresh({ force: false, auto: true });
+  eq('a second pass without refill asks nothing', rb3.rangeCalls, firstTranche);
+  budget._rangeBudget.at = Date.now() - 2_600; // one token is 2.5 s
+  await budget.refresh({ force: false, auto: true });
+  eq('refilled tokens drain the backlog one at a time', rb3.rangeCalls, firstTranche + 1);
+
+  // Cooldown: ask nothing while ord is backing off, and do not queue work.
+  const cool = mk();
+  const rb4 = new RangeBackend();
+  rb4.ord = { backoffMs: 5000 };
+  cool.backend = rb4;
+  cool.publicSource = true;
+  rb4.add(cool.keys.receive(0).address, '66'.repeat(32), 0, 1000, [[0, 1000]]);
+  await cool.refresh({ force: true });
+  eq('a cooling-down oracle is not asked', rb4.rangeCalls, 0);
+  eq('a cooling-down oracle creates no backlog', cool._rangeBacklog, 0);
+
+  // Rollback flag: the pre-cache behaviour, on demand.
+  const old = mk({ rangeCache: false });
+  const rb5 = new RangeBackend();
+  old.backend = rb5;
+  old.publicSource = false;
+  rb5.add(old.keys.receive(0).address, '77'.repeat(32), 0, 1000, [[0, 1000]]);
+  await old.refresh({ force: true });
+  rb5.tip += 1;
+  rb5.hash = 'bc'.repeat(32);
+  await old.refresh({ force: false, auto: true });
+  await old.refresh({ force: false, auto: true });
+  await old.refresh({ force: false, auto: true });
+  eq('with the cache off every pass asks again', rb5.rangeCalls, 4); // cold + 3 passes
+  eq('with the cache off nothing is stored', old.rangeCache.size, 0);
+
+  rc.stop(); reloaded.stop(); budget.stop(); cool.stop(); old.stop();
+}
+
 console.log(`scan: ${checks} checks passed`);

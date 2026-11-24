@@ -41,7 +41,7 @@ A cache entry, keyed `"<txid>:<vout>"` (txid lower-case hex):
 | field | meaning |
 |---|---|
 | `v` | output value in sats (must equal the explorer's value) |
-| `r` | normalized **inclusive** `[[start, end], …]`, ordered, non-overlapping, sum `= v` |
+| `r` | normalized ranges in the backend DTO's own convention (`[[start, end), …]`, as ord returns them), ordered, non-overlapping, sum `= v` |
 | `a` | address the output was seen at (diagnostics + partial-pass pruning) |
 | `t` | last-used wall clock (LRU) |
 | `m` | consecutive misses (ord 404 / non-exact answers), for the retry ladder |
@@ -119,8 +119,9 @@ state, including both recheck passes at a new tip.
 
 RESCAN clears the cache by design: it is the user's "rebuild from chain"
 escape hatch, and it is the only way to recover from local ledger corruption.
-`settings.rangeCache === false` disables reads/writes entirely (rollback flag,
-default on).
+`settings.rangeCache === false` disables reads, writes and the ask budget
+entirely: the wallet behaves exactly like the pre-cache build (rollback flag,
+default on; no UI writes it).
 
 ## 6. Ask budget (the part that guarantees conservatism)
 
@@ -131,9 +132,15 @@ public source only:
 capacity   = 24 asks
 refill     = 24 asks / 60 s
 burst use  = min(queue.length, tokens)
-scheduling = if queue remains after a pass, next pass in 10 s
+scheduling = if queue remains after a pass, next pass in 15 s
              else normal cadence (idle 10 min / busy 30 s)
 ```
+
+A backlog pass bypasses the same-tip gate (otherwise the gate would serve the
+cached answer and the queue would never drain), and the pass re-asks the
+chain adapter for the live set first — that is how eviction and new coins are
+seen. The 15 s cadence with a 24/min bucket means a cold 100-coin wallet
+fills in ≈4 minutes and then goes quiet forever.
 
 * Local node / indexer: no cap (your own infrastructure).
 * Sustained ord asks are therefore **≤ 24/min = 0.4/s**, even for a wallet
@@ -148,18 +155,24 @@ Resulting worst-case ord profile: **0.4 requests/s sustained, 2 concurrent
 
 ## 7. Persistence
 
-Added to the existing per-wallet ledger (`_saveLedger` / `_loadLedger`):
+Persisted per wallet under its own key, `hopper.ranges.<fingerprint>.v1`
+(not inside the ledger: the ledger is rewritten on every pass, and the cache
+is up to ~400 KB — a separate key is written only when it changed):
 
 ```json
-"rangeCache": {
-  "version": 1,
-  "entries": { "ab12…:0": { "v": 1500, "r": [[1000, 2499]], "a": "bc1p…", "t": 1763000000000 } }
-}
+{ "version": 1,
+  "entries": { "ab12…:0": [1500, [[1000, 1500]], "bc1p…", 1763000000000, 0] } }
 ```
 
-* Cap **4096 entries**, LRU by `t`; eviction is harmless (re-asked once).
-* Loader ignores unknown fields and malformed entries; `version` mismatch
-  clears the cache (fail-safe: clearing only costs asks).
+(`[value, ranges, address, lastUsed, misses]`.)
+
+* Cap **4096 entries**, LRU by `lastUsed`; eviction is harmless (re-asked once).
+* The loader validates every row and every key; malformed rows are skipped
+  and a `version` mismatch loads nothing (fail-safe: clearing only costs asks).
+* Written at the end of a pass when dirty, and immediately on RESCAN. The
+  `wipe` path already removes every `hopper.*` key.
+* **RESCAN FROM CHAIN** also refills the ask bucket, so a deliberate rebuild
+  is not throttled by tokens spent on earlier automatic passes.
 * Cleared on: wallet wipe, network change in Settings, vault import of a
   different wallet, RESCAN.
 * Size: ~90–120 B/entry → ≤ ~480 KB in localStorage. Consider a 2048 cap if
@@ -194,6 +207,7 @@ Per 10-minute block interval, public source, `U` coins, no new coins:
 | ord `/r/utxo` | `3U` (3 passes × U) | **0** |
 | Esplora | `3 × (2 + A)` | `3 × (2 + A)` (unchanged) |
 | idle, no block | 2 | 2 |
+| cold cache, `U = 100` | 300 in ~3 s | 100 over ≈4 min (24/min), then 0 |
 
 `A` = watched addresses (ord, receive #0, change #0, + one per staged Hopper).
 Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
@@ -217,6 +231,10 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
 12. Cap/LRU: 4097 inserts → 4096 entries, oldest evicted; reload still parses.
 13. `rangeCache: false` → behaves exactly like today (regression).
 14. Mempool spend of a cached outpoint → evicted; replacement outputs asked.
+
+Implemented in `web/tests/scan.test.mjs` (190 checks, up from 150), including
+the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
+reload-from-storage path, and the rollback flag.
 
 ## 11. Non-goals / follow-ups
 
