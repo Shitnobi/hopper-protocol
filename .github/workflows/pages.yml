@@ -21,7 +21,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployed.outputs.url }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -38,3 +38,20 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+        # Twice (2026-11-25) this step failed after a successful upload with
+        # "Fetching artifact metadata failed ... Found 0 artifact(s)" — the
+        # artifact-list API flaked, not the build. Retry once so a green tree
+        # does not need a manual rerun or an empty commit.
+        continue-on-error: true
+
+      - name: Deploy (retry after a flaked artifact listing)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+
+      - name: Resolve the deployed URL
+        id: deployed
+        run: |
+          url="${{ steps.deployment.outputs.page_url }}"
+          [ -n "$url" ] || url="${{ steps.deployment_retry.outputs.page_url }}"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
