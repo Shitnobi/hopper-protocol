@@ -31,15 +31,21 @@ chromium --headless=new --no-sandbox --remote-debugging-port=9222 \
 
 # 4. tests
 node web/tests/rig/query-logic-e2e.mjs   # scheduler logic against the rig (19 checks)
-node web/tests/rig/live-e2e.mjs          # the real PWA: fund, mint, monitor
+node web/tests/rig/live-e2e.mjs          # the real PWA: fund, mint, 429 (14 checks)
 node web/tests/rig/full-e2e.mjs          # everything: cache, mint, play, send, 429s
 ```
 
 Or run the whole thing — backends, browser, E2E, teardown — in one command:
 
 ```bash
-bash web/tests/rig/run-full-e2e.sh        # 38 checks, exit 1 if any failed
+bash web/tests/rig/run-full-e2e.sh                # 38 checks, exit 1 if any failed
+RIG_RESET=1 bash web/tests/rig/run-full-e2e.sh    # same, from an empty chain
 ```
+
+The rig reuses `~/.hopper-e2e/btc` and its ord index between runs. That is
+fine normally, but after many runs the chain grows and ord catch-up can lag
+funding; `RIG_RESET=1` wipes the chain (keeping `bitcoin.conf`) and the ord
+index so a run starts from block 0.
 
 `full-e2e.mjs` is the regression gate for the product, not just the scheduler:
 
@@ -52,6 +58,13 @@ bash web/tests/rig/run-full-e2e.sh        # 38 checks, exit 1 if any failed
 | P4 | an ordinary BTC send previews, broadcasts, moves the balance and lands in History |
 | P5 | a genuinely new outpoint reaches ord; a 429 starts the cooldown, later asks stop, and the oracle recovers after it |
 | P6 | no unexpected page errors |
+
+`live-e2e.mjs` is the older, smaller harness. Its 429 test now mints a
+coinbase to the wallet's own receive address first: with the range cache
+shipped, a bare new block correctly asks ord ZERO times, and only a genuinely
+new outpoint may ask. It also navigates back to the wallet view before
+asserting the balance survived the outage (the balance block exists only
+there).
 
 The suite is green (38/38). P3 pins the staging fix: PREPARE seeds the
 state outpoint in the ledger (`provisional: true`) before any source can name

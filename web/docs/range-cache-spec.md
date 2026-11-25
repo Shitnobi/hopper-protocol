@@ -200,9 +200,14 @@ is up to ~400 KB — a separate key is written only when it changed):
   forced pass. Because its ranges are not proven yet, its HOP is fail-closed
   (`proveAssignment` refuses a coin without exact ranges). That one question
   is retried on the backlog cadence (15 s) up to 8 times, then it falls back
-  to the normal per-block/forced cadence. Without the retry, a 404 at the
-  block where the staging tx confirms would leave the card unhoppable until
-  the *next* block.
+  to the normal per-block/forced cadence. Only an answer with `exact !== false`
+  clears the flag; an unproven answer (an indexer that names ranges it cannot
+  prove) keeps it and counts toward the retry bound. Without the retry, a 404
+  at the block where the staging tx confirms would leave the card unhoppable
+  until the *next* block. PREPARE seeds the script the builder actually paid
+  (`built.stateScript`), and the map is capped at the newest 300 rows
+  (`STAGED_ROWS_MAX`) so a planted or long-lived ledger cannot make every pass
+  sweep an unbounded address list.
 * **UI**: no new state. "Sats without ranges" still appears when a coin is
   unknown and the budget is exhausted or ord is cooling down — the same
   first-class display as today.
@@ -241,9 +246,16 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
 13. `rangeCache: false` → behaves exactly like today (regression).
 14. Mempool spend of a cached outpoint → evicted; replacement outputs asked.
 
-Implemented in `web/tests/scan.test.mjs` (190 checks, up from 150), including
+15. Staged seed: PREPARE writes the state outpoint before the chain names
+    it; a warm pass watches it; the retry is bounded; `exact: false` does not
+    clear the flag; a planted ledger cannot grow the watch set past
+    `STAGED_ROWS_MAX`, pollute `Object.prototype`, or crash the load; a HOP
+    from an unproven card is refused and records nothing.
+
+Implemented in `web/tests/scan.test.mjs` (231 checks, up from 150), including
 the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
-reload-from-storage path, and the rollback flag.
+reload-from-storage path, the rollback flag, and the adversarial staged-seed
+cases.
 
 ## 11. Non-goals / follow-ups
 

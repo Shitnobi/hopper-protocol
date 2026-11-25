@@ -207,17 +207,29 @@ ok('one Hopper is in the pond', pondFrogs >= 1, String(pondFrogs));
 await fetch(`${ORD}/__fault`, { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ match: '/r/utxo', status: 429, times: 100, body: 'slow down' }) });
 markO = lines(ordLog).length;
-btc('generatetoaddress', '1', 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080');
-await sleep(5000); // the new-tip sweep hits the 429 and starts the cooldown
-const firstBurst = lines(ordLog).length - markO;
+// A genuinely new outpoint is the only thing allowed to ask ord now: every
+// coin the wallet already knows has cached ranges, so a bare new block is
+// correctly answered with ZERO ord requests. Mine one to our own receive
+// address so the sweep has something new to name.
+btc('generatetoaddress', '1', receive);
+let firstBurst = 0;
+for (let i = 0; i < 40; i += 1) {
+  firstBurst = lines(ordLog).length - markO;
+  if (firstBurst > 0) break;
+  await sleep(500);
+}
 markO = lines(ordLog).length;
 btc('generatetoaddress', '1', 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080');
 await sleep(9000); // a second new tip inside the cooldown window
 const duringCooldown = lines(ordLog).length - markO;
 ok('429: the first sweep reached ord', firstBurst > 0, String(firstBurst));
 ok('429: the cooldown stops later ord asks entirely', duringCooldown === 0, String(duringCooldown));
+// The balance block only exists on the wallet view; the mint left us on the
+// pond. Navigate back before asserting it survived the ord outage.
+await evaluate(`document.querySelector('[data-action=nav][data-view=wallet]')?.click()`);
+await waitFor('document.querySelector(".balance")', 15000, 'wallet view after 429');
 const stillShown = await evaluate(`document.querySelector('.balance')?.innerText || ''`);
-ok('429: the wallet still shows its balance', /SPENDABLE BALANCE/.test(stillShown));
+ok('429: the wallet still shows its balance', /SPENDABLE BALANCE/.test(stillShown), stillShown.slice(0, 80));
 await fetch(`${ORD}/__fault`, { method: 'DELETE' });
 
 // --- 5. no page errors ---------------------------------------------------

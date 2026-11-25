@@ -63,6 +63,16 @@ cleanup() {
 trap cleanup EXIT
 
 echo "--- clearing whatever the previous run left behind"
+# RIG_RESET=1 starts from an empty chain and a fresh ord index (the RPC
+# config is kept). A datadir reused across many runs accumulates blocks and
+# wallets; ord catch-up then lags the tests and funding looks broken even
+# though the app is fine.
+if [ "${RIG_RESET:-0}" = "1" ]; then
+  echo "    RIG_RESET=1: wiping chain state and ord index"
+  $BB/bitcoin-cli -datadir=$RIG/btc stop >/dev/null 2>&1
+  sleep 2
+  rm -rf "$RIG/btc/regtest" "$RIG/ord" "$RIG/chrome-live" "$RIG/chrome-live2"
+fi
 pkill -f -- "--data-dir $RIG/ord" 2>/dev/null
 pkill -f -- "esplora_shim.py" 2>/dev/null
 pkill -f -- "proxy.py --listen 18080" 2>/dev/null

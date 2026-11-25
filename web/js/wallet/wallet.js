@@ -65,6 +65,10 @@ export const RANGE_BACKLOG_TICK_MS = 15_000;
 // ranges until ord catches up. Retry that one question a few times (the
 // 15 s backlog cadence) so a hop is not blocked until the *next* block.
 export const STAGED_RANGE_TRIES = 8;
+// One staged row per staging, never pruned when its output is spent. Cap the
+// persisted map so a planted or long-lived ledger cannot make every pass
+// sweep an unbounded address list.
+export const STAGED_ROWS_MAX = 300;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
  *  A public source is being rate-limited when it fails, so start at a
@@ -313,11 +317,8 @@ export class WalletSession {
         .slice(-50)
       : [];
     this.imported = new Set(l.imported || []);
-    this.staged = l.staged && typeof l.staged === 'object' && !Array.isArray(l.staged)
-      ? Object.fromEntries(Object.entries(l.staged).filter(([sat, row]) =>
-        Number.isSafeInteger(Number(sat)) && row && typeof row.address === 'string'
-          && typeof row.script === 'string'))
-      : {};
+    this.staged = this._stagedBounded(
+      l.staged && typeof l.staged === 'object' && !Array.isArray(l.staged) ? l.staged : {});
     this.fullScanTip = Number.isSafeInteger(l.fullScanTip) ? l.fullScanTip : null;
     this._scanTipHash = /^[0-9a-f]{64}$/i.test(String(l.tipHash || ''))
       ? String(l.tipHash).toLowerCase() : null;
@@ -329,6 +330,19 @@ export class WalletSession {
         pending: big(l.balance.pending),
       };
     }
+  }
+
+  /** The bounded staged map: valid rows only, newest `STAGED_ROWS_MAX`
+   *  kept. Rows without `seeded_at` sort as oldest, and the sort is stable,
+   *  so an older ledger keeps its insertion order. */
+  _stagedBounded(rows) {
+    const list = Object.entries(rows || {}).filter(([sat, row]) =>
+      Number.isSafeInteger(Number(sat)) && row && typeof row.address === 'string'
+        && typeof row.script === 'string');
+    if (list.length <= STAGED_ROWS_MAX) return Object.fromEntries(list);
+    return Object.fromEntries(list
+      .sort(([, a], [, b]) => (Number(a.seeded_at) || 0) - (Number(b.seeded_at) || 0))
+      .slice(-STAGED_ROWS_MAX));
   }
 
   _saveLedger() {
@@ -346,7 +360,7 @@ export class WalletSession {
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
       imported: [...this.imported],
-      staged: this.staged || {},
+      staged: this._stagedBounded(this.staged),
       fullScanTip: this.fullScanTip,
       balance: {
         total: String(this.balance.total), spendable: String(this.balance.spendable),
@@ -439,11 +453,19 @@ export class WalletSession {
    *  state script instead of losing the Hopper until a forced rescan. The
    *  entry stays `provisional`: the sat ranges are not proven until ord (or
    *  another range source) answers, and HOP is fail-closed on that proof. */
-  _seedStaged(frog, { txid, vout = 0, value = CARD_VALUE } = {}) {
+  _seedStaged(frog, { txid, vout = 0, value = CARD_VALUE, script = null } = {}) {
     const sat = Number(frog?.sat);
     const id = String(txid || '').toLowerCase();
     if (!Number.isSafeInteger(sat) || sat <= 0 || !/^[0-9a-f]{64}$/.test(id)) return null;
-    const entry = this._stagedEntry(frog);
+    // Prefer the script the builder actually paid: a re-derivation that
+    // disagreed with it would watch the wrong address forever.
+    let entry = null;
+    if (script instanceof Uint8Array && script.length) {
+      try {
+        entry = { sat, address: scriptToAddress(script, this.network), script: bytesToHex(script) };
+      } catch { entry = null; }
+    }
+    entry = entry || this._stagedEntry(frog);
     if (!entry) return null;
     const key = String(sat);
     this.staged[key] = {
@@ -456,6 +478,7 @@ export class WalletSession {
       value: Number(value) || null,
       provisional: true,
       range_misses: 0,
+      seeded_at: Date.now(),
     };
     this._saveLedger();
     return this.staged[key];
@@ -859,8 +882,16 @@ export class WalletSession {
       out[i] = dto;
       stats.asked += 1;
       if (stagedRow) {
-        stagedRow.provisional = false;
-        stagedRow.range_misses = 0;
+        if (dto.exact !== false) {
+          stagedRow.provisional = false;
+          stagedRow.range_misses = 0;
+        } else {
+          // An answer that cannot be proven exact is not proof. Keep the
+          // fail-closed flag and let the bounded retry try again, exactly
+          // as if the oracle had not answered.
+          stagedRow.range_misses = (Number(stagedRow.range_misses) || 0) + 1;
+          if (stagedRow.range_misses < STAGED_RANGE_TRIES) stats.backlog += 1;
+        }
       }
       if (dto.exact !== false && Number(dto.value) === Number(u.value)
           && this.rangeCache.put(u.txid, u.vout, { value: dto.value, ranges: dto.ranges, address })) {
@@ -3131,7 +3162,9 @@ export class WalletSession {
     // Hopper vanished from The Road until a forced pass (`_discoverStaged`
     // is cold/forced only) because warm passes had no reason to look at the
     // brand-new state script.
-    this._seedStaged(frog, { txid: built.txid, vout: 0, value: built.stateValue });
+    this._seedStaged(frog, {
+      txid: built.txid, vout: 0, value: built.stateValue, script: built.stateScript,
+    });
     await this.refresh();
     return built;
   }

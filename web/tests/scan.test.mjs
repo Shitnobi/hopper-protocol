@@ -15,7 +15,7 @@ globalThis.localStorage = {
 
 const {
   DEFAULT_SETTINGS, WalletSession, loadSettings,
-  failureBackoffMs, isPublicEndpoint, isUnconfirmedUtxo,
+  failureBackoffMs, isPublicEndpoint, isUnconfirmedUtxo, STAGED_RANGE_TRIES,
 } = await import('../js/wallet/wallet.js');
 const { createVault } = await import('../js/wallet/vault.js');
 
@@ -593,6 +593,8 @@ wallet.stop();
       this.utxoCalls = 0;
       this.failAddress = null;
       this.throwOnRange = false;
+      this.exact = true;
+      this.unproven = new Set();
       this.ord = null;
       this.indexer = null;
     }
@@ -609,7 +611,8 @@ wallet.stop();
       if (this.throwOnRange) throw new Error('ord 429');
       const ranges = this.ranges.get(outpointKey(txid, vout));
       if (!ranges) return null;
-      return { value: ranges.value, ranges: ranges.ranges, exact: true, frogs: [] };
+      const exact = this.exact !== false && !this.unproven.has(outpointKey(txid, vout));
+      return { value: ranges.value, ranges: ranges.ranges, exact, frogs: [] };
     }
     add(address, txid, vout, value, ranges) {
       const list = this.live.get(address) || [];
@@ -823,7 +826,163 @@ wallet.stop();
   eq('the proven answer carries the ranges', proven[0]?.ranges?.length, 1);
   eq('the proven answer is counted as an ask', provenStats.asked, 1);
 
+  // --- adversarial: `provisional` must mean "not proven" ------------------
+  const fresh = (settings = {}) => {
+    for (const k of [...settingsStore.keys()]) {
+      if (k.startsWith('hopper.ledger.') || k.startsWith('hopper.ranges.')) settingsStore.delete(k);
+    }
+    return mk(settings);
+  };
+  const seedFrog = (w, sat, txid, value = 25_000) =>
+    ({ frog: { sat, mint_txid: '99'.repeat(32), mint_index: 0 },
+      row: w._seedStaged({ sat, mint_txid: '99'.repeat(32), mint_index: 0 },
+        { txid, vout: 0, value }) });
+
+  // 1. An answer that cannot be proven exact is not proof. Clearing the flag
+  //    here would stop the retry with a coin HOP still refuses to spend.
+  const unproven = fresh();
+  const rb7 = new RangeBackend();
+  unproven.backend = rb7;
+  unproven.publicSource = false;
+  const uTxid = 'ab'.repeat(32);
+  const uSat = 7_777;
+  const uRow = seedFrog(unproven, uSat, uTxid).row;
+  rb7.add(uRow.address, uTxid, 0, 25_000, [[0, 25_000]]);
+  rb7.exact = false;
+  await unproven.refresh({ force: true });
+  eq('an unproven answer keeps the card fail-closed', unproven.staged[String(uSat)].provisional, true);
+  eq('an unproven answer keeps the retry alive', unproven._rangeBacklog, 1);
+  eq('an unproven answer is not cached', unproven.rangeCache.size, 0);
+  rb7.exact = true;
+  await unproven.refresh({ force: false, auto: true }); // backlog bypasses the gate
+  eq('a proven answer on the retry clears the flag', unproven.staged[String(uSat)].provisional, false);
+  eq('the proven answer is cached', unproven.rangeCache.size, 1);
+
+  // 2. The retry is bounded: a staged output no source can ever name must
+  //    not leave a 15 s poll alive forever.
+  const bounded = fresh();
+  const rb8 = new RangeBackend();
+  bounded.backend = rb8;
+  bounded.publicSource = false;
+  const bTxid = 'cd'.repeat(32);
+  const bSat = 8_888;
+  const bRow = seedFrog(bounded, bSat, bTxid).row;
+  rb8.live.set(bRow.address, [{ txid: bTxid, vout: 0, value: 25_000 }]);
+  const oneMiss = async () => {
+    const st = { hits: 0, asked: 0, misses: 0, backlog: 0 };
+    await bounded._rangeAnswers([{ txid: bTxid, vout: 0, value: 25_000 }], st, bRow.address);
+    return st;
+  };
+  for (let i = 1; i <= STAGED_RANGE_TRIES; i += 1) {
+    eq(`staged miss ${i}${i < STAGED_RANGE_TRIES ? ' is' : ' is the last one'} retried`,
+      (await oneMiss()).backlog, i < STAGED_RANGE_TRIES ? 1 : 0);
+  }
+  eq('the retry counter stops at the bound',
+    bounded.staged[String(bSat)].range_misses, STAGED_RANGE_TRIES);
+  eq('past the bound the cadence is normal again', (await oneMiss()).backlog, 0);
+
+  // 3. A proven state output clears the flag from the watch loop too (the
+  //    range answer and the watch loop must agree).
+  const watchClear = fresh();
+  const rb9 = new RangeBackend();
+  watchClear.backend = rb9;
+  const wTxid = 'ef'.repeat(32);
+  const wSat = 9_999;
+  const wRow = seedFrog(watchClear, wSat, wTxid).row;
+  rb9.add(wRow.address, wTxid, 0, 25_000, [[0, 25_000]]);
+  await watchClear.refresh({ force: true });
+  eq('a proven state utxo clears the flag on a pass',
+    watchClear.staged[String(wSat)].provisional, false);
+
+  // 4. The seed is persisted: a reload must watch the same state script and
+  //    keep HOP fail-closed until ranges arrive.
+  const seedStore = fresh();
+  const rb10 = new RangeBackend();
+  seedStore.backend = rb10;
+  const rTxid = '12'.repeat(32);
+  const rSat = 12_345;
+  seedFrog(seedStore, rSat, rTxid);
+  const reloadedSeed = mk();
+  eq('a provisional row survives a reload', reloadedSeed.staged[String(rSat)]?.provisional, true);
+  eq('the reloaded row is watched immediately', reloadedSeed.scanState().watch.staged, 1);
+
+  // 5. `_seedStaged` is the only writer of this shape: refuse anything that
+  //    is not a real outpoint instead of seeding a sweep for garbage.
+  const guard = fresh();
+  eq('a short txid is refused', guard._seedStaged({ sat: 4_242 }, { txid: 'ab' }), null);
+  eq('a non-hex txid is refused', guard._seedStaged({ sat: 4_242 }, { txid: 'zz'.repeat(32) }), null);
+  eq('a fractional sat is refused', guard._seedStaged({ sat: 1.5 }, { txid: '34'.repeat(32) }), null);
+  eq('a zero sat is refused', guard._seedStaged({ sat: 0 }, { txid: '34'.repeat(32) }), null);
+  eq('nothing was seeded', Object.keys(guard.staged).length, 0);
+
+  // 6. The builder's script is the truth. A re-derivation that disagreed
+  //    with the transaction would watch an address the coin never pays.
+  const scriptSeed = fresh();
+  const payload = new Uint8Array(34);
+  payload[0] = 0x51; payload[1] = 0x20; payload.fill(7, 2);
+  const sRow = scriptSeed._seedStaged({ sat: 5_555, mint_txid: '99'.repeat(32), mint_index: 0 },
+    { txid: '56'.repeat(32), script: payload });
+  eq('the builder script wins over a re-derivation', sRow?.script,
+    [...payload].map((b) => b.toString(16).padStart(2, '0')).join(''));
+  eq('the seeded address belongs to that script', /^bcrt1p/.test(sRow?.address || ''), true);
+
+  // 7. A planted ledger is untrusted input: no prototype pollution, no
+  //    malformed rows in the watch set, and a hard bound on the sweep list.
+  const seededKey = fresh()._ledgerKey();
+  const rows = {};
+  for (let i = 1; i <= 305; i += 1) {
+    // Make the five LOWEST sats the newest rows: the cap must be by age, not
+    // by the numeric key.
+    rows[String(1000 + i)] = {
+      sat: 1000 + i, address: `bcrt1p${'q'.repeat(40)}`, script: '51',
+      txid: 'aa'.repeat(32), vout: 0, seeded_at: 10_000 - i,
+    };
+  }
+  settingsStore.set(seededKey, JSON.stringify({
+    staged: {
+      ...rows,
+      'oops': { sat: 'x' },
+      '12.5': { address: 5, script: null },
+      '999': null,
+      ['__proto__']: { sat: 1, address: 'x', script: '51' },
+    },
+  }));
+  const planted = mk();
+  eq('the watch list is capped at 300', Object.keys(planted.staged).length, 300);
+  eq('the newest rows are the ones kept', '1001' in planted.staged, true);
+  eq('the oldest rows are the ones dropped', '1305' in planted.staged, false);
+  eq('malformed rows are dropped', Object.keys(planted.staged).filter((k) => !/^[0-9]+$/.test(k)).length, 0);
+  eq('a __proto__ key does not pollute Object', ({}).sat, undefined);
+
+  // 8. Fail-closed end to end: a visible provisional card must refuse to
+  //    build a HOP, and must not record one, until ranges are proven.
+  const hopGuard = fresh();
+  const rb11 = new RangeBackend();
+  hopGuard.backend = rb11;
+  hopGuard.publicSource = false;
+  const hTxid = '78'.repeat(32);
+  const hSat = 13_579;
+  const hRow = seedFrog(hopGuard, hSat, hTxid).row;
+  hopGuard.chainMints = [{
+    sat: hSat, txid: '99'.repeat(32), mint_index: 0, seed: 'aa'.repeat(32), name: 'GUARD',
+  }];
+  rb11.add(hRow.address, hTxid, 0, 25_000, [[0, 25_000]]);
+  // A spendable coin so the HOP can reach the range proof (the funding
+  // check runs first and would otherwise mask it).
+  rb11.add(hopGuard.keys.receive(0).address, '89'.repeat(32), 0, 100_000, [[25_000, 125_000]]);
+  rb11.unproven.add(outpointKey(hTxid, 0));
+  await hopGuard.refresh({ force: true });
+  const hFrog = hopGuard.frogs.find((f) => Number(f.sat) === hSat);
+  eq('the seeded Hopper is visible while unproven', !!hFrog, true);
+  let hopErr = null;
+  try { await hopGuard.previewCross(hFrog, { dir: 1 }); } catch (e) { hopErr = e; }
+  eq('an unproven card cannot build a HOP',
+    /exact ordinal ranges/.test(String(hopErr?.message)), true);
+  eq('no HOP was recorded', hopGuard.actions.filter((a) => a.kind === 'cross').length, 0);
+
   rc.stop(); reloaded.stop(); budget.stop(); cool.stop(); old.stop(); stg.stop();
+  unproven.stop(); bounded.stop(); watchClear.stop(); seedStore.stop(); guard.stop();
+  scriptSeed.stop(); planted.stop(); hopGuard.stop();
 }
 
 console.log(`scan: ${checks} checks passed`);
