@@ -302,37 +302,52 @@ await waitFor(`document.querySelector('#toasts')?.innerText.includes('Staged on 
 console.log('toast:', (await toasts()).replace(/\n/g, ' | ').slice(0, 200));
 ok('staging transaction broadcast', /Staged on The Road/.test(await toasts()));
 
-// Confirm the state output like a normal user would.
-btc('generatetoaddress', '1', 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080');
-await sleep(5000);
-await nav('road');
-// Diagnostics if the road does not offer the hop: the ledger is the truth
-// about where the wallet thinks the Hopper's sat lives.
-await sleep(1500);
-const roadDiag = await evaluate(`(() => {
+// Solution 2: PREPARE seeds the state outpoint in the ledger, so warm passes
+// watch the derived script from now on. Assert that before the chain can
+// possibly name the output.
+const stagedRow = await evaluate(`(() => {
   const lk = Object.keys(localStorage).find((k) => k.startsWith('hopper.ledger.'));
   const led = lk ? JSON.parse(localStorage.getItem(lk)) : null;
-  return {
-    road: document.querySelector('#app')?.innerText?.slice(0, 600),
-    actions: led?.actions,
-    staged: led?.staged,
-    tip: led?.tipHeight,
-    fullScanTip: led?.fullScanTip,
-  };
+  const row = led?.staged?.[String(${frogSat})];
+  if (!row) return null;
+  return { txid: row.txid, vout: row.vout, provisional: row.provisional === true, hasScript: typeof row.script === 'string' };
 })()`);
-console.log('road diag:', JSON.stringify(roadDiag).slice(0, 1800));
+ok('the state outpoint is seeded before the chain names it',
+  !!stagedRow && stagedRow.provisional === true && stagedRow.vout === 0 && stagedRow.hasScript,
+  JSON.stringify(stagedRow));
+
+// Confirm the state output like a normal user would, then expect a WARM pass
+// to find it: no RESCAN, no reload.
+btc('generatetoaddress', '1', 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080');
+await sleep(3000);
+await nav('road');
 let stagedVisible = false;
-try {
-  await waitFor('document.querySelector("[data-action=sheet-cross]")', 15000, 'a staged Hopper');
-  stagedVisible = true;
-} catch { /* recorded below */ }
-ok('staging keeps the Hopper on the road without a manual rescan', stagedVisible,
-  'the state output is only discovered on a cold/forced pass');
+const roadT0 = Date.now();
+while (Date.now() - roadT0 < 75000) {
+  if (await exists('[data-action=sheet-cross]')) { stagedVisible = true; break; }
+  if (Date.now() - roadT0 > 15000 && Date.now() - roadT0 < 16000) await nav('road');
+  await sleep(1000);
+}
 if (!stagedVisible) {
-  // Known gap: _discoverStaged() runs once, inside prepare()'s refresh, and
-  // that is usually before ord can name the brand-new state output. Warm
-  // passes never retry, so the Hopper vanishes until a forced pass. RESCAN
-  // is the in-app escape hatch; a reload does the same.
+  // Diagnostics if the seed did not survive: the ledger is the truth about
+  // where the wallet thinks the Hopper's sat lives.
+  const roadDiag = await evaluate(`(() => {
+    const lk = Object.keys(localStorage).find((k) => k.startsWith('hopper.ledger.'));
+    const led = lk ? JSON.parse(localStorage.getItem(lk)) : null;
+    return {
+      road: document.querySelector('#app')?.innerText?.slice(0, 600),
+      actions: led?.actions,
+      staged: led?.staged,
+      tip: led?.tipHeight,
+      fullScanTip: led?.fullScanTip,
+    };
+  })()`);
+  console.log('road diag:', JSON.stringify(roadDiag).slice(0, 1800));
+}
+ok('staging keeps the Hopper on the road without a manual rescan', stagedVisible,
+  `seeded row ${JSON.stringify(stagedRow)}; no sheet-cross after 75 s`);
+if (!stagedVisible) {
+  // In-app escape hatch, so the rest of the play flow still runs.
   console.log('   recovering with SETTINGS -> RESCAN FROM CHAIN');
   await nav('settings');
   await waitFor('document.querySelector("[data-action=rescan]")', 15000, 'RESCAN button');
@@ -347,8 +362,9 @@ ok('the road shows the staged Hopper', /RIGFROG/.test(road) && /CHOOSE A DIRECTI
 await click('sheet-cross');
 await waitFor('document.querySelector("[data-input=cross-owner]")', 10000, 'hop direction sheet');
 ok('the hop sheet explains the sealed outcome', /next block picks one direction/i.test(await text('.overlay')));
-for (let i = 0; i < 12; i += 1) {
+for (let i = 0; i < 24; i += 1) {
   if (await evaluate(`document.querySelector('.overlay h2')?.innerText.includes('HOP STRAIGHT')`)) break;
+  if (i === 6 || i === 14) console.log(`   hop still waiting for proven ranges (${i * 2.5}s)`);
   await clickSel('[data-action=preview-hop][data-dir="1"]');
   await sleep(2500);
 }

@@ -16,7 +16,7 @@
 // watchdog in index.html.
 (() => {
   'use strict';
-  const BUILD = 'hopper-v8-0-12';
+  const BUILD = 'hopper-v8-0-13';
   globalThis.HOPPER_BUILD = BUILD;
   if (!/^https?:$/.test(location.protocol)) return;
 

@@ -61,6 +61,10 @@ export const WAKE_FLOOR_MS = 60 * 1000;
 export const RANGE_ASK_BURST = 24;
 export const RANGE_ASK_PER_MIN = 24;
 export const RANGE_BACKLOG_TICK_MS = 15_000;
+// A Hopper just staged by this wallet has a known outpoint but no proven
+// ranges until ord catches up. Retry that one question a few times (the
+// 15 s backlog cadence) so a hop is not blocked until the *next* block.
+export const STAGED_RANGE_TRIES = 8;
 
 /** A local node recovers quickly: 5, 10, 20, 40, 80, 160, 300 s.
  *  A public source is being rate-limited when it fails, so start at a
@@ -430,6 +434,33 @@ export class WalletSession {
     return result.store.packs[String(entry.sat)] || null;
   }
 
+  /** Record the state outpoint this wallet just built. `staged` drives the
+   *  watch set, so the very next warm pass asks the chain about the derived
+   *  state script instead of losing the Hopper until a forced rescan. The
+   *  entry stays `provisional`: the sat ranges are not proven until ord (or
+   *  another range source) answers, and HOP is fail-closed on that proof. */
+  _seedStaged(frog, { txid, vout = 0, value = CARD_VALUE } = {}) {
+    const sat = Number(frog?.sat);
+    const id = String(txid || '').toLowerCase();
+    if (!Number.isSafeInteger(sat) || sat <= 0 || !/^[0-9a-f]{64}$/.test(id)) return null;
+    const entry = this._stagedEntry(frog);
+    if (!entry) return null;
+    const key = String(sat);
+    this.staged[key] = {
+      ...(this.staged[key] || {}),
+      sat,
+      address: entry.address,
+      script: entry.script,
+      txid: id,
+      vout: Number(vout) || 0,
+      value: Number(value) || null,
+      provisional: true,
+      range_misses: 0,
+    };
+    this._saveLedger();
+    return this.staged[key];
+  }
+
   // --- backend -----------------------------------------------------------
 
   async connect() {
@@ -785,6 +816,13 @@ export class WalletSession {
   async _rangeAnswers(list, stats, address = '') {
     const out = new Array(list.length).fill(null);
     if (!Array.isArray(list) || !list.length) return out;
+    // A freshly staged state output is the one coin whose answer we should
+    // insist on: without proven ranges its HOP stays fail-closed, and at an
+    // unchanged tip a plain miss would not be asked again until the next
+    // block. Retry inside the existing backlog cadence, bounded.
+    const stagedRow = address
+      ? Object.values(this.staged || {}).find((r) => r?.provisional === true && r.address === address)
+      : null;
     const ask = [];
     for (let i = 0; i < list.length; i += 1) {
       const hit = this._rangeFromCache(list[i]);
@@ -810,9 +848,20 @@ export class WalletSession {
     await mapLimit(ask.slice(0, budget), 2, async (i) => {
       const u = list[i];
       const dto = await this._askRange(u.txid, u.vout);
-      if (!dto) { stats.misses += 1; return; }
+      if (!dto) {
+        stats.misses += 1;
+        if (stagedRow) {
+          stagedRow.range_misses = (Number(stagedRow.range_misses) || 0) + 1;
+          if (stagedRow.range_misses < STAGED_RANGE_TRIES) stats.backlog += 1;
+        }
+        return;
+      }
       out[i] = dto;
       stats.asked += 1;
+      if (stagedRow) {
+        stagedRow.provisional = false;
+        stagedRow.range_misses = 0;
+      }
       if (dto.exact !== false && Number(dto.value) === Number(u.value)
           && this.rangeCache.put(u.txid, u.vout, { value: dto.value, ranges: dto.ranges, address })) {
         this._rangeCacheDirty = true;
@@ -1146,6 +1195,12 @@ export class WalletSession {
             || Number(prior.vout) !== Number(first.vout)) {
           prior.txid = String(first.txid).toLowerCase();
           prior.vout = Number(first.vout);
+          stagedChanged = true;
+        }
+        if (prior.provisional === true
+            && utxos.some((u) => u.kind === 'state' && u.address === w.address && u.exact === true)) {
+          prior.provisional = false;
+          prior.range_misses = 0;
           stagedChanged = true;
         }
       }
@@ -1549,8 +1604,13 @@ export class WalletSession {
         ...prior, ...entry,
         txid: String(match.txid).toLowerCase(), vout: Number(match.vout),
       };
+      if (prior.provisional === true) {
+        next.provisional = false;
+        next.range_misses = 0;
+      }
       if (prior.address !== next.address || prior.script !== next.script
-          || prior.txid !== next.txid || Number(prior.vout) !== Number(next.vout)) {
+          || prior.txid !== next.txid || Number(prior.vout) !== Number(next.vout)
+          || prior.provisional === true) {
         this.staged[String(entry.sat)] = next;
         changed = true;
       }
@@ -3067,6 +3127,11 @@ export class WalletSession {
     this._rememberRecovery(frog, {
       txid: built.txid, vout: 0, value: built.stateValue, tipHeight: this.tipHeight,
     });
+    // The state output exists now. Watch it from here on; without this the
+    // Hopper vanished from The Road until a forced pass (`_discoverStaged`
+    // is cold/forced only) because warm passes had no reason to look at the
+    // brand-new state script.
+    this._seedStaged(frog, { txid: built.txid, vout: 0, value: built.stateValue });
     await this.refresh();
     return built;
   }

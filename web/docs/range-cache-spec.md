@@ -194,6 +194,15 @@ is up to ~400 KB — a separate key is written only when it changed):
 * **`_txCache.clear()` per pass**: leave for now. The same immutability
   argument applies to `getTx`/`getTxHex` for confirmed txs, but status fields
   change, so it is a separate change (§11).
+* **A just-staged Hopper** (`STAGED_RANGE_TRIES`): PREPARE seeds the
+  `sat -> state outpoint` row in the ledger (`provisional: true`), so warm
+  passes watch the derived state script immediately instead of waiting for a
+  forced pass. Because its ranges are not proven yet, its HOP is fail-closed
+  (`proveAssignment` refuses a coin without exact ranges). That one question
+  is retried on the backlog cadence (15 s) up to 8 times, then it falls back
+  to the normal per-block/forced cadence. Without the retry, a 404 at the
+  block where the staging tx confirms would leave the card unhoppable until
+  the *next* block.
 * **UI**: no new state. "Sats without ranges" still appears when a coin is
   unknown and the budget is exhausted or ord is cooling down — the same
   first-class display as today.

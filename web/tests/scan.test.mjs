@@ -792,7 +792,38 @@ wallet.stop();
   eq('with the cache off every pass asks again', rb5.rangeCalls, 4); // cold + 3 passes
   eq('with the cache off nothing is stored', old.rangeCache.size, 0);
 
-  rc.stop(); reloaded.stop(); budget.stop(); cool.stop(); old.stop();
+  // Solution 2: PREPARE seeds the state outpoint it just built. Warm passes
+  // watch the derived state script from then on (the old code only looked on
+  // a cold/forced pass, so the Hopper vanished from The Road); HOP stays
+  // fail-closed until ranges are proven, and that one question is retried
+  // within the backlog cadence instead of waiting for the next block.
+  const stg = mk();
+  const rb6 = new RangeBackend();
+  stg.backend = rb6;
+  stg.publicSource = false;
+  const stateTxid = '88'.repeat(32);
+  const stagedFrog = { sat: 4_242, mint_txid: '99'.repeat(32), mint_index: 0 };
+  const seeded = stg._seedStaged(stagedFrog, { txid: stateTxid, vout: 0, value: 25_000 });
+  eq('staging seeds the state outpoint immediately',
+    !!(seeded && seeded.txid === stateTxid && seeded.provisional === true), true);
+  eq('the seeded script joins the watch set', stg.scanState().watch.staged, 1);
+
+  rb6.live.set(seeded.address, [{ txid: stateTxid, vout: 0, value: 25_000 }]);
+  const beforeStagedAsk = rb6.rangeCalls;
+  await stg.refresh({ force: true });
+  eq('a warm pass asks the chain about the seeded script', rb6.rangeCalls, beforeStagedAsk + 1);
+  eq('an unanswered staged coin is retried soon', stg._rangeBacklog, 1);
+  eq('the staged entry stays provisional without ranges', stg.staged['4242'].provisional, true);
+
+  rb6.ranges.set(outpointKey(stateTxid, 0), { value: 25_000, ranges: [[0, 25_000]] });
+  const provenStats = { hits: 0, asked: 0, misses: 0, backlog: 0 };
+  const proven = await stg._rangeAnswers(
+    [{ txid: stateTxid, vout: 0, value: 25_000 }], provenStats, seeded.address);
+  eq('a proven ranged answer clears the provisional flag', stg.staged['4242'].provisional, false);
+  eq('the proven answer carries the ranges', proven[0]?.ranges?.length, 1);
+  eq('the proven answer is counted as an ask', provenStats.asked, 1);
+
+  rc.stop(); reloaded.stop(); budget.stop(); cool.stop(); old.stop(); stg.stop();
 }
 
 console.log(`scan: ${checks} checks passed`);

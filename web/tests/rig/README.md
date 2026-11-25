@@ -38,7 +38,7 @@ node web/tests/rig/full-e2e.mjs          # everything: cache, mint, play, send, 
 Or run the whole thing — backends, browser, E2E, teardown — in one command:
 
 ```bash
-bash web/tests/rig/run-full-e2e.sh        # 37 checks, exit 1 if any failed
+bash web/tests/rig/run-full-e2e.sh        # 38 checks, exit 1 if any failed
 ```
 
 `full-e2e.mjs` is the regression gate for the product, not just the scheduler:
@@ -53,17 +53,9 @@ bash web/tests/rig/run-full-e2e.sh        # 37 checks, exit 1 if any failed
 | P5 | a genuinely new outpoint reaches ord; a 429 starts the cooldown, later asks stop, and the oracle recovers after it |
 | P6 | no unexpected page errors |
 
-One check is expected to fail today: `staging keeps the Hopper on the road
-without a manual rescan`. `_discoverStaged()` only runs on a cold/forced pass
-and only once, inside `prepare()`'s refresh — usually before ord can name the
-brand-new state output. Warm passes never retry, so the Hopper disappears
-from The Road until a RESCAN (or reload). The harness records the failure and
-then recovers with SETTINGS → RESCAN FROM CHAIN so the rest of P3 still runs
-against real backends.
-
-`POST /__fault {"match":"/r/utxo","status":429,"times":100}` on either the
-shim or the proxy injects failures; `DELETE /__fault` clears them.
-
-`settings.forcePublicSource = true` (test-only, no UI writes it) makes the
-public-source paths fire against local endpoints: 10-minute idle cadence,
-metered Esplora pacing, the 1-minute failure ladder.
+The suite is green (38/38). P3 pins the staging fix: PREPARE seeds the
+state outpoint in the ledger (`provisional: true`) before any source can name
+it, so warm passes watch the derived state script and the Hopper stays on The
+Road with no RESCAN or reload. The seeded card refuses to HOP until its ranges
+are proven, and that one question is retried on the 15 s backlog cadence
+instead of waiting for the next block.
