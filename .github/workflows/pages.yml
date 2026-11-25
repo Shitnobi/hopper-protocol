@@ -35,23 +35,35 @@ jobs:
         with:
           path: web
 
+      - name: Settle the artifact listing
+        # The list-artifacts API has returned an empty set seconds after a
+        # successful upload; a short pause avoids that window.
+        run: sleep 5
+
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
-        # Twice (2026-11-25) this step failed after a successful upload with
-        # "Fetching artifact metadata failed ... Found 0 artifact(s)" — the
-        # artifact-list API flaked, not the build. Retry once so a green tree
-        # does not need a manual rerun or an empty commit.
         continue-on-error: true
 
-      - name: Deploy (retry after a flaked artifact listing)
-        id: deployment_retry
+      - name: Deploy (retry 1)
+        id: deployment_r1
         if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Cool down before the last deploy attempt
+        if: steps.deployment.outcome == 'failure' && steps.deployment_r1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Deploy (retry 2)
+        id: deployment_r2
+        if: steps.deployment.outcome == 'failure' && steps.deployment_r1.outcome == 'failure'
         uses: actions/deploy-pages@v4
 
       - name: Resolve the deployed URL
         id: deployed
         run: |
           url="${{ steps.deployment.outputs.page_url }}"
-          [ -n "$url" ] || url="${{ steps.deployment_retry.outputs.page_url }}"
+          [ -n "$url" ] || url="${{ steps.deployment_r1.outputs.page_url }}"
+          [ -n "$url" ] || url="${{ steps.deployment_r2.outputs.page_url }}"
           echo "url=$url" >> "$GITHUB_OUTPUT"
