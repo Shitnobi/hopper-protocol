@@ -294,7 +294,23 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
     E2E now opens a real second document and checks that a stale save in it
     cannot drop a staged row from the first.
 
-Implemented in `web/tests/scan.test.mjs` (298 checks, up from 150), including
+18. Third red-team pass, on the public-script and lifecycle edges. The state
+    script is public, so a stranger can pay it: the warm pass used to adopt
+    `list[0]` as the frog's outpoint, which parked the row at a coin the range
+    proof can never satisfy (HOP then refused, and each pass re-pinned it). A
+    row may only name an output whose complete ranges hold its sat; a single
+    output with no answer yet is the one safe guess. A stranger's answer can
+    no longer clear the row's retry or spend its miss budget — both belong to
+    the row's own outpoint. A stopped session (lock, wipe, backend change)
+    now writes nothing: ledger, range cache and recovery packs all refuse, so
+    a late rejection cannot recreate a wiped device's data. The automatic
+    recovery store is network-scoped like the ledger, with a one-time
+    migration that adopts only a matching chain (an unlabelled legacy store
+    is read but kept for the other chain) and a load-time refusal of a pack
+    labelled for another network, because packs name chain outpoints and
+    addresses. The demo E2E still covers the two-tab storage event end to end.
+
+Implemented in `web/tests/scan.test.mjs` (315 checks, up from 150), including
 the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
 reload-from-storage path, the rollback flag, and the adversarial staged-seed
 and two-tab cases.

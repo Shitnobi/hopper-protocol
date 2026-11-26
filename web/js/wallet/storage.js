@@ -78,7 +78,9 @@ export const KEYS = {
   // key: the same seed on mainnet and testnet would otherwise share (and
   // overwrite) one ledger. The two-argument form is the legacy slot.
   ledger: (fp, network) => `hopper.ledger.${fp}${network ? `.${network}` : ''}.v1`,
-  recovery: (fp) => `hopper.recovery.${fp}.v1`,
+  // Recovery packs name chain outpoints and addresses, so they are scoped
+  // like the ledger. The one-argument form is the legacy slot.
+  recovery: (fp, network) => `hopper.recovery.${fp}${network ? `.${network}` : ''}.v1`,
   rangeCache: (fp) => `hopper.ranges.${fp}.v1`,
   mock: 'hopper.mockchain.v1',
 };

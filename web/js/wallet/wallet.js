@@ -469,6 +469,10 @@ export class WalletSession {
   }
 
   _saveLedger() {
+    // A lock, wipe or backend change ended this session. A pass that was in
+    // flight may still reject afterwards; writing here would recreate the
+    // vault's ledger (and a wiped device would keep its staged addresses).
+    if (this._stopped) return false;
     // localStorage holds one key per wallet and every tab keeps a full copy
     // in memory. Writing that copy verbatim would drop a staged Hopper (or a
     // mint package holding the only copy of an unrevealed commit) that
@@ -669,19 +673,38 @@ export class WalletSession {
 
   // --- automatic recovery packs -----------------------------------------
 
-  _recoveryKey() { return KEYS.recovery(this.fingerprint); }
+  _recoveryKey() { return KEYS.recovery(this.fingerprint, this.network); }
+
+  /** Same seed, two chains: a recovery pack names outpoints and addresses
+   *  that only exist on one chain, so the store is scoped like the ledger. */
+  _legacyRecoveryKey() { return KEYS.recovery(this.fingerprint); }
 
   _loadRecovery() {
-    const raw = loadJson(this._recoveryKey(), null);
+    let raw = loadJson(this._recoveryKey(), null);
+    let from = null;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      const legacy = loadJson(this._legacyRecoveryKey(), null);
+      // Never adopt another chain's packs. An unlabelled store predates the
+      // field and may be shared with another chain, so it is read but kept.
+      if (legacy && typeof legacy === 'object'
+          && (!legacy.network || legacy.network === this.network)) {
+        raw = legacy;
+        if (legacy.network === this.network) from = this._legacyRecoveryKey();
+      } else raw = null;
+    }
     this.recovery = normalizeRecoveryStore(raw, {
       fingerprint: this.fingerprint, network: this.network,
     });
+    // Only drop the old slot after the scoped write succeeded: the packs are
+    // the last-resort copy, and a quota error must not delete them.
+    if (from && this._saveRecovery()) removeKey(from);
   }
 
   _saveRecovery() {
+    if (this._stopped) return false;
     try {
-      saveJson(this._recoveryKey(), this.recovery);
-    } catch { /* storage may be unavailable; the live export still works */ }
+      return saveJson(this._recoveryKey(), this.recovery);
+    } catch { return false; }
   }
 
   recoveryPacks() {
@@ -1110,7 +1133,7 @@ export class WalletSession {
   }
 
   _saveRangeCache(force = false) {
-    if (!this._rangeCacheEnabled()) return;
+    if (this._stopped || !this._rangeCacheEnabled()) return;
     if (!force && !this._rangeCacheDirty) return;
     this.rangeCache.prune();
     saveJson(KEYS.rangeCache(this.fingerprint), this.rangeCache.toJSON());
@@ -1151,6 +1174,12 @@ export class WalletSession {
     const stagedRow = address
       ? Object.values(this.staged || {}).find((r) => r?.provisional === true && r.address === address)
       : null;
+    // Only this row's own outpoint can prove (or miss) it. A stranger's
+    // payment to the same public state script shares the address but says
+    // nothing about the Hopper's coin, and must not spend its retry budget.
+    const own = (u) => !!stagedRow
+      && String(u?.txid || '').toLowerCase() === String(stagedRow.txid || '').toLowerCase()
+      && Number(u?.vout) === Number(stagedRow.vout);
     const ask = [];
     for (let i = 0; i < list.length; i += 1) {
       const hit = this._rangeFromCache(list[i]);
@@ -1178,7 +1207,7 @@ export class WalletSession {
       const dto = await this._askRange(u.txid, u.vout);
       if (!dto) {
         stats.misses += 1;
-        if (stagedRow) {
+        if (stagedRow && own(u)) {
           stagedRow.range_misses = (Number(stagedRow.range_misses) || 0) + 1;
           if (stagedRow.range_misses < STAGED_RANGE_TRIES) stats.backlog += 1;
         }
@@ -1186,7 +1215,7 @@ export class WalletSession {
       }
       out[i] = dto;
       stats.asked += 1;
-      if (stagedRow) {
+      if (stagedRow && own(u)) {
         if (dto.exact !== false) {
           stagedRow.provisional = false;
           stagedRow.range_misses = 0;
@@ -1481,6 +1510,7 @@ export class WalletSession {
         if (!row.address) row.address = w.address;
         mempoolByTx.set(txid, row);
       });
+      const proofs = [];
       list.forEach((u, i) => {
         let dto = dtos[i];
         // A range oracle that does not answer (rate limit, restart, hiccup)
@@ -1511,6 +1541,10 @@ export class WalletSession {
         const holdsFrog = isState && baseExact
           && ranges.some(([a, b]) => frogSat >= a && frogSat <= b);
         const exact = isState ? holdsFrog : baseExact;
+        proofs.push({
+          txid: String(u.txid || '').toLowerCase(), vout: Number(u.vout),
+          holds: holdsFrog, exactAnswer: baseExact,
+        });
         const frogs = isState
           ? (holdsFrog ? [frogSat] : [])
           : dto ? (dto.frogs || []) : (u.frogs || []);
@@ -1527,15 +1561,22 @@ export class WalletSession {
       });
       if (isState && list.length && this.staged[String(w.sat)]) {
         const prior = this.staged[String(w.sat)];
-        const first = list[0];
-        if (String(prior.txid || '').toLowerCase() !== String(first.txid).toLowerCase()
-            || Number(prior.vout) !== Number(first.vout)) {
-          prior.txid = String(first.txid).toLowerCase();
-          prior.vout = Number(first.vout);
+        // F-07 in the warm pass: a state script is public, so a stranger can
+        // pay it. The row may only name an output whose complete ranges hold
+        // this Hopper's sat; adopting `list[0]` blind pinned the frog to a
+        // coin the range proof can never satisfy (and a HOP then refused).
+        // A single output with no answer yet is the one safe guess; an exact
+        // answer that excludes the sat is a stranger's coin, not a guess.
+        const mine = proofs.find((p) => p.holds);
+        const single = proofs.length === 1 ? proofs[0] : null;
+        const pick = mine || (single && !(single.exactAnswer && !single.holds) ? single : null);
+        if (pick && (String(prior.txid || '').toLowerCase() !== pick.txid
+            || Number(prior.vout) !== pick.vout)) {
+          prior.txid = pick.txid;
+          prior.vout = pick.vout;
           stagedChanged = true;
         }
-        if (prior.provisional === true
-            && utxos.some((u) => u.kind === 'state' && u.address === w.address && u.exact === true)) {
+        if (prior.provisional === true && mine) {
           prior.provisional = false;
           prior.range_misses = 0;
           stagedChanged = true;

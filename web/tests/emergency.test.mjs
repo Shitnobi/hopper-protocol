@@ -231,6 +231,20 @@ const badStore = normalizeRecoveryStore({
 }, { fingerprint: doc.fingerprint, network: 'regtest' });
 eq(Object.keys(badStore.packs).length, 1, 'only the valid stored pack survives');
 
+// A pack names chain outpoints and addresses: the same seed on two chains
+// holds different packs, so a mismatched label is another chain's data.
+const mixed = { ...r3.store, packs: { ...r3.store.packs } };
+const mixedKey = Object.keys(mixed.packs)[0];
+mixed.packs[mixedKey] = { ...mixed.packs[mixedKey], network: 'mainnet' };
+const cleaned = normalizeRecoveryStore(mixed, {
+  fingerprint: doc.fingerprint, network: 'regtest',
+});
+eq(Object.keys(cleaned.packs).length, 0, "another chain's pack is not adopted");
+const relabelled = normalizeRecoveryStore(r3.store, {
+  fingerprint: doc.fingerprint, network: 'mainnet',
+});
+eq(Object.keys(relabelled.packs).length, 0, 'a regtest pack is not relabelled mainnet');
+
 // The wallet-side local record used immediately after PREPARE/HOP.
 const fake = {
   keys: wallet,

@@ -18,6 +18,7 @@ const {
   failureBackoffMs, isPublicEndpoint, isUnconfirmedUtxo, STAGED_RANGE_TRIES,
 } = await import('../js/wallet/wallet.js');
 const { createVault } = await import('../js/wallet/vault.js');
+const { KEYS } = await import('../js/wallet/storage.js');
 
 let checks = 0;
 function eq(what, got, want) {
@@ -984,6 +985,113 @@ wallet.stop();
     /exact ordinal ranges/.test(String(hopErr?.message)), true);
   eq('no HOP was recorded', hopGuard.actions.filter((a) => a.kind === 'cross').length, 0);
 
+  // 9. The state script is public: a stranger can pay it. F-07 says only an
+  //    output whose complete ranges hold this Hopper's sat is *our*
+  //    outpoint. The warm pass used to pin `list[0]` blind, so a stranger's
+  //    payment listed first parked the frog at a coin the range proof can
+  //    never satisfy (and a HOP then refused).
+  const pub = fresh();
+  const rb12 = new RangeBackend();
+  pub.backend = rb12;
+  pub.publicSource = false;
+  const ownTxid = 'b1'.repeat(32);
+  const ownSat = 6_321;
+  const ownRow = seedFrog(pub, ownSat, ownTxid).row;
+  rb12.add(ownRow.address, 'c1'.repeat(32), 0, 1_000, [[0, 1_000]]);   // listed first
+  rb12.add(ownRow.address, ownTxid, 0, 25_000, [[0, 25_000]]);
+  await pub.refresh({ force: true });
+  eq('a stranger payment listed first cannot steal the staged outpoint',
+    pub.staged[String(ownSat)].txid, ownTxid);
+  eq('the proven output still clears the provisional flag',
+    pub.staged[String(ownSat)].provisional, false);
+
+  // No proof available and two live outputs: keep the outpoint we have
+  // instead of guessing (the stranger's answer only excludes *its* outpoint).
+  const ambiguous = fresh();
+  const rb14 = new RangeBackend();
+  ambiguous.backend = rb14;
+  ambiguous.publicSource = false;
+  const aOwnTxid = 'd2'.repeat(32);
+  const aSat = 6_322;
+  const aRow = seedFrog(ambiguous, aSat, aOwnTxid).row;
+  rb14.ranges.set(outpointKey('c2'.repeat(32), 0), { value: 1_000, ranges: [[0, 1_000]] });
+  rb14.live.set(aRow.address, [
+    { txid: 'c2'.repeat(32), vout: 0, value: 1_000 },   // a stranger, listed first
+    { txid: aOwnTxid, vout: 0, value: 25_000 },          // ours, never answered
+  ]);
+  await ambiguous.refresh({ force: true });
+  eq('with no proof and two outputs the row keeps its own outpoint',
+    ambiguous.staged[String(aSat)].txid, aOwnTxid);
+  eq('an unproven row stays fail-closed', ambiguous.staged[String(aSat)].provisional, true);
+
+  // The stranger's answer must not stand in for ours: the retry belongs to
+  // the row's own outpoint.
+  const solo = fresh();
+  const rb13 = new RangeBackend();
+  solo.backend = rb13;
+  solo.publicSource = false;
+  const soloSat = 4_444;
+  const soloTxid = 'e1'.repeat(32);
+  const soloRow = seedFrog(solo, soloSat, soloTxid).row;   // seeded, not live
+  rb13.add(soloRow.address, 'f1'.repeat(32), 0, 1_000, [[0, 1_000]]);   // only the stranger
+  await solo.refresh({ force: true });
+  eq('a stranger answer cannot prove our row', solo.staged[String(soloSat)].provisional, true);
+  eq('a stranger answer cannot steal the row', solo.staged[String(soloSat)].txid, soloTxid);
+  eq('a stranger miss does not spend our retry budget',
+    solo.staged[String(soloSat)].range_misses, 0);
+
+  // 10. A stopped session (lock, wipe, backend change) must not write after
+  //     the fact: a late rejection used to recreate a wiped device's ledger.
+  const stopped = fresh();
+  stopped.staged['4321'] = { sat: 4321, address: 'bcrt1pstop', script: '51', provisional: true };
+  const stoppedKey = stopped._ledgerKey();
+  localStorage.removeItem(stoppedKey);
+  stopped._rangeCacheDirty = true;
+  stopped.stop();
+  eq('a stopped session refuses to write the ledger', stopped._saveLedger(), false);
+  eq('a stopped session leaves the ledger absent', localStorage.getItem(stoppedKey), null);
+  stopped._saveRangeCache(true);
+  eq('a stopped session writes no range cache',
+    [...settingsStore.keys()].filter((k) => k.startsWith('hopper.ranges.')).length, 0);
+  const recRawBefore = localStorage.getItem(stopped._recoveryKey());
+  eq('a stopped session refuses to write recovery packs', stopped._saveRecovery(), false);
+  eq('a stopped session leaves the recovery store alone',
+    localStorage.getItem(stopped._recoveryKey()), recRawBefore);
+
+  // 11. Recovery packs name chain outpoints and addresses, so the store is
+  //     scoped like the ledger: the same seed on two chains must not share
+  //     (or relabel) one store.
+  for (const k of [...settingsStore.keys()]) {
+    if (k.startsWith('hopper.recovery.')) localStorage.removeItem(k);
+  }
+  const recReg = mk();
+  const recFp = recReg.fingerprint;
+  const recRow = { type: 'hopper-v7-recovery-pack', version: 1, network: 'regtest',
+    fingerprint: recFp, sat: 1_111, descriptor: 'tr(x)',
+    state_outpoint: `${'a3'.repeat(32)}:0` };
+  localStorage.setItem(KEYS.recovery(recFp), JSON.stringify({
+    type: 'hopper-v7-recovery-store', version: 1, network: 'regtest', fingerprint: recFp,
+    packs: { 1111: recRow },
+  }));
+  const recMigrated = mk();
+  eq('a matching legacy recovery store is adopted',
+    Object.keys(recMigrated.recovery.packs).length, 1);
+  eq('the scoped recovery slot is written',
+    !!localStorage.getItem(KEYS.recovery(recFp, 'regtest')), true);
+  eq('the legacy recovery slot is removed', localStorage.getItem(KEYS.recovery(recFp)), null);
+
+  localStorage.removeItem(KEYS.recovery(recFp, 'regtest'));
+  localStorage.setItem(KEYS.recovery(recFp), JSON.stringify({
+    type: 'hopper-v7-recovery-store', version: 1, network: 'mainnet', fingerprint: recFp,
+    packs: { 2222: { ...recRow, sat: 2_222, network: 'mainnet' } },
+  }));
+  const recOther = mk();                 // still regtest
+
+  eq("another chain's recovery store is not adopted",
+    Object.keys(recOther.recovery.packs).length, 0);
+  eq("another chain's legacy recovery slot is kept",
+    !!localStorage.getItem(KEYS.recovery(recFp)), true);
+
   // 12. Two tabs on one device. The ledger is one key per wallet *and
   //     network*; every tab keeps a full copy in memory and rewrites the
   //     whole key, so a stale tab would drop what the other tab recorded.
@@ -1377,6 +1485,8 @@ wallet.stop();
   tabA.stop(); tabB.stop(); tabC.stop(); tabD.stop(); tabE.stop(); tabF.stop(); tabG.stop();
   tabH.stop(); tabI.stop(); tabJ.stop(); tabL.stop(); tabM.stop(); tabN.stop();
   tabO.stop(); tabP.stop(); tabQ.stop(); tabR.stop(); staleO.stop(); reloadedO.stop();
+  pub.stop(); ambiguous.stop(); solo.stop(); stopped.stop(); recReg.stop();
+  recMigrated.stop(); recOther.stop();
   netReg.stop(); mainnet.stop(); migrated.stop(); notMigrated.stop();
 }
 

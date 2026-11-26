@@ -155,7 +155,18 @@ console.log('wallet:', balanceText.replace(/\n/g, ' | '));
 ok('wallet shows a spendable balance', /SPENDABLE BALANCE/.test(balanceText));
 
 // --- 1. idle: the tip gate must hold in the real browser ------------------
-await sleep(4000); // let the current pass settle
+// A new tip owes two catch-up passes, and the funding burst above moves the
+// tip. Wait for a quiet stretch (no `/address/` query for 1.5 s) before
+// measuring, so the window cannot straddle a legitimate catch-up pass. The
+// window itself still asserts that an idle wallet asks for nothing.
+const addrQueries = () => readSince(esploraLog, 0).filter((r) => r.p.includes('/address/')).length;
+let addrSeen = addrQueries();
+for (let i = 0; i < 14; i += 1) {
+  await sleep(1500);
+  const nowCount = addrQueries();
+  if (nowCount === addrSeen) break;
+  addrSeen = nowCount;
+}
 let markE = lines(esploraLog).length;
 let markO = lines(ordLog).length;
 await sleep(8000);

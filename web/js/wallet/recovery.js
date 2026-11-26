@@ -73,6 +73,11 @@ function cleanSnapshot(raw) {
 
 function cleanPack(raw, fingerprint, network) {
   if (!raw || raw.type !== RECOVERY_PACK_TYPE || Number(raw.version) !== RECOVERY_VERSION) return null;
+  // A pack names chain outpoints and addresses. The same seed on another
+  // network produces a different pack for the same sat, so a label that
+  // disagrees means it belongs to that other chain: never adopt it here,
+  // and never relabel it into this chain's store.
+  if (raw.network && network && String(raw.network) !== String(network)) return null;
   const sat = Number(raw.sat);
   if (!Number.isSafeInteger(sat) || sat < 0) return null;
   if (!isStateOutpoint(raw.state_outpoint)) return null;
