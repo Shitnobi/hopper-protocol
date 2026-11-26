@@ -22,7 +22,7 @@ import { parseLocalMint } from './localmint.js';
 import { frogTxRole, replayFrogChain } from './chainfrog.js';
 import { parseTx } from './txparse.js';
 import { buildMintOffThread } from './mint-client.js';
-import { KEYS, loadJson, saveJson } from './storage.js';
+import { KEYS, loadJson, removeKey, saveJson } from './storage.js';
 import { RangeCache, outpointKey } from './rangecache.js';
 import {
   emptyRecoveryStore, normalizeRecoveryStore, reconcileRecoveryStore,
@@ -65,6 +65,13 @@ export const RANGE_BACKLOG_TICK_MS = 15_000;
 // ranges until ord catches up. Retry that one question a few times (the
 // 15 s backlog cadence) so a hop is not blocked until the *next* block.
 export const STAGED_RANGE_TRIES = 8;
+// Mint packages hold the only copy of an unrevealed commit's bytes. A save
+// unions them (never drops one), and the deterministic order below makes the
+// cap agree in every tab: the same top-N is written, so tabs cannot ping-pong.
+export const PENDING_MINTS_MAX = 12;
+// A retired mint package (revealed or refunded) leaves a tombstone: without
+// one, a stale tab's union would resurrect the package from its own memory.
+export const RETIRED_MINTS_MAX = 50;
 // One staged row per staging, never pruned when its output is spent. Cap the
 // persisted map so a planted or long-lived ledger cannot make every pass
 // sweep an unbounded address list.
@@ -259,6 +266,7 @@ export class WalletSession {
     this._ledgerSnapshot = null;   // exact bytes loaded/written last
     this._lastRefresh = null;      // keeps the payload comparable
     this._ledgerStale = false;     // another tab wrote while we were busy
+    this.retiredMints = new Set();   // commit txids whose package was retired
     this._storageHandler = null;
     this._scanAbort = false;
     this._stopped = false;
@@ -286,17 +294,41 @@ export class WalletSession {
 
   // --- persistence -------------------------------------------------------
 
-  _ledgerKey() { return KEYS.ledger(this.fingerprint); }
+  _ledgerKey() { return KEYS.ledger(this.fingerprint, this.network); }
 
-  _loadLedger() {
+  /** Pre-v8-0-16 ledgers are keyed by fingerprint only, so the same seed on
+   *  two chains shared one slot. The scoped key is the truth from now on;
+   *  the old slot is read once, and only when it belongs to this chain. */
+  _legacyLedgerKey() { return KEYS.ledger(this.fingerprint); }
+
+  _readLedger() {
     let raw = null;
     try { raw = localStorage.getItem(this._ledgerKey()); } catch { raw = null; }
+    if (raw != null) return { raw, from: this._ledgerKey(), legacy: false };
+    let legacyRaw = null;
+    try { legacyRaw = localStorage.getItem(this._legacyLedgerKey()); } catch { legacyRaw = null; }
+    if (legacyRaw == null) return { raw: null, from: this._ledgerKey(), legacy: false };
+    let legacy = null;
+    try { legacy = JSON.parse(legacyRaw); } catch { legacy = null; }
+    // An unlabelled ledger predates `network`; a labelled one must match.
+    if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)
+        && (!legacy.network || legacy.network === this.network)) {
+      return { raw: legacyRaw, from: this._legacyLedgerKey(), legacy: true };
+    }
+    return { raw: null, from: this._ledgerKey(), legacy: false };
+  }
+
+  _loadLedger() {
+    const { raw, from, legacy } = this._readLedger();
     // The exact bytes we loaded: anything different means another tab wrote.
     this._ledgerSnapshot = raw;
     let l = null;
     try { l = raw ? JSON.parse(raw) : null; } catch { l = null; }
     this._lastRefresh = l && typeof l.lastRefresh === 'string' ? l.lastRefresh : null;
-    if (!l) return;
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return;
+    // Belt and braces: a payload can sit under the wrong key (an old build,
+    // a hand-edit). Never load another chain's balances or rows.
+    if (l.network && this.network && l.network !== this.network) return;
     this.actions = l.actions || [];
     this.receives = Array.isArray(l.receives)
       ? l.receives.filter((r) => r && r.txid && Number(r.amount) >= 0).map((r) => {
@@ -317,8 +349,15 @@ export class WalletSession {
       ? l.chainMints.filter((m) => m && /^[0-9a-f]{64}$/i.test(String(m.txid)))
       : [];
     this.pending = Array.isArray(l.pending) ? l.pending.filter((p) => p && p.txid) : [];
-    this.pendingMints = Array.isArray(l.pendingMints)
-      ? l.pendingMints.filter((p) => p && p.commitTxid && p.revealHex) : [];
+    this.retiredMints = new Set(Array.isArray(l.retiredMints)
+      ? l.retiredMints.map((t) => String(t || '').toLowerCase())
+        .filter((t) => /^[0-9a-f]{64}$/.test(t)) : []);
+    this.pendingMints = this._pendingMintsBounded(l.pendingMints);
+    // A tombstone is final: never load a package that was already retired.
+    if (this.retiredMints.size) {
+      this.pendingMints = this.pendingMints.filter((p) =>
+        !this.retiredMints.has(String(p.commitTxid || '').toLowerCase()));
+    }
     this.inflightMints = Array.isArray(l.inflightMints)
       ? l.inflightMints.filter((p) => p && Number.isSafeInteger(Number(p.sat))) : [];
     this.history = l.history || [];
@@ -340,31 +379,70 @@ export class WalletSession {
         pending: big(l.balance.pending),
       };
     }
+    if (legacy) this._migrateLedger(from);
   }
 
-  /** The bounded staged map: valid rows only, newest `STAGED_ROWS_MAX`
-   *  kept. Rows without `seeded_at` sort as oldest, and the sort is stable,
-   *  so an older ledger keeps its insertion order. */
+  /** Move a legacy (fingerprint-only) ledger to the network-scoped slot.
+   *  Called only after the payload was accepted for this chain, so the old
+   *  slot cannot belong to a different network. */
+  _migrateLedger(from) {
+    if (!from || from === this._ledgerKey()) return;
+    try {
+      const payload = this._ledgerPayload();
+      if (!saveJson(this._ledgerKey(), payload)) return;
+      try { this._ledgerSnapshot = JSON.stringify(payload); } catch { /* proxy only */ }
+      removeKey(from);
+    } catch { /* keep the legacy slot; the next save writes the scoped one */ }
+  }
+
+  /** The bounded staged map: canonical sat keys only, and rows whose own
+   *  `sat` disagrees with the key are refused. Rows without `seeded_at`
+   *  sort as oldest, and the sort is stable, so an older ledger keeps its
+   *  insertion order. */
   _stagedBounded(rows) {
     const list = Object.entries(rows || {}).filter(([sat, row]) =>
-      Number.isSafeInteger(Number(sat)) && row && typeof row.address === 'string'
-        && typeof row.script === 'string');
+      /^\d+$/.test(sat) && Number.isSafeInteger(Number(sat))
+        && String(Number(sat)) === sat
+        && row && typeof row === 'object' && !Array.isArray(row)
+        && typeof row.address === 'string' && typeof row.script === 'string'
+        && (row.sat == null || Number(row.sat) === Number(sat)));
     if (list.length <= STAGED_ROWS_MAX) return Object.fromEntries(list);
     return Object.fromEntries(list
       .sort(([, a], [, b]) => (Number(a.seeded_at) || 0) - (Number(b.seeded_at) || 0))
       .slice(-STAGED_ROWS_MAX));
   }
 
+  /** Mint packages: sorted by their own timestamps with an outpoint
+   *  tie-break, so every tab computes the same list (and cap) from the same
+   *  rows — a merge can never oscillate. */
+  _pendingMintsBounded(list) {
+    const rows = (Array.isArray(list) ? list : []).filter((p) =>
+      p && typeof p === 'object' && !Array.isArray(p)
+        && typeof p.commitTxid === 'string' && p.commitTxid
+        && typeof p.revealHex === 'string' && p.revealHex);
+    rows.sort((a, b) => String(b.updatedAt || b.createdAt || '')
+      .localeCompare(String(a.updatedAt || a.createdAt || ''))
+      || String(a.commitTxid).localeCompare(String(b.commitTxid)));
+    return rows.slice(0, PENDING_MINTS_MAX);
+  }
+
+  /** Tombstones are a set; sort before capping so every tab writes the
+   *  same 50 and cannot oscillate. */
+  _retiredMintsBounded() {
+    return [...this.retiredMints].filter((t) => /^[0-9a-f]{64}$/.test(t))
+      .sort().slice(-RETIRED_MINTS_MAX);
+  }
+
   _saveLedger() {
     // localStorage holds one key per wallet and every tab keeps a full copy
-    // in memory. Writing that copy verbatim would drop a staged Hopper that
-    // another tab recorded since this one loaded, so staged rows are unioned
-    // first (see _mergeStagedRows). Other sections are not merged: they have
-    // deletes and migrations, so a whole-file hand-off (_adoptStoredLedger)
-    // is used for them instead.
+    // in memory. Writing that copy verbatim would drop a staged Hopper (or a
+    // mint package holding the only copy of an unrevealed commit) that
+    // another tab recorded since this one loaded, so those sections are
+    // unioned first. The rest is a cache: it self-heals from the chain, and
+    // the sections with deletes/migrations are left to last-writer-wins.
     const stored = loadJson(this._ledgerKey(), null);
     if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-      this._mergeStoredStaged(stored);
+      this._mergeStoredPrecious(stored);
     }
     this._lastRefresh = new Date().toISOString();
     const payload = this._ledgerPayload();
@@ -383,7 +461,8 @@ export class WalletSession {
       changesVersion: this.changesVersion || 0,
       chainMints: this.chainMints.slice(-300),
       pending: this.pending.slice(-24),
-      pendingMints: this.pendingMints.slice(-12),
+      pendingMints: this._pendingMintsBounded(this.pendingMints),
+      retiredMints: this._retiredMintsBounded(),
       inflightMints: this.inflightMints.slice(-12),
       history: this.history.slice(-200),
       mempool: this.mempool.slice(-50),
@@ -401,18 +480,38 @@ export class WalletSession {
     };
   }
 
-  /** A verified row outranks a provisional one no matter which tab wrote
-   *  it: merging must never demote a coin the chain already named. Rows are
-   *  only ever added, never deleted, so this union is safe to repeat. */
+  /** Merge staged rows. Rows are only ever added, never deleted, so the
+   *  union is safe to repeat. Precedence: the newer `seeded_at` wins (a
+   *  re-staged card supersedes the old outpoint); at equal age a verified
+   *  row beats a provisional one, so a stale copy can never demote proof.
+   *  Rows for different outpoints of the same sat are not compared beyond
+   *  that: a CROSS re-pays the same script, so either outpoint self-heals
+   *  on the next pass, and treating them as a conflict would ping-pong. */
   _mergeStagedRows(ours, theirs) {
     const rows = { ...(ours && typeof ours === 'object' && !Array.isArray(ours) ? ours : {}) };
     let changed = false;
     for (const [sat, row] of Object.entries(
       theirs && typeof theirs === 'object' && !Array.isArray(theirs) ? theirs : {})) {
-      if (!/^\d+$/.test(sat) || !row || typeof row !== 'object') continue;
-      if (!rows[sat]) { rows[sat] = row; changed = true; continue; }
-      if (rows[sat].provisional === true && row.provisional !== true) {
-        rows[sat] = { ...rows[sat], ...row, provisional: false };
+      if (!/^\d+$/.test(sat) || String(Number(sat)) !== sat) continue;
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      if (typeof row.address !== 'string' || typeof row.script !== 'string') continue;
+      if (row.sat != null && Number(row.sat) !== Number(sat)) continue;
+      const mine = rows[sat];
+      if (!mine || typeof mine !== 'object' || Array.isArray(mine)) {
+        rows[sat] = { ...row };
+        changed = true;
+        continue;
+      }
+      // The same sat can be staged again at the same script (a rebuild, or a
+      // Hopper sent away and returned). The newer row is the live outpoint;
+      // at equal age proof wins. Comparing outpoints instead would let two
+      // tabs rewrite each other forever.
+      const mineAt = Number(mine.seeded_at) || 0;
+      const theirAt = Number(row.seeded_at) || 0;
+      const theirsWins = theirAt > mineAt
+        || (theirAt === mineAt && mine.provisional === true && row.provisional !== true);
+      if (theirsWins) {
+        rows[sat] = { ...row, provisional: row.provisional === true };
         changed = true;
       }
     }
@@ -422,8 +521,8 @@ export class WalletSession {
   _mergeStoredStaged(stored) {
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return false;
     if (stored.network && this.network && stored.network !== this.network) {
-      // The key is per fingerprint, but a seed is valid on every network.
-      // Never import rows that came from another chain.
+      // The key is per fingerprint and network, but refuse a payload that
+      // labels another chain all the same.
       return false;
     }
     const res = this._mergeStagedRows(this.staged, stored.staged);
@@ -431,36 +530,106 @@ export class WalletSession {
     return res.changed;
   }
 
-  /** Another tab wrote the ledger. When this one has nothing unsaved, adopt
-   *  the file wholesale: that is what converges receives, actions, pending
-   *  and history with their deletes intact. Otherwise leave it to our next
-   *  save, which unions the staged rows first. */
-  _onStorage(ev) {
-    if (!ev || ev.key !== this._ledgerKey() || ev.newValue == null) return;
-    if (this._refreshing || this._inFlight()) { this._ledgerStale = true; return; }
-    this._adoptStoredLedger();
+  /** Union mint packages by commit txid. The reveal bytes are the only copy
+   *  of an unrevealed commit, so no tab's save may drop one. A tombstone
+   *  (the package was revealed or refunded) is final: it removes the package
+   *  from every tab, which is what stops a stale copy resurrecting it. */
+  _mergeStoredPendingMints(stored) {
+    const key = (p) => String((p && p.commitTxid) || '').toLowerCase();
+    let changed = false;
+    const retired = Array.isArray(stored && stored.retiredMints) ? stored.retiredMints : [];
+    for (const t of retired) {
+      const k = String(t || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(k) || this.retiredMints.has(k)) continue;
+      this.retiredMints.add(k);
+      changed = true;
+    }
+    const gone = (this.pendingMints || []).filter((p) => this.retiredMints.has(key(p)));
+    if (gone.length) {
+      this.pendingMints = this.pendingMints.filter((p) => !this.retiredMints.has(key(p)));
+      changed = true;
+    }
+    const theirs = Array.isArray(stored && stored.pendingMints) ? stored.pendingMints : [];
+    const have = new Set((this.pendingMints || []).map(key));
+    const add = [];
+    for (const p of theirs) {
+      if (!p || typeof p !== 'object') continue;
+      const k = key(p);
+      if (!k || typeof p.revealHex !== 'string' || !p.revealHex) continue;
+      if (have.has(k) || this.retiredMints.has(k)) continue;
+      have.add(k);
+      add.push(p);
+    }
+    if (add.length) {
+      this.pendingMints = this._pendingMintsBounded([...(this.pendingMints || []), ...add]);
+      changed = true;
+    }
+    return changed;
   }
 
-  _adoptStoredLedger() {
+  _mergeStoredPrecious(stored) {
+    if (stored.network && this.network && stored.network !== this.network) return false;
+    let changed = this._mergeStoredStaged(stored);
+    if (this._mergeStoredPendingMints(stored)) changed = true;
+    return changed;
+  }
+
+  /** True when the file lost a row this tab holds. Both transitions are
+   *  one-way (a missing row appears, a provisional one is proven), so a
+   *  rewrite is monotone and two tabs reach a fixed point. */
+  _stagedNeedsWrite(stored) {
+    const file = stored && stored.staged && typeof stored.staged === 'object'
+      && !Array.isArray(stored.staged) ? stored.staged : {};
+    for (const [sat, row] of Object.entries(this.staged || {})) {
+      const t = file[sat];
+      if (!t || typeof t !== 'object') return true;
+      if (t.provisional === true && row.provisional !== true) return true;
+    }
+    return false;
+  }
+
+  _retiredMintsNeedWrite(stored) {
+    const file = stored && Array.isArray(stored.retiredMints) ? stored.retiredMints : [];
+    const have = new Set(file.map((t) => String(t || '').toLowerCase()));
+    return [...this.retiredMints].some((t) => !have.has(t));
+  }
+
+  _pendingMintsNeedWrite(stored) {
+    const file = stored && Array.isArray(stored.pendingMints) ? stored.pendingMints : [];
+    const have = new Set(file.map((p) => String((p && p.commitTxid) || '').toLowerCase()));
+    return (this.pendingMints || []).some((p) =>
+      p && !have.has(String(p.commitTxid || '').toLowerCase()));
+  }
+
+  /** Another tab wrote the ledger. Take the rows it added (staged hints and
+   *  mint packages — both monotone), and repair the file if it lost one of
+   *  ours. Everything else stays in memory: adopting another tab's snapshot
+   *  wholesale would let a stale tab drop an in-flight mint it never saw. */
+  _onStorage(ev) {
+    if (!ev || ev.key !== this._ledgerKey() || ev.newValue == null) return;
+    // sessionStorage in an embedding frame can carry the same key name.
+    try {
+      if (ev.storageArea && typeof localStorage !== 'undefined' && ev.storageArea !== localStorage) return;
+    } catch { /* no localStorage: nothing to reconcile anyway */ }
+    if (this._refreshing || this._inFlight()) { this._ledgerStale = true; return; }
+    this._reconcileStored();
+  }
+
+  _reconcileStored() {
     this._ledgerStale = false;
     let raw = null;
     try { raw = localStorage.getItem(this._ledgerKey()); } catch { return; }
     if (!raw || raw === this._ledgerSnapshot) return;
-    // Unsaved local state (a pass in flight, a just-recorded action) must not
-    // be thrown away; the next save writes our union instead.
-    if (this._ledgerPayloadJson() !== this._ledgerSnapshot) return;
-    const mine = this.staged;
-    this._loadLedger();
-    // A racing writer may have saved before our seed landed. Keep the rows we
-    // hold and write the union once, or that Hopper loses its watch hint.
-    const merged = this._mergeStagedRows(this.staged, mine);
-    this.staged = this._stagedBounded(merged.rows);
-    if (merged.changed) this._saveLedger();
-    this.dispatch('refresh', this.summary());
-  }
-
-  _ledgerPayloadJson() {
-    try { return JSON.stringify(this._ledgerPayload()); } catch { return null; }
+    let stored = null;
+    try { stored = JSON.parse(raw); } catch { return; }
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return;
+    if (stored.network && this.network && stored.network !== this.network) return;
+    const staged = this._mergeStoredStaged(stored);
+    const mints = this._mergeStoredPendingMints(stored);
+    const lost = this._stagedNeedsWrite(stored) || this._pendingMintsNeedWrite(stored)
+      || this._retiredMintsNeedWrite(stored);
+    if (lost) this._saveLedger();
+    if (staged || mints || lost) this.dispatch('refresh', this.summary());
   }
 
   // --- automatic recovery packs -----------------------------------------
@@ -1057,7 +1226,7 @@ export class WalletSession {
     } finally {
       if (this._refreshing === job) this._refreshing = null;
       this.scan.busy = false;
-      if (this._ledgerStale && !this._inFlight()) this._adoptStoredLedger();
+      if (this._ledgerStale && !this._inFlight()) this._reconcileStored();
       if (this._autoSync && !this._stopped) {
         if (this._wakeQueued) {
           const reason = this._wakeQueued;
@@ -3030,7 +3199,10 @@ export class WalletSession {
     const key = String(commitTxid || '').toLowerCase();
     const before = (this.pendingMints || []).length;
     this.pendingMints = (this.pendingMints || []).filter((p) => p.commitTxid !== key);
-    if (this.pendingMints.length !== before) this._saveLedger();
+    if (this.pendingMints.length !== before) {
+      this.retiredMints.add(key);
+      this._saveLedger();
+    }
   }
 
   pendingMintPackages() {

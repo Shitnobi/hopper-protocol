@@ -208,16 +208,22 @@ is up to ~400 KB — a separate key is written only when it changed):
   (`built.stateScript`), and the map is capped at the newest 300 rows
   (`STAGED_ROWS_MAX`) so a planted or long-lived ledger cannot make every pass
   sweep an unbounded address list.
-* **Two tabs on one device**: the ledger is one localStorage key per wallet,
-  so each tab holds a full copy and a plain overwrite drops whatever the
-  other recorded. `_saveLedger` unions `staged` rows from the file before
-  writing (a verified row never loses to a provisional one, and rows from
-  another network are refused), and a `storage` event makes an idle tab adopt
-  the file wholesale — deletes included — after re-merging its own staged
-  rows, so a racing writer cannot drop a seed. Nothing else is unioned:
-  resolved `pending` mints and migrated `receives` are deletions, and a union
-  would resurrect them.
-* **UI**: no new state. "Sats without ranges" still appears when a coin is
+* **Two tabs on one device**: the ledger is one key per wallet *and
+  network* (fingerprints are chain-independent, so a fingerprint-only key let
+  the same seed on mainnet and testnet share a slot). Each tab still holds a
+  full copy and rewrites the whole key, so two sections are unioned before
+  every write, because they are the only ones whose loss is not repaired by a
+  scan: `staged` (a lost row makes the card unhoppable until a cold pass) and
+  `pendingMints` (a package holds the only copy of an unrevealed commit's
+  bytes). A `storage` event merges those two sections from the file and
+  rewrites the file when it lost a row the tab still holds; that rewrite is
+  monotone (a row appears, a proof is upgraded), so two tabs reach a fixed
+  point instead of echoing each other. A tab does **not** adopt the other
+  file wholesale: every other section is a cache that self-heals from the
+  chain, and adopting a stale snapshot would let a tab that never saw an
+  in-flight mint delete it. Saves still last-writer-wins on `receives`,
+  `actions`, `history` and the tip gate, exactly as before.
+* **UI**: no new state.* **UI**: no new state. "Sats without ranges" still appears when a coin is
   unknown and the budget is exhausted or ord is cooling down — the same
   first-class display as today.
 
@@ -259,12 +265,24 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
     it; a warm pass watches it; the retry is bounded; `exact: false` does not
     clear the flag; a planted ledger cannot grow the watch set past
     `STAGED_ROWS_MAX`, pollute `Object.prototype`, or crash the load; a HOP
-    from an unproven card is refused and records nothing.
+    from an unproven card is refused and records nothing; non-canonical sat
+    keys (`007`, `1e3`, `-1`) and rows whose `sat` disagrees with the key are
+    refused; a malformed "verified" row cannot demote a provisional one.
+16. Two tabs, same ledger: a stale save cannot drop a seed or a mint package;
+    a newer staging supersedes an older verified row while an older
+    provisional copy cannot demote proof; a retired package leaves a
+    tombstone that a stale tab honours instead of resurrecting it, and the
+    tombstone survives a reload; a dropped package is repaired from memory;
+    the file's staged rows enter the watch set without replacing our
+    sections; another network's payload and event are ignored; the key is
+    network-scoped and a matching legacy ledger is migrated once; a
+    non-canonical sat key or a row whose `sat` disagrees with its key is
+    refused.
 
-Implemented in `web/tests/scan.test.mjs` (246 checks, up from 150), including
+Implemented in `web/tests/scan.test.mjs` (282 checks, up from 150), including
 the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
 reload-from-storage path, the rollback flag, and the adversarial staged-seed
-cases.
+and two-tab cases.
 
 ## 11. Non-goals / follow-ups
 

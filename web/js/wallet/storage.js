@@ -74,7 +74,10 @@ export function removeKey(key) {
 export const KEYS = {
   vault: 'hopper.vault.v1',
   settings: 'hopper.settings.v1',
-  ledger: (fp) => `hopper.ledger.${fp}.v1`,
+  // A fingerprint is chain-independent, so the network must be part of the
+  // key: the same seed on mainnet and testnet would otherwise share (and
+  // overwrite) one ledger. The two-argument form is the legacy slot.
+  ledger: (fp, network) => `hopper.ledger.${fp}${network ? `.${network}` : ''}.v1`,
   recovery: (fp) => `hopper.recovery.${fp}.v1`,
   rangeCache: (fp) => `hopper.ranges.${fp}.v1`,
   mock: 'hopper.mockchain.v1',

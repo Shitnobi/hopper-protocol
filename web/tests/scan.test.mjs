@@ -142,7 +142,7 @@ eq('rescan re-runs the fixed history backfills', fake.historyCalls - beforeResca
 eq('rescan re-asks the fixed watch set plus the legacy path', fake.utxoCalls - beforeRescan.u, 3 + legacyExtra);
 eq('rescan has no progress line when finished', wallet.scan.rescan, null);
 eq('rescan re-arms the gate', wallet.fullScanTip, 101);
-const savedLedger = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
+const savedLedger = JSON.parse(settingsStore.get(wallet._ledgerKey()));
 eq('the gate tip persists with the ledger', savedLedger.fullScanTip, 101);
 eq('no gap state is persisted', savedLedger.receiveIndex, undefined);
 eq('no hot-address state is persisted', savedLedger.hot, undefined);
@@ -169,7 +169,7 @@ eq('mempool output keeps its txid', wallet.mempool[0].txid, memTxid);
 eq('mempool output keeps its amount', wallet.mempool[0].amount, 1234);
 eq('mempool output is flagged on the coin', wallet.utxos[0].unconfirmed, true);
 eq('mempool total is in the balance summary', String(wallet.balance.pending), '1234');
-const savedMempool = JSON.parse(settingsStore.get(`hopper.ledger.${wallet.fingerprint}.v1`));
+const savedMempool = JSON.parse(settingsStore.get(wallet._ledgerKey()));
 eq('mempool rows persist with the ledger', savedMempool.mempool[0].txid, memTxid);
 eq('the pending total persists with the ledger', savedMempool.balance.pending, '1234');
 
@@ -430,7 +430,7 @@ wallet.stop();
   w5.backend = new FakeBackend(300);
   w5._autoSync = false;
   const sat5 = 612345678901;
-  const ledgerKey = `hopper.ledger.${w5.fingerprint}.v1`;
+  const ledgerKey = w5._ledgerKey();
   w5._addInflightMint({ sat: sat5, seed: 4242, name: 'In Flight Frog',
     commitTxid: 'AA'.repeat(32), revealTxid: 'BB'.repeat(32) });
   eq('an in-flight mint is remembered', w5.inflightMints.length, 1);
@@ -944,6 +944,10 @@ wallet.stop();
       'oops': { sat: 'x' },
       '12.5': { address: 5, script: null },
       '999': null,
+      '007': { sat: 7, address: 'bcrt1pcanon', script: '51' },
+      '1e3': { sat: 1000, address: 'bcrt1pcanon', script: '51' },
+      '-1': { sat: -1, address: 'bcrt1pcanon', script: '51' },
+      '1400': { sat: 9999, address: 'bcrt1pcanon', script: '51' },
       ['__proto__']: { sat: 1, address: 'x', script: '51' },
     },
   }));
@@ -980,20 +984,21 @@ wallet.stop();
     /exact ordinal ranges/.test(String(hopErr?.message)), true);
   eq('no HOP was recorded', hopGuard.actions.filter((a) => a.kind === 'cross').length, 0);
 
-  // 12. Two tabs on one device. The ledger is one key per wallet and each tab
-  //     keeps a full copy in memory, so a plain overwrite drops what the other
-  //     tab recorded. A seed is the worst loss: the card goes unhoppable until
-  //     a cold scan. Saving must union staged rows; an idle tab must adopt the
-  //     other tab's file (deletes included) and keep its own seed.
-  const tabA = fresh();
+  // 12. Two tabs on one device. The ledger is one key per wallet *and
+  //     network*; every tab keeps a full copy in memory and rewrites the
+  //     whole key, so a stale tab would drop what the other tab recorded.
+  //     Two sections are not caches and must be unioned: a staged row (the
+  //     card goes unhoppable until a cold scan) and a mint package (the only
+  //     copy of an unrevealed commit's bytes).
   const tabB = mk();                      // loaded before A staged anything
-  const aRow = seedFrog(tabA, 4_242, 'a1'.repeat(32)).row;
+  const tabA = fresh();
+  seedFrog(tabA, 4_242, 'a1'.repeat(32));
   eq('the first tab seeded and saved its row', !!JSON.parse(
     localStorage.getItem(tabA._ledgerKey())).staged['4242'], true);
   tabB._saveLedger();                     // the stale tab writes its old view
   const afterB = JSON.parse(localStorage.getItem(tabA._ledgerKey()));
   eq('a stale tab cannot wipe the other tab seeded row', !!afterB.staged['4242'], true);
-  eq('the stale tab adopted the row it found', !!tabB.staged['4242'], true);
+  eq('the stale tab keeps the row it found', !!tabB.staged['4242'], true);
 
   // Verified beats provisional, in both directions.
   const tabC = fresh();
@@ -1012,6 +1017,42 @@ wallet.stop();
   eq('our verified row survives a provisional copy on disk',
     JSON.parse(localStorage.getItem(tabD._ledgerKey())).staged['5002'].provisional, false);
 
+  // The same sat can be staged again at the same script (a rebuild, or a
+  // Hopper sent away and returned): the newer outpoint supersedes, while an
+  // older provisional copy still cannot demote proof.
+  const tabQ = fresh();
+  seedFrog(tabQ, 9_100, 'e7'.repeat(32));
+  tabQ.staged['9100'] = { ...tabQ.staged['9100'], provisional: false, seeded_at: 100 };
+  const qDisk = JSON.parse(localStorage.getItem(tabQ._ledgerKey()));
+  qDisk.staged['9100'] = { ...qDisk.staged['9100'], provisional: true, seeded_at: 200 };
+  localStorage.setItem(tabQ._ledgerKey(), JSON.stringify(qDisk));
+  tabQ._saveLedger();
+  eq('a newer staging at the same script supersedes a verified row',
+    JSON.parse(localStorage.getItem(tabQ._ledgerKey())).staged['9100'].seeded_at, 200);
+
+  const tabR = fresh();
+  seedFrog(tabR, 9_200, 'e8'.repeat(32));
+  tabR.staged['9200'] = { ...tabR.staged['9200'], provisional: false, seeded_at: 300 };
+  const rDisk = JSON.parse(localStorage.getItem(tabR._ledgerKey()));
+  rDisk.staged['9200'] = { ...rDisk.staged['9200'], provisional: true, seeded_at: 250 };
+  localStorage.setItem(tabR._ledgerKey(), JSON.stringify(rDisk));
+  tabR._saveLedger();
+  eq('an older provisional row cannot demote a verified one',
+    JSON.parse(localStorage.getItem(tabR._ledgerKey())).staged['9200'].provisional, false);
+
+  // A malformed "verified" row (no address/script) is not proof: it must not
+  // demote ours, and merging must never mix two outpoints' fields.
+  const tabL = fresh();
+  seedFrog(tabL, 8_001, 'b1'.repeat(32));
+  const lDisk = JSON.parse(localStorage.getItem(tabL._ledgerKey()));
+  lDisk.staged['8001'] = { sat: 8001, provisional: false };
+  localStorage.setItem(tabL._ledgerKey(), JSON.stringify(lDisk));
+  tabL._saveLedger();
+  const lAfter = JSON.parse(localStorage.getItem(tabL._ledgerKey())).staged['8001'];
+  eq('a malformed row cannot demote a provisional row', lAfter.provisional, true);
+  eq('the row still carries the script it was seeded with',
+    lAfter.script, tabL.staged['8001'].script);
+
   // The ledger key is per fingerprint, but a seed is valid on every network.
   // Rows written by another chain must never enter the watch set.
   const tabE = fresh();
@@ -1024,43 +1065,203 @@ wallet.stop();
   eq('rows from another network are refused',
     JSON.parse(localStorage.getItem(tabE._ledgerKey())).staged['6001'], undefined);
 
-  // An idle tab adopts the other tab's file wholesale, so receives, actions
-  // and pending states converge with their deletes intact...
+  // The scope is the key itself: same seed, two chains, two ledgers.
+  const netReg = fresh();
+  seedFrog(netReg, 6_601, 'e1'.repeat(32));
+  const mainnet = new WalletSession({
+    mnemonic, network: 'mainnet',
+    settings: { ...DEFAULT_SETTINGS, mode: 'demo' },
+  });
+  mainnet._autoSync = false;
+  eq('the ledger key is scoped by network',
+    mainnet._ledgerKey() !== netReg._ledgerKey(), true);
+  eq('another chain does not see this chain rows', Object.keys(mainnet.staged).length, 0);
+  eq('another chain ledger is not read at construction', mainnet.fullScanTip, null);
+
+  // A pre-network ledger (fingerprint-only key) is adopted once, when its
+  // payload belongs to this chain, and migrated.
+  const legacyKey = `hopper.ledger.${netReg.fingerprint}.v1`;
+  eq('the legacy slot is the fingerprint-only key', legacyKey,
+    netReg._ledgerKey().replace('.regtest', ''));
+  localStorage.removeItem(netReg._ledgerKey());   // a returning pre-v8-0-16 user
+  localStorage.setItem(legacyKey, JSON.stringify({
+    network: 'regtest', staged: {}, fullScanTip: 77,
+  }));
+  const migrated = mk();
+  eq('a matching legacy ledger is adopted', migrated.fullScanTip, 77);
+  eq('it is migrated to the scoped key',
+    JSON.parse(localStorage.getItem(migrated._ledgerKey())).fullScanTip, 77);
+  eq('the legacy slot is dropped after migration', localStorage.getItem(legacyKey), null);
+  localStorage.removeItem(migrated._ledgerKey());
+  localStorage.setItem(legacyKey, JSON.stringify({
+    network: 'mainnet', staged: {}, fullScanTip: 88,
+  }));
+  const notMigrated = mk();
+  eq('a legacy ledger from another chain is not adopted', notMigrated.fullScanTip, null);
+  eq('and it is left for that chain', JSON.parse(localStorage.getItem(legacyKey)).fullScanTip, 88);
+  localStorage.removeItem(legacyKey);
+
+  // The storage event takes the rows the other tab added and repairs the
+  // file when it lost one of ours — never replacing our own sections (that
+  // is what would let a stale tab drop an in-flight mint it never saw).
   const tabF = fresh();
   seedFrog(tabF, 7_001, 'f1'.repeat(32));
+  tabF.actions = [{ kind: 'mint', sat: 7_001, txid: 'f0'.repeat(32), at: '2026-01-01' }];
   tabF._saveLedger();
   const fKey = tabF._ledgerKey();
   const fDisk = JSON.parse(localStorage.getItem(fKey));
   const gRecv = { txid: '61'.repeat(32), amount: 1_000, address: 'bcrt1qother', height: 12, confirmed: true };
   fDisk.receives.push(gRecv);
+  fDisk.staged['7002'] = {
+    sat: 7_002, address: 'bcrt1pother', script: '5120' + '11'.repeat(32),
+    txid: '62'.repeat(32), vout: 0, provisional: true, seeded_at: 1,
+  };
   delete fDisk.staged['7001'];               // a racing writer missed the seed
   const fJson = JSON.stringify(fDisk);
   localStorage.setItem(fKey, fJson);
   tabF._onStorage({ key: fKey, newValue: fJson });
-  eq('an idle tab adopts the other tab rows', tabF.receives.some((r) => r.txid === gRecv.txid), true);
-  eq('adopting a file never drops our seeded row', !!tabF.staged['7001'], true);
+  eq('the other tab staged row enters our watch set', !!tabF.staged['7002'], true);
+  eq('a file never drops our seeded row', !!tabF.staged['7001'], true);
   eq('the union is written back for the other tab',
     !!JSON.parse(localStorage.getItem(fKey)).staged['7001'], true);
+  eq('our own sections are not replaced by the other file',
+    tabF.receives.some((r) => r.txid === gRecv.txid), false);
+  eq('our own actions are kept through the repair',
+    tabF.actions.some((a) => a.txid === 'f0'.repeat(32)), true);
+  eq('the repair keeps our action on disk',
+    !!JSON.parse(localStorage.getItem(fKey)).actions.find((a) => a.txid === 'f0'.repeat(32)), true);
 
   // ...but a busy tab must not lose in-progress state: defer, then converge.
-  const hRecv = { txid: '62'.repeat(32), amount: 2_000, address: 'bcrt1qbusy', height: 13, confirmed: true };
   const hDisk = JSON.parse(localStorage.getItem(fKey));
-  hDisk.receives.push(hRecv);
+  hDisk.staged['7003'] = {
+    sat: 7_003, address: 'bcrt1pbusy', script: '5120' + '22'.repeat(32),
+    txid: '63'.repeat(32), vout: 0, provisional: true, seeded_at: 2,
+  };
   const hJson = JSON.stringify(hDisk);
   localStorage.setItem(fKey, hJson);
   tabF._refreshing = { then() {} };
   tabF._onStorage({ key: fKey, newValue: hJson });
-  eq('a busy tab defers the hand-off', tabF.receives.some((r) => r.txid === hRecv.txid), false);
+  eq('a busy tab defers the hand-off', !!tabF.staged['7003'], false);
   eq('the deferred hand-off is remembered', tabF._ledgerStale, true);
   tabF._refreshing = null;
-  tabF._adoptStoredLedger();
-  eq('the deferred hand-off runs once idle', tabF.receives.some((r) => r.txid === hRecv.txid), true);
+  tabF._reconcileStored();
+  eq('the deferred hand-off runs once idle', !!tabF.staged['7003'], true);
 
-  // Malformed events and unrelated keys are ignored, never thrown.
+  // A CROSS re-pays the same state script, so two tabs can hold different
+  // outpoints for one sat. Neither rewrites the file forever over that.
+  const tabM = fresh();
+  seedFrog(tabM, 9_001, 'c9'.repeat(32));
+  tabM.staged['9001'] = { ...tabM.staged['9001'], provisional: false };
+  tabM._saveLedger();
+  const mDisk = JSON.parse(localStorage.getItem(tabM._ledgerKey()));
+  mDisk.staged['9001'] = { ...mDisk.staged['9001'], txid: 'd9'.repeat(32), vout: 1 };
+  const mJson = JSON.stringify(mDisk);
+  localStorage.setItem(tabM._ledgerKey(), mJson);
+  tabM._onStorage({ key: tabM._ledgerKey(), newValue: mJson });
+  eq('a different outpoint for the same sat does not trigger a rewrite',
+    localStorage.getItem(tabM._ledgerKey()), mJson);
+
+  // A mint package is the only copy of an unrevealed commit's bytes.
+  const tabI = mk();                        // loaded before the mint
+  const tabH = fresh();
+  tabH._upsertPendingMint({
+    commitTxid: 'c1'.repeat(32), revealHex: '00', sat: 1,
+    revealTxid: 'd1'.repeat(32), createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  tabI._saveLedger();                       // the stale tab writes its old view
+  eq('a stale save cannot drop a mint package', tabI.pendingMints.length, 1);
+  eq('nor from the file', JSON.parse(localStorage.getItem(tabH._ledgerKey())).pendingMints.length, 1);
+
+  const tabJ = fresh();
+  const jKey = tabJ._ledgerKey();
+  const jDisk = JSON.parse(localStorage.getItem(jKey)) || {};
+  jDisk.network = 'regtest';
+  jDisk.pendingMints = [
+    { commitTxid: 'e1'.repeat(32), revealHex: '00', sat: 2, createdAt: '2026-02-01T00:00:00.000Z' },
+    { commitTxid: 'e2'.repeat(32), revealHex: '00', sat: 3, createdAt: '2026-03-01T00:00:00.000Z' },
+  ];
+  localStorage.setItem(jKey, JSON.stringify(jDisk));
+  tabJ._upsertPendingMint({
+    commitTxid: 'e3'.repeat(32), revealHex: '00', sat: 4,
+    createdAt: '2026-04-01T00:00:00.000Z', updatedAt: '2026-04-01T00:00:00.000Z',
+  });
+  const jAfter = JSON.parse(localStorage.getItem(jKey)).pendingMints;
+  eq('mint packages are unioned by commit txid', jAfter.length, 3);
+  eq('the newest package is first', jAfter[0].commitTxid, 'e3'.repeat(32));
+
+  // The cap is deterministic (timestamp, then txid), so two tabs holding
+  // different sets converge instead of rewriting each other forever.
+  const tabN = fresh();
+  const capRows = Array.from({ length: 13 }, (_, i) => ({
+    commitTxid: `${String(i).padStart(2, '0')}`.repeat(32),
+    revealHex: '00', sat: 100 + i,
+    createdAt: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+  }));
+  localStorage.setItem(tabN._ledgerKey(), JSON.stringify({ network: 'regtest', pendingMints: capRows }));
+  tabN._saveLedger();
+  const capAfter = JSON.parse(localStorage.getItem(tabN._ledgerKey())).pendingMints;
+  eq('mint packages are capped at 12', capAfter.length, 12);
+  eq('the oldest package is the one dropped', capAfter.some((p) => p.sat === 100), false);
+  eq('the newest package is first', capAfter[0].sat, 112);
+
+  // Retiring a package here must not be undone by our own pre-save file.
+  const tabO = fresh();
+  const oKey = tabO._ledgerKey();
+  tabO._upsertPendingMint({
+    commitTxid: 'f1'.repeat(32), revealHex: '00', sat: 5,
+    createdAt: '2026-05-01T00:00:00.000Z',
+  });
+  eq('the package is on disk before retirement',
+    JSON.parse(localStorage.getItem(oKey)).pendingMints.length, 1);
+  const staleO = mk();                     // loaded while the package was live
+  eq('the stale tab holds the package', staleO.pendingMints.length, 1);
+  tabO._dropPendingMint('f1'.repeat(32));
+  eq('a retired package is gone from memory', tabO.pendingMintPackages().length, 0);
+  eq('a retired package is gone from disk',
+    JSON.parse(localStorage.getItem(oKey)).pendingMints.length, 0);
+  eq('retirement is persisted as a tombstone',
+    JSON.parse(localStorage.getItem(oKey)).retiredMints.includes('f1'.repeat(32)), true);
+  staleO._saveLedger();                    // the stale tab writes its old view
+  eq('a stale tab cannot resurrect a retired package',
+    JSON.parse(localStorage.getItem(oKey)).pendingMints.length, 0);
+  eq('the stale tab drops it after reading the tombstone', staleO.pendingMints.length, 0);
+  tabO._saveLedger();                      // a later save must not resurrect it
+  eq('a later save does not resurrect it',
+    JSON.parse(localStorage.getItem(oKey)).pendingMints.length, 0);
+  const reloadedO = mk();
+  eq('a reload keeps it retired', reloadedO.pendingMints.length, 0);
+  eq('the tombstone survives the reload',
+    reloadedO.retiredMints.has('f1'.repeat(32)), true);
+
+  // If the file loses a package we still hold, the handler writes it back.
+  const tabP = fresh();
+  tabP._upsertPendingMint({
+    commitTxid: 'a2'.repeat(32), revealHex: '00', sat: 6,
+    createdAt: '2026-06-01T00:00:00.000Z',
+  });
+  const pKey = tabP._ledgerKey();
+  const pDisk = JSON.parse(localStorage.getItem(pKey));
+  pDisk.pendingMints = [];
+  const pJson = JSON.stringify(pDisk);
+  localStorage.setItem(pKey, pJson);
+  tabP._onStorage({ key: pKey, newValue: pJson });
+  eq('a dropped mint package is repaired on the next write',
+    JSON.parse(localStorage.getItem(pKey)).pendingMints.length, 1);
+
+  // Malformed events, unrelated keys, other storage areas and other
+  // networks are ignored, never thrown.
   let threw = false;
   try {
     tabF._onStorage({ key: fKey, newValue: '{not json' });
     tabF._onStorage({ key: 'hopper.settings.v1', newValue: '{}' });
+    tabF._onStorage({ key: fKey, newValue: '{}', storageArea: {} });
+    const cross = JSON.parse(localStorage.getItem(fKey));
+    cross.network = 'mainnet';
+    cross.staged['7004'] = { address: 'bc1px', script: '5120' + '33'.repeat(32), provisional: true };
+    const crossJson = JSON.stringify(cross);
+    localStorage.setItem(fKey, crossJson);
+    tabF._onStorage({ key: fKey, newValue: crossJson });
+    eq('a cross-network payload is ignored', !!tabF.staged['7004'], false);
   } catch { threw = true; }
   eq('a malformed storage event does not throw', threw, false);
 
@@ -1083,6 +1284,9 @@ wallet.stop();
   unproven.stop(); bounded.stop(); watchClear.stop(); seedStore.stop(); guard.stop();
   scriptSeed.stop(); planted.stop(); hopGuard.stop();
   tabA.stop(); tabB.stop(); tabC.stop(); tabD.stop(); tabE.stop(); tabF.stop(); tabG.stop();
+  tabH.stop(); tabI.stop(); tabJ.stop(); tabL.stop(); tabM.stop(); tabN.stop();
+  tabO.stop(); tabP.stop(); tabQ.stop(); tabR.stop(); staleO.stop(); reloadedO.stop();
+  netReg.stop(); mainnet.stop(); migrated.stop(); notMigrated.stop();
 }
 
 console.log(`scan: ${checks} checks passed`);

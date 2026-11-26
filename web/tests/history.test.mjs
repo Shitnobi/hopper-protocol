@@ -525,7 +525,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 {
   const base = new WalletSession({ mnemonic: MNEMONIC, network: 'regtest', settings: { ...settings } });
   const txid = 'a'.repeat(64);
-  localStorage.setItem(KEYS.ledger(base.fingerprint), JSON.stringify({
+  localStorage.setItem(base._ledgerKey(), JSON.stringify({
     network: 'regtest',
     actions: [],
     receives: [{
@@ -540,7 +540,7 @@ const plain = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const text = plain(history({ w }));
   ok(/RECEIVE/.test(text), 'the demoted funding row renders as RECEIVE');
   ok(!/HOPPER ARRIVED/.test(text), 'the demoted funding row is not a Hopper arrival');
-  localStorage.removeItem(KEYS.ledger(base.fingerprint));
+  localStorage.removeItem(base._ledgerKey());
 }
 
 console.log(`history: ${checks} checks passed`);
