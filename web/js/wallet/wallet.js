@@ -256,6 +256,10 @@ export class WalletSession {
     this._timer = null;
     this._refreshing = null;
     this._wakeQueued = false;
+    this._ledgerSnapshot = null;   // exact bytes loaded/written last
+    this._lastRefresh = null;      // keeps the payload comparable
+    this._ledgerStale = false;     // another tab wrote while we were busy
+    this._storageHandler = null;
     this._scanAbort = false;
     this._stopped = false;
     this._blockUnsub = null;
@@ -285,7 +289,13 @@ export class WalletSession {
   _ledgerKey() { return KEYS.ledger(this.fingerprint); }
 
   _loadLedger() {
-    const l = loadJson(this._ledgerKey(), null);
+    let raw = null;
+    try { raw = localStorage.getItem(this._ledgerKey()); } catch { raw = null; }
+    // The exact bytes we loaded: anything different means another tab wrote.
+    this._ledgerSnapshot = raw;
+    let l = null;
+    try { l = raw ? JSON.parse(raw) : null; } catch { l = null; }
+    this._lastRefresh = l && typeof l.lastRefresh === 'string' ? l.lastRefresh : null;
     if (!l) return;
     this.actions = l.actions || [];
     this.receives = Array.isArray(l.receives)
@@ -346,7 +356,25 @@ export class WalletSession {
   }
 
   _saveLedger() {
-    saveJson(this._ledgerKey(), {
+    // localStorage holds one key per wallet and every tab keeps a full copy
+    // in memory. Writing that copy verbatim would drop a staged Hopper that
+    // another tab recorded since this one loaded, so staged rows are unioned
+    // first (see _mergeStagedRows). Other sections are not merged: they have
+    // deletes and migrations, so a whole-file hand-off (_adoptStoredLedger)
+    // is used for them instead.
+    const stored = loadJson(this._ledgerKey(), null);
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      this._mergeStoredStaged(stored);
+    }
+    this._lastRefresh = new Date().toISOString();
+    const payload = this._ledgerPayload();
+    if (saveJson(this._ledgerKey(), payload)) {
+      try { this._ledgerSnapshot = JSON.stringify(payload); } catch { this._ledgerSnapshot = null; }
+    }
+  }
+
+  _ledgerPayload() {
+    return {
       network: this.network,
       actions: this.actions.slice(-300),
       receives: this.receives.slice(-300),
@@ -367,10 +395,72 @@ export class WalletSession {
         cards: String(this.balance.cards), unspendable: String(this.balance.unspendable),
         pending: String(this.balance.pending || 0n),
       },
-      lastRefresh: new Date().toISOString(),
+      lastRefresh: this._lastRefresh || new Date().toISOString(),
       tipHeight: this.tipHeight,
       tipHash: this.tipHash || null,
-    });
+    };
+  }
+
+  /** A verified row outranks a provisional one no matter which tab wrote
+   *  it: merging must never demote a coin the chain already named. Rows are
+   *  only ever added, never deleted, so this union is safe to repeat. */
+  _mergeStagedRows(ours, theirs) {
+    const rows = { ...(ours && typeof ours === 'object' && !Array.isArray(ours) ? ours : {}) };
+    let changed = false;
+    for (const [sat, row] of Object.entries(
+      theirs && typeof theirs === 'object' && !Array.isArray(theirs) ? theirs : {})) {
+      if (!/^\d+$/.test(sat) || !row || typeof row !== 'object') continue;
+      if (!rows[sat]) { rows[sat] = row; changed = true; continue; }
+      if (rows[sat].provisional === true && row.provisional !== true) {
+        rows[sat] = { ...rows[sat], ...row, provisional: false };
+        changed = true;
+      }
+    }
+    return { rows, changed };
+  }
+
+  _mergeStoredStaged(stored) {
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return false;
+    if (stored.network && this.network && stored.network !== this.network) {
+      // The key is per fingerprint, but a seed is valid on every network.
+      // Never import rows that came from another chain.
+      return false;
+    }
+    const res = this._mergeStagedRows(this.staged, stored.staged);
+    if (res.changed) this.staged = this._stagedBounded(res.rows);
+    return res.changed;
+  }
+
+  /** Another tab wrote the ledger. When this one has nothing unsaved, adopt
+   *  the file wholesale: that is what converges receives, actions, pending
+   *  and history with their deletes intact. Otherwise leave it to our next
+   *  save, which unions the staged rows first. */
+  _onStorage(ev) {
+    if (!ev || ev.key !== this._ledgerKey() || ev.newValue == null) return;
+    if (this._refreshing || this._inFlight()) { this._ledgerStale = true; return; }
+    this._adoptStoredLedger();
+  }
+
+  _adoptStoredLedger() {
+    this._ledgerStale = false;
+    let raw = null;
+    try { raw = localStorage.getItem(this._ledgerKey()); } catch { return; }
+    if (!raw || raw === this._ledgerSnapshot) return;
+    // Unsaved local state (a pass in flight, a just-recorded action) must not
+    // be thrown away; the next save writes our union instead.
+    if (this._ledgerPayloadJson() !== this._ledgerSnapshot) return;
+    const mine = this.staged;
+    this._loadLedger();
+    // A racing writer may have saved before our seed landed. Keep the rows we
+    // hold and write the union once, or that Hopper loses its watch hint.
+    const merged = this._mergeStagedRows(this.staged, mine);
+    this.staged = this._stagedBounded(merged.rows);
+    if (merged.changed) this._saveLedger();
+    this.dispatch('refresh', this.summary());
+  }
+
+  _ledgerPayloadJson() {
+    try { return JSON.stringify(this._ledgerPayload()); } catch { return null; }
   }
 
   // --- automatic recovery packs -----------------------------------------
@@ -582,6 +672,10 @@ export class WalletSession {
       document.removeEventListener('visibilitychange', this._visHandler);
       this._visHandler = null;
     }
+    if (this._storageHandler && typeof window !== 'undefined') {
+      window.removeEventListener('storage', this._storageHandler);
+      this._storageHandler = null;
+    }
   }
 
   /** Stop background work (lock/wipe/backend change). Network requests
@@ -633,6 +727,13 @@ export class WalletSession {
     if (typeof document !== 'undefined' && !this._visHandler) {
       this._visHandler = () => { if (!document.hidden) this._wake('focus'); };
       document.addEventListener('visibilitychange', this._visHandler);
+    }
+    if (typeof window !== 'undefined' && !this._storageHandler) {
+      // The `storage` event only fires in *other* tabs, so this cannot hear
+      // its own write; a union that changes nothing is never written back,
+      // which is what stops two tabs from echoing each other forever.
+      this._storageHandler = (ev) => this._onStorage(ev);
+      window.addEventListener('storage', this._storageHandler);
     }
     if (this.backend?.onNewBlock) {
       this._blockUnsub = this.backend.onNewBlock(() => this._wake('block'));
@@ -956,6 +1057,7 @@ export class WalletSession {
     } finally {
       if (this._refreshing === job) this._refreshing = null;
       this.scan.busy = false;
+      if (this._ledgerStale && !this._inFlight()) this._adoptStoredLedger();
       if (this._autoSync && !this._stopped) {
         if (this._wakeQueued) {
           const reason = this._wakeQueued;

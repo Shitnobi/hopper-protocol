@@ -6,7 +6,7 @@
 //
 //   node web/tests/rig/live-e2e.mjs [http://127.0.0.1:8130] [9222]
 //
-// Requires: rig.sh backends (bitcoind 19743, ord 18080), static server on
+// Requires: rig backends (bitcoind 19743, ord via $ORD), static server on
 // 8130, chromium --remote-debugging-port=9222. Reads $RIG/logs/*.jsonl.
 
 import fs from 'node:fs';
@@ -16,8 +16,8 @@ import { execFileSync } from 'node:child_process';
 const base = process.argv[2] || 'http://127.0.0.1:8130';
 const debugPort = process.argv[3] || '9222';
 const RIG = process.env.RIG || `${process.env.HOME}/AI/.hopper-e2e`;
-const ESPLORA = 'http://127.0.0.1:18081';
-const ORD = 'http://127.0.0.1:18080';
+const ESPLORA = process.env.ESPLORA || 'http://127.0.0.1:18081';
+const ORD = process.env.ORD || 'http://127.0.0.1:18080';
 const B = `${process.env.HOME}/AI/bitcoin/bitcoin-31.1/bin/bitcoin-cli`;
 const btc = (...a) => execFileSync(B, [`-datadir=${path.join(RIG, 'btc')}`, ...a], { encoding: 'utf8' }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -85,6 +85,10 @@ await sleep(1500); // let ord index the blocks
 console.log(`funded ${fundAddr} with 106 coinbases`);
 
 await wallet.refresh({ force: true });
+// connect() re-arms auto-sync lazily, which would let background passes race
+// the six the test drives (the sweep count is then luck). The test owns the
+// scheduler: unsubscribe and clear the timer, manually pass.
+wallet._teardownAutoSync();
 eq('a cold pass records the tip', wallet.fullScanTip, Number(btc('getblockcount')));
 ok('a cold pass found spendable coins', wallet.balance.spendable > 0n, String(wallet.balance.spendable));
 
@@ -111,8 +115,10 @@ for (let i = 0; i < 6; i += 1) {
   sweeps.push(lineCount(esploraLog) - before);
 }
 r = newReqs();
+const addrReqs = r.esplora.filter((x) => x.p.includes('/address/')).map((x) => x.p);
 ok('new block: no catch-up burst without an indexer (<= 3 sweeps)',
-  count(r.esplora, '/address/') <= 3 * 4, `address queries=${count(r.esplora, '/address/')}`);
+  count(r.esplora, '/address/') <= 3 * 4,
+  `address queries=${count(r.esplora, '/address/')} watch=${JSON.stringify(wallet.scanState().watch)} rechecks=${wallet._recheckLeft} paths=${JSON.stringify(addrReqs)}`);
 ok('after the grace passes the tip gate closes again',
   sweeps[sweeps.length - 1] <= 2, `tail requests=${JSON.stringify(sweeps)}`);
 eq('recheck window is empty', wallet._recheckLeft, 0);

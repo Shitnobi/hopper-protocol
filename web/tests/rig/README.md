@@ -42,6 +42,17 @@ bash web/tests/rig/run-full-e2e.sh                # 38 checks, exit 1 if any fai
 RIG_RESET=1 bash web/tests/rig/run-full-e2e.sh    # same, from an empty chain
 ```
 
+The runner does not assume the ports above are free: it picks the first free
+one for the shim (from 18081), the proxy (from 18080), the static server and
+the CDP browser, prints them, and exports `ESPLORA`/`ORD` for the node tests
+(all three read those variables). A process leaked by an earlier sandbox can
+hold a port while being invisible to `pkill` in this one, so fixed ports are
+not safe.
+
+`query-logic-e2e.mjs` counts requests in the shim log, so close the previous
+stage's browser before it: a still-running tab keeps sweeping and its requests
+land inside the measuring window.
+
 The rig reuses `~/.hopper-e2e/btc` and its ord index between runs. That is
 fine normally, but after many runs the chain grows and ord catch-up can lag
 funding; `RIG_RESET=1` wipes the chain (keeping `bitcoin.conf`) and the ord

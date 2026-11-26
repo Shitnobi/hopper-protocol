@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // Headless end-to-end smoke: onboarding → wallet → mint → prepare → hop.
-// Requires Chromium with --remote-debugging-port=9222 and a static server.
+// Requires Chromium with --remote-debugging-port=<port> and a static server.
 //
 //   python3 -m http.server 8130 &
 //   chromium --headless=new --no-sandbox --remote-debugging-port=9222 ...
 //   node tests/e2e.mjs http://127.0.0.1:8130
 
 const base = process.argv[2] || 'http://127.0.0.1:8130';
+const cdp = process.argv[3] || '9222';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const targets = await (await fetch('http://127.0.0.1:9222/json')).json();
+const targets = await (await fetch(`http://127.0.0.1:${cdp}/json`)).json();
 const page = targets.find((t) => t.type === 'page');
 if (!page) throw new Error('no page target');
 const ws = new WebSocket(page.webSocketDebuggerUrl);

@@ -18,8 +18,8 @@
 //       cooldown stops later asks; the wallet recovers afterwards
 //   P6  no page errors
 //
-// Requires the rig from README.md (bitcoind 19743, ord 18780, shim 18081,
-// proxy 18080, static server 8130, chromium --remote-debugging-port=9223).
+// Requires the rig from README.md (bitcoind 19743, ord 18780, shim and proxy
+// from $ESPLORA/$ORD, static server and CDP browser as argv).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,8 +28,8 @@ import { execFileSync } from 'node:child_process';
 const base = process.argv[2] || 'http://127.0.0.1:8130';
 const debugPort = process.argv[3] || '9223';
 const RIG = process.env.RIG || `${process.env.HOME}/AI/.hopper-e2e`;
-const ESPLORA = 'http://127.0.0.1:18081';
-const ORD = 'http://127.0.0.1:18080';
+const ESPLORA = process.env.ESPLORA || 'http://127.0.0.1:18081';
+const ORD = process.env.ORD || 'http://127.0.0.1:18080';
 const B = `${process.env.HOME}/AI/bitcoin/bitcoin-31.1/bin/bitcoin-cli`;
 const btc = (...a) => execFileSync(B, [`-datadir=${path.join(RIG, 'btc')}`, ...a], { encoding: 'utf8' }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -151,8 +151,8 @@ await call('Runtime.enable');
 await call('Log.enable');
 await call('Page.enable');
 await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
-await fetch(`http://127.0.0.1:18080/__fault`, { method: 'DELETE' }).catch(() => {});
-await fetch(`http://127.0.0.1:18081/__fault`, { method: 'DELETE' }).catch(() => {});
+await fetch(`${ORD}/__fault`, { method: 'DELETE' }).catch(() => {});
+await fetch(`${ESPLORA}/__fault`, { method: 'DELETE' }).catch(() => {});
 
 // A Core wallet with spendable coins, for a true external send into the app.
 let coreAddr = null;

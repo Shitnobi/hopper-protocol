@@ -980,9 +980,109 @@ wallet.stop();
     /exact ordinal ranges/.test(String(hopErr?.message)), true);
   eq('no HOP was recorded', hopGuard.actions.filter((a) => a.kind === 'cross').length, 0);
 
+  // 12. Two tabs on one device. The ledger is one key per wallet and each tab
+  //     keeps a full copy in memory, so a plain overwrite drops what the other
+  //     tab recorded. A seed is the worst loss: the card goes unhoppable until
+  //     a cold scan. Saving must union staged rows; an idle tab must adopt the
+  //     other tab's file (deletes included) and keep its own seed.
+  const tabA = fresh();
+  const tabB = mk();                      // loaded before A staged anything
+  const aRow = seedFrog(tabA, 4_242, 'a1'.repeat(32)).row;
+  eq('the first tab seeded and saved its row', !!JSON.parse(
+    localStorage.getItem(tabA._ledgerKey())).staged['4242'], true);
+  tabB._saveLedger();                     // the stale tab writes its old view
+  const afterB = JSON.parse(localStorage.getItem(tabA._ledgerKey()));
+  eq('a stale tab cannot wipe the other tab seeded row', !!afterB.staged['4242'], true);
+  eq('the stale tab adopted the row it found', !!tabB.staged['4242'], true);
+
+  // Verified beats provisional, in both directions.
+  const tabC = fresh();
+  seedFrog(tabC, 5_001, 'c1'.repeat(32));
+  const cDisk = JSON.parse(localStorage.getItem(tabC._ledgerKey()));
+  cDisk.staged['5001'].provisional = false;   // another tab proved it
+  localStorage.setItem(tabC._ledgerKey(), JSON.stringify(cDisk));
+  tabC._saveLedger();
+  eq('a provisional copy cannot demote a verified row',
+    JSON.parse(localStorage.getItem(tabC._ledgerKey())).staged['5001'].provisional, false);
+
+  const tabD = fresh();
+  seedFrog(tabD, 5_002, 'd1'.repeat(32));
+  tabD.staged['5002'] = { ...tabD.staged['5002'], provisional: false };
+  tabD._saveLedger();
+  eq('our verified row survives a provisional copy on disk',
+    JSON.parse(localStorage.getItem(tabD._ledgerKey())).staged['5002'].provisional, false);
+
+  // The ledger key is per fingerprint, but a seed is valid on every network.
+  // Rows written by another chain must never enter the watch set.
+  const tabE = fresh();
+  tabE._saveLedger();
+  const eDisk = JSON.parse(localStorage.getItem(tabE._ledgerKey()));
+  eDisk.network = 'mainnet';
+  eDisk.staged['6001'] = { address: 'bc1ptest', script: '5120' + '00'.repeat(32), provisional: true };
+  localStorage.setItem(tabE._ledgerKey(), JSON.stringify(eDisk));
+  tabE._saveLedger();
+  eq('rows from another network are refused',
+    JSON.parse(localStorage.getItem(tabE._ledgerKey())).staged['6001'], undefined);
+
+  // An idle tab adopts the other tab's file wholesale, so receives, actions
+  // and pending states converge with their deletes intact...
+  const tabF = fresh();
+  seedFrog(tabF, 7_001, 'f1'.repeat(32));
+  tabF._saveLedger();
+  const fKey = tabF._ledgerKey();
+  const fDisk = JSON.parse(localStorage.getItem(fKey));
+  const gRecv = { txid: '61'.repeat(32), amount: 1_000, address: 'bcrt1qother', height: 12, confirmed: true };
+  fDisk.receives.push(gRecv);
+  delete fDisk.staged['7001'];               // a racing writer missed the seed
+  const fJson = JSON.stringify(fDisk);
+  localStorage.setItem(fKey, fJson);
+  tabF._onStorage({ key: fKey, newValue: fJson });
+  eq('an idle tab adopts the other tab rows', tabF.receives.some((r) => r.txid === gRecv.txid), true);
+  eq('adopting a file never drops our seeded row', !!tabF.staged['7001'], true);
+  eq('the union is written back for the other tab',
+    !!JSON.parse(localStorage.getItem(fKey)).staged['7001'], true);
+
+  // ...but a busy tab must not lose in-progress state: defer, then converge.
+  const hRecv = { txid: '62'.repeat(32), amount: 2_000, address: 'bcrt1qbusy', height: 13, confirmed: true };
+  const hDisk = JSON.parse(localStorage.getItem(fKey));
+  hDisk.receives.push(hRecv);
+  const hJson = JSON.stringify(hDisk);
+  localStorage.setItem(fKey, hJson);
+  tabF._refreshing = { then() {} };
+  tabF._onStorage({ key: fKey, newValue: hJson });
+  eq('a busy tab defers the hand-off', tabF.receives.some((r) => r.txid === hRecv.txid), false);
+  eq('the deferred hand-off is remembered', tabF._ledgerStale, true);
+  tabF._refreshing = null;
+  tabF._adoptStoredLedger();
+  eq('the deferred hand-off runs once idle', tabF.receives.some((r) => r.txid === hRecv.txid), true);
+
+  // Malformed events and unrelated keys are ignored, never thrown.
+  let threw = false;
+  try {
+    tabF._onStorage({ key: fKey, newValue: '{not json' });
+    tabF._onStorage({ key: 'hopper.settings.v1', newValue: '{}' });
+  } catch { threw = true; }
+  eq('a malformed storage event does not throw', threw, false);
+
+  // The listener rides the auto-sync lifecycle, not the constructor.
+  const realWindow = globalThis.window;
+  const wired = [];
+  globalThis.window = {
+    addEventListener: (name) => wired.push(name),
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+  };
+  const tabG = fresh();
+  tabG._setupAutoSync();
+  eq('auto-sync registers the storage listener', wired.includes('storage'), true);
+  tabG._teardownAutoSync();
+  eq('teardown drops the storage listener', tabG._storageHandler, null);
+  globalThis.window = realWindow;
+
   rc.stop(); reloaded.stop(); budget.stop(); cool.stop(); old.stop(); stg.stop();
   unproven.stop(); bounded.stop(); watchClear.stop(); seedStore.stop(); guard.stop();
   scriptSeed.stop(); planted.stop(); hopGuard.stop();
+  tabA.stop(); tabB.stop(); tabC.stop(); tabD.stop(); tabE.stop(); tabF.stop(); tabG.stop();
 }
 
 console.log(`scan: ${checks} checks passed`);

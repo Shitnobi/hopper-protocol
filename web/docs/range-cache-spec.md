@@ -208,6 +208,15 @@ is up to ~400 KB — a separate key is written only when it changed):
   (`built.stateScript`), and the map is capped at the newest 300 rows
   (`STAGED_ROWS_MAX`) so a planted or long-lived ledger cannot make every pass
   sweep an unbounded address list.
+* **Two tabs on one device**: the ledger is one localStorage key per wallet,
+  so each tab holds a full copy and a plain overwrite drops whatever the
+  other recorded. `_saveLedger` unions `staged` rows from the file before
+  writing (a verified row never loses to a provisional one, and rows from
+  another network are refused), and a `storage` event makes an idle tab adopt
+  the file wholesale — deletes included — after re-merging its own staged
+  rows, so a racing writer cannot drop a seed. Nothing else is unioned:
+  resolved `pending` mints and migrated `receives` are deletions, and a union
+  would resurrect them.
 * **UI**: no new state. "Sats without ranges" still appears when a coin is
   unknown and the budget is exhausted or ord is cooling down — the same
   first-class display as today.
@@ -252,7 +261,7 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
     `STAGED_ROWS_MAX`, pollute `Object.prototype`, or crash the load; a HOP
     from an unproven card is refused and records nothing.
 
-Implemented in `web/tests/scan.test.mjs` (231 checks, up from 150), including
+Implemented in `web/tests/scan.test.mjs` (246 checks, up from 150), including
 the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
 reload-from-storage path, the rollback flag, and the adversarial staged-seed
 cases.

@@ -12,9 +12,33 @@ RIG=${RIG:-$HOME/AI/.hopper-e2e}
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 BB=$HOME/AI/bitcoin/bitcoin-31.1/bin
 LOG=$RIG/logs
-PORT_STATIC=${PORT_STATIC:-8130}
-PORT_DEBUG=${PORT_DEBUG:-9223}
 mkdir -p "$LOG"
+
+# A process leaked by an earlier sandbox can hold a port and be invisible to
+# pkill in this one (different PID namespace), so never assume the default
+# port is ours: pick the first free one and tell the tests where it is.
+port_busy() {
+  python3 - "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(); s.settimeout(0.25)
+sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1]))) == 0 else 1)
+PY
+}
+free_port() {
+  local p=$1 n=0
+  while [ $n -lt 50 ]; do
+    port_busy "$p" || { echo "$p"; return 0; }
+    p=$((p + 1)); n=$((n + 1))
+  done
+  echo "$1"
+}
+PORT_STATIC=${PORT_STATIC:-$(free_port 8130)}
+PORT_DEBUG=${PORT_DEBUG:-$(free_port 9223)}
+PORT_ORD=${PORT_ORD:-$(free_port 18080)}
+# Start the shim above the ord port so the two can never pick the same one.
+PORT_ESPLORA=${PORT_ESPLORA:-$(free_port $(( PORT_ORD > 18080 ? PORT_ORD + 1 : 18081 )))}
+export ESPLORA="http://127.0.0.1:$PORT_ESPLORA"
+export ORD="http://127.0.0.1:$PORT_ORD"
 
 
 # Kill only blinkers that were started from this rig's own profile dirs.
@@ -54,7 +78,7 @@ cleanup() {
   for p in "${pids[@]:-}"; do [ -n "${p:-}" ] && kill "$p" 2>/dev/null; done
   pkill -f -- "--data-dir $RIG/ord" 2>/dev/null
   pkill -f -- "esplora_shim.py" 2>/dev/null
-  pkill -f -- "proxy.py --listen 18080" 2>/dev/null
+  pkill -f -- "proxy.py" 2>/dev/null
   pkill -f -- "http.server $PORT_STATIC" 2>/dev/null
   kill_rig_chrome
   $BB/bitcoin-cli -datadir=$RIG/btc stop >/dev/null 2>&1
@@ -75,7 +99,7 @@ if [ "${RIG_RESET:-0}" = "1" ]; then
 fi
 pkill -f -- "--data-dir $RIG/ord" 2>/dev/null
 pkill -f -- "esplora_shim.py" 2>/dev/null
-pkill -f -- "proxy.py --listen 18080" 2>/dev/null
+pkill -f -- "proxy.py" 2>/dev/null
 pkill -f -- "http.server $PORT_STATIC" 2>/dev/null
 kill_rig_chrome
 $BB/bitcoin-cli -datadir=$RIG/btc stop >/dev/null 2>&1
@@ -102,23 +126,34 @@ for i in $(seq 1 80); do
   sleep 0.5
 done
 
-echo "--- Esplora shim (18081) + ord proxy (18080)"
+echo "--- Esplora shim ($PORT_ESPLORA) + ord proxy ($PORT_ORD)"
 rm -f "$LOG/esplora.jsonl" "$LOG/ord.log.jsonl"
 ( cd "$ROOT/web/tests/rig" && \
   BITCOIND_DATADIR=$RIG/btc BITCOIND_RPC=127.0.0.1:19743 \
   BITCOIND_RPC_USER=hoppere2e BITCOIND_RPC_PASS=e2ehoppere2e \
-  ESPLORA_PORT=18081 ESPLORA_LOG=$LOG/esplora.jsonl \
+  ESPLORA_PORT=$PORT_ESPLORA ESPLORA_LOG=$LOG/esplora.jsonl \
   setsid nohup python3 esplora_shim.py >"$LOG/shim.out" 2>&1 </dev/null & echo $! ) > /tmp/rig_pid
 pids+=($(cat /tmp/rig_pid)); rm -f /tmp/rig_pid
 ( cd "$ROOT/web/tests/rig" && \
-  setsid nohup python3 proxy.py --listen 18080 --upstream 127.0.0.1:18780 --log "$LOG/ord.log.jsonl" \
+  setsid nohup python3 proxy.py --listen $PORT_ORD --upstream 127.0.0.1:18780 --log "$LOG/ord.log.jsonl" \
   >"$LOG/proxy.out" 2>&1 </dev/null & echo $! ) > /tmp/rig_pid
 pids+=($(cat /tmp/rig_pid)); rm -f /tmp/rig_pid
+shim_up=0
 for i in $(seq 1 40); do
-  curl -fsS --max-time 2 http://127.0.0.1:18081/blocks/tip/height >/dev/null 2>&1 \
-    && curl -fsS --max-time 2 http://127.0.0.1:18080/status >/dev/null 2>&1 && break
+  if curl -fsS --max-time 2 "http://127.0.0.1:$PORT_ESPLORA/blocks/tip/height" >/dev/null 2>&1; then
+    shim_up=1; break
+  fi
   sleep 0.5
 done
+[ "$shim_up" = 1 ] || { echo "    shim did not come up on $PORT_ESPLORA"; tail -3 "$LOG/shim.out"; exit 2; }
+proxy_up=0
+for i in $(seq 1 40); do
+  if curl -fsS --max-time 2 "http://127.0.0.1:$PORT_ORD/status" >/dev/null 2>&1; then
+    proxy_up=1; break
+  fi
+  sleep 0.5
+done
+[ "$proxy_up" = 1 ] || { echo "    ord proxy did not come up on $PORT_ORD"; tail -5 "$LOG/proxy.out"; exit 2; }
 
 echo "--- static server ($PORT_STATIC) + headless chromium ($PORT_DEBUG)"
 ( cd "$ROOT/web" && setsid nohup python3 -m http.server "$PORT_STATIC" --bind 127.0.0.1 \
