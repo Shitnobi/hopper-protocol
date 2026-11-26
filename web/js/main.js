@@ -1615,6 +1615,14 @@ window.addEventListener('hopper:scan', () => {
 
 // Keep settings in sync if another tab edits them.
 window.addEventListener('storage', (ev) => {
+  // Another tab wiped the device. Every HOPPER key is gone from storage, but
+  // this tab still holds the mnemonic in memory and would happily write the
+  // ledger back. Reload (the wiping tab does the same) so no session outlives
+  // the words.
+  if (ev.key === KEYS.vault && ev.newValue == null) {
+    setTimeout(() => location.reload(), 60);
+    return;
+  }
   if (ev.key === KEYS.settings) {
     app.settings = loadSettings();
     if (app.w) app.w.settings = { ...app.w.settings, ...app.settings };

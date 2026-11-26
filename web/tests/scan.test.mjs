@@ -1101,6 +1101,97 @@ wallet.stop();
   eq('and it is left for that chain', JSON.parse(localStorage.getItem(legacyKey)).fullScanTip, 88);
   localStorage.removeItem(legacyKey);
 
+  // A corrupt scoped slot is not a ledger. Fall back to the legacy copy,
+  // repair the slot through the normal save, and only then drop the old one.
+  const legGood = JSON.stringify({ network: 'regtest', staged: {}, fullScanTip: 66 });
+  localStorage.setItem(legacyKey, legGood);
+  localStorage.setItem(netReg._ledgerKey(), '{not json');
+  const recovered = mk();
+  eq('a corrupt scoped ledger falls back to the legacy copy', recovered.fullScanTip, 66);
+  eq('the corrupt slot is repaired from it',
+    JSON.parse(localStorage.getItem(recovered._ledgerKey())).fullScanTip, 66);
+  eq('the legacy copy is dropped after the repair', localStorage.getItem(legacyKey), null);
+
+  // A corrupt slot with no legacy copy is absent, not fatal: boot empty and
+  // let the next save replace the bad bytes.
+  localStorage.setItem(netReg._ledgerKey(), '[]');
+  const emptyBoot = mk();
+  eq('an unusable ledger does not throw', emptyBoot.fullScanTip, null);
+  emptyBoot._saveLedger();
+  eq('the next save replaces the bad bytes',
+    JSON.parse(localStorage.getItem(emptyBoot._ledgerKey())).fullScanTip, null);
+
+  // Migration writes through the union: a tab that migrated first may have
+  // staged something under the scoped key, and that row must survive.
+  const racer = mk();
+  const raceRow = { address: 'bcrt1prace', script: '5120' + '11'.repeat(32), provisional: true, seeded_at: 1 };
+  localStorage.setItem(racer._ledgerKey(), JSON.stringify({
+    network: 'regtest', staged: { 6903: raceRow }, fullScanTip: 44,
+  }));
+  racer._migrateLedger(legacyKey);
+  eq('a racing migration keeps a row already in the scoped slot',
+    JSON.parse(localStorage.getItem(racer._ledgerKey())).staged['6903'], raceRow);
+
+  // ... and a failed write leaves the legacy slot for the next attempt.
+  const quotaTab = mk();
+  localStorage.setItem(legacyKey, JSON.stringify({
+    network: 'regtest', staged: {}, fullScanTip: 33,
+  }));
+  localStorage.removeItem(quotaTab._ledgerKey());
+  const origSet = localStorage.setItem;
+  localStorage.setItem = (k, v) => {
+    if (k === quotaTab._ledgerKey()) throw new Error('quota');
+    return origSet(k, v);
+  };
+  quotaTab._migrateLedger(legacyKey);
+  localStorage.setItem = origSet;
+  eq('a failed migration keeps the legacy ledger',
+    JSON.parse(localStorage.getItem(legacyKey)).fullScanTip, 33);
+  eq('and writes no partial scoped ledger', localStorage.getItem(quotaTab._ledgerKey()), null);
+  localStorage.removeItem(legacyKey);
+
+  // Mint package identity is the canonical commit txid. A mixed-case
+  // payload must not show two recovery cards of which one cannot be closed.
+  const hexUp = 'ab'.repeat(32);
+  const upTab = mk();
+  localStorage.setItem(upTab._ledgerKey(), JSON.stringify({
+    network: 'regtest',
+    pendingMints: [
+      { commitTxid: hexUp.toUpperCase(), revealHex: '00', sat: 8_001, createdAt: '2026-01-01T00:00:00Z' },
+      { commitTxid: hexUp, revealHex: '00', sat: 8_001, createdAt: '2026-01-01T00:00:00Z' },
+    ],
+  }));
+  const upLoaded = mk();
+  eq('mixed-case duplicate packages collapse to one', upLoaded.pendingMints.length, 1);
+  eq('the package key is canonical', upLoaded.pendingMints[0].commitTxid, hexUp);
+  upLoaded._upsertPendingMint({ commitTxid: hexUp.toUpperCase(), revealHex: '00', sat: 8_001 });
+  eq('an upsert under another case does not duplicate it', upLoaded.pendingMints.length, 1);
+  upLoaded._dropPendingMint(hexUp.toUpperCase());
+  eq('it can be retired under either case', upLoaded.pendingMints.length, 0);
+  eq('retirement is recorded under the canonical key', upLoaded.retiredMints.has(hexUp), true);
+  localStorage.removeItem(upTab._ledgerKey());
+
+  // The 300-row cap needs a total order: rows written before `seeded_at`
+  // existed all tie, and two tabs with different insertion orders must still
+  // keep (and therefore write) the same 300 rows, or they rewrite forever.
+  const capMap = {};
+  for (let i = 1; i <= 301; i += 1) {
+    capMap[String(i)] = { address: `bcrt1qcap${i}`, script: '0014' + '22'.repeat(20), seeded_at: 0 };
+  }
+  const capBase = mk();
+  localStorage.setItem(capBase._ledgerKey(), JSON.stringify({ network: 'regtest', staged: capMap }));
+  const capTabA = mk();
+  const capKeysA = Object.keys(capTabA.staged).sort();
+  const reversedRows = {};
+  for (let i = 301; i >= 1; i -= 1) reversedRows[String(i)] = capMap[String(i)];
+  localStorage.setItem(capBase._ledgerKey(), JSON.stringify({ network: 'regtest', staged: reversedRows }));
+  const capTabB = mk();
+  const capKeysB = Object.keys(capTabB.staged).sort();
+  eq('the staged cap keeps the same rows in either insertion order', capKeysB, capKeysA);
+  eq('the cap keeps exactly its limit', capKeysA.length, 300);
+  eq('the tie is broken by sat, not insertion order', capKeysA.includes('1'), false);
+  localStorage.removeItem(capBase._ledgerKey());
+
   // The storage event takes the rows the other tab added and repairs the
   // file when it lost one of ours — never replacing our own sections (that
   // is what would let a stale tab drop an in-flight mint it never saw).

@@ -302,12 +302,23 @@ export class WalletSession {
   _legacyLedgerKey() { return KEYS.ledger(this.fingerprint); }
 
   _readLedger() {
+    // A truncated/unparseable slot is not a ledger. Treat it as absent so a
+    // legacy copy (or a fresh scan) can take its place; the next save repairs
+    // the slot. Without this, one bad byte hides the whole wallet forever.
+    const usable = (text) => {
+      try {
+        const v = JSON.parse(text);
+        return !!v && typeof v === 'object' && !Array.isArray(v);
+      } catch { return false; }
+    };
     let raw = null;
     try { raw = localStorage.getItem(this._ledgerKey()); } catch { raw = null; }
-    if (raw != null) return { raw, from: this._ledgerKey(), legacy: false };
+    if (raw != null && usable(raw)) return { raw, from: this._ledgerKey(), legacy: false };
     let legacyRaw = null;
     try { legacyRaw = localStorage.getItem(this._legacyLedgerKey()); } catch { legacyRaw = null; }
-    if (legacyRaw == null) return { raw: null, from: this._ledgerKey(), legacy: false };
+    if (legacyRaw == null || !usable(legacyRaw)) {
+      return { raw: null, from: this._ledgerKey(), legacy: false };
+    }
     let legacy = null;
     try { legacy = JSON.parse(legacyRaw); } catch { legacy = null; }
     // An unlabelled ledger predates `network`; a labelled one must match.
@@ -388,9 +399,9 @@ export class WalletSession {
   _migrateLedger(from) {
     if (!from || from === this._ledgerKey()) return;
     try {
-      const payload = this._ledgerPayload();
-      if (!saveJson(this._ledgerKey(), payload)) return;
-      try { this._ledgerSnapshot = JSON.stringify(payload); } catch { /* proxy only */ }
+      // Through the union, not a raw write: a second tab may have migrated
+      // first and already staged something under the scoped key.
+      if (!this._saveLedger()) return;
       removeKey(from);
     } catch { /* keep the legacy slot; the next save writes the scoped one */ }
   }
@@ -407,23 +418,47 @@ export class WalletSession {
         && typeof row.address === 'string' && typeof row.script === 'string'
         && (row.sat == null || Number(row.sat) === Number(sat)));
     if (list.length <= STAGED_ROWS_MAX) return Object.fromEntries(list);
-    return Object.fromEntries(list
-      .sort(([, a], [, b]) => (Number(a.seeded_at) || 0) - (Number(b.seeded_at) || 0))
-      .slice(-STAGED_ROWS_MAX));
+    // A total order, not just seeded_at: rows written before the field
+    // existed all tie at 0, and two tabs with different insertion orders
+    // would then keep different 300-row subsets and rewrite each other
+    // forever. Canonical sat keys compare numerically by length, then text.
+    const byAge = ([sa, a], [sb, b]) => {
+      const d = (Number(a.seeded_at) || 0) - (Number(b.seeded_at) || 0);
+      if (d) return d;
+      if (sa.length !== sb.length) return sa.length - sb.length;
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    };
+    return Object.fromEntries(list.sort(byAge).slice(-STAGED_ROWS_MAX));
   }
 
   /** Mint packages: sorted by their own timestamps with an outpoint
    *  tie-break, so every tab computes the same list (and cap) from the same
    *  rows — a merge can never oscillate. */
+  /** One package per canonical (lowercase) commit txid. A payload written by
+   *  an older build or a hand-edit could carry mixed case; without this the
+   *  same mint shows two recovery cards, the second undismissable because
+   *  `_dropPendingMint` compares exact strings. Newest first, then dedupe,
+   *  then cap, so the survivors agree in every tab. */
   _pendingMintsBounded(list) {
-    const rows = (Array.isArray(list) ? list : []).filter((p) =>
-      p && typeof p === 'object' && !Array.isArray(p)
-        && typeof p.commitTxid === 'string' && p.commitTxid
-        && typeof p.revealHex === 'string' && p.revealHex);
+    const rows = [];
+    for (const p of Array.isArray(list) ? list : []) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
+      const key = String(p.commitTxid || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(key)) continue;
+      if (typeof p.revealHex !== 'string' || !p.revealHex) continue;
+      rows.push(p.commitTxid === key ? p : { ...p, commitTxid: key });
+    }
     rows.sort((a, b) => String(b.updatedAt || b.createdAt || '')
       .localeCompare(String(a.updatedAt || a.createdAt || ''))
       || String(a.commitTxid).localeCompare(String(b.commitTxid)));
-    return rows.slice(0, PENDING_MINTS_MAX);
+    const seen = new Set();
+    const out = [];
+    for (const p of rows) {
+      if (seen.has(p.commitTxid)) continue;
+      seen.add(p.commitTxid);
+      out.push(p);
+    }
+    return out.slice(0, PENDING_MINTS_MAX);
   }
 
   /** Tombstones are a set; sort before capping so every tab writes the
@@ -446,9 +481,9 @@ export class WalletSession {
     }
     this._lastRefresh = new Date().toISOString();
     const payload = this._ledgerPayload();
-    if (saveJson(this._ledgerKey(), payload)) {
-      try { this._ledgerSnapshot = JSON.stringify(payload); } catch { this._ledgerSnapshot = null; }
-    }
+    if (!saveJson(this._ledgerKey(), payload)) return false;
+    try { this._ledgerSnapshot = JSON.stringify(payload); } catch { this._ledgerSnapshot = null; }
+    return true;
   }
 
   _ledgerPayload() {
@@ -1524,13 +1559,13 @@ export class WalletSession {
         if (!mempoolByTx.has(row.txid)) mempoolByTx.set(row.txid, { ...row });
       }
     }
-    if (stagedChanged) this._saveLedger();
     this.mempool = [...mempoolByTx.values()].sort((a, b) => b.amount - a.amount);
     if (watchFailed) notes.push(`address scan stopped: ${watchFailed}`);
     if (pausedMidPass) notes.push('scanning paused — this pass stopped early');
     // The session was locked/wiped/pointed at another backend while this
     // pass was in flight. Do not write a ledger after the vault is gone.
     if (this._stopped) return this;
+    if (stagedChanged) this._saveLedger();
 
     // 2. Frog candidates: imported sats, sats on our coins, and (optionally)
     //    a bounded public scan so a restored wallet finds state outputs that
@@ -3187,10 +3222,12 @@ export class WalletSession {
   _upsertPendingMint(pkg) {
     if (!pkg?.commitTxid) return null;
     const key = String(pkg.commitTxid).toLowerCase();
-    const prior = (this.pendingMints || []).find((p) => p.commitTxid === key) || {};
+    const prior = (this.pendingMints || []).find((p) =>
+      String(p.commitTxid || '').toLowerCase() === key) || {};
     const row = { ...prior, ...pkg, commitTxid: key, updatedAt: new Date().toISOString() };
-    this.pendingMints = [row, ...(this.pendingMints || []).filter((p) => p.commitTxid !== key)]
-      .slice(0, 12);
+    this.pendingMints = this._pendingMintsBounded(
+      [row, ...(this.pendingMints || []).filter((p) =>
+        String(p.commitTxid || '').toLowerCase() !== key)]);
     this._saveLedger();
     return row;
   }
@@ -3198,7 +3235,8 @@ export class WalletSession {
   _dropPendingMint(commitTxid) {
     const key = String(commitTxid || '').toLowerCase();
     const before = (this.pendingMints || []).length;
-    this.pendingMints = (this.pendingMints || []).filter((p) => p.commitTxid !== key);
+    this.pendingMints = (this.pendingMints || []).filter((p) =>
+      String(p.commitTxid || '').toLowerCase() !== key);
     if (this.pendingMints.length !== before) {
       this.retiredMints.add(key);
       this._saveLedger();
@@ -3239,7 +3277,8 @@ export class WalletSession {
    *  bytes is safe; repricing needs a fresh preview. */
   async retryPendingMint(commitTxid) {
     const key = String(commitTxid || '').toLowerCase();
-    const pkg = (this.pendingMints || []).find((p) => p.commitTxid === key);
+    const pkg = (this.pendingMints || []).find((p) =>
+      String(p.commitTxid || '').toLowerCase() === key);
     if (!pkg) throw new Error('no pending mint package for that commit');
     if (!pkg.commitAccepted) {
       await this.backend.broadcast(pkg.commitHex);
@@ -3267,7 +3306,8 @@ export class WalletSession {
   /** Refund an accepted commit whose reveal will never be replayed. */
   async refundPendingMint(commitTxid, { feeRate = null } = {}) {
     const key = String(commitTxid || '').toLowerCase();
-    const pkg = (this.pendingMints || []).find((p) => p.commitTxid === key);
+    const pkg = (this.pendingMints || []).find((p) =>
+      String(p.commitTxid || '').toLowerCase() === key);
     if (!pkg) throw new Error('no pending mint package for that commit');
     if (!pkg.commitAccepted) throw new Error('the commit is not confirmed or accepted; retry it first');
     const commit = {

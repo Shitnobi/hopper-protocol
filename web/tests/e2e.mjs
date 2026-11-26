@@ -1581,6 +1581,136 @@ if (navigations.length !== navBeforeStale + 1) {
   errors.push(`a stale-build load reloaded itself: ${JSON.stringify(navigations.slice(navBeforeStale))}`);
 }
 
+// 12. Two tabs, one ledger: a real `storage` event across documents.
+//     Tab A loads a staged row; tab B (another document, same origin, inert
+//     404 page) writes the ledger without it. The row must come back and
+//     the app must not throw. Whether the handler or the next pass repairs
+//     is unit-tested in scan.test.mjs; here the platform delivery and the
+//     user-visible invariant are what matter.
+{
+  await call('Page.navigate', { url: base });
+  await clearTourChrome('document.querySelector(".topbar") || document.querySelector("[data-input=lock-password]")');
+  if (await evaluate('!!document.querySelector("[data-input=lock-password]")')) {
+    await fill('lock-password', 'hopper-demo-1');
+    await click('unlock');
+  }
+  await waitFor('document.querySelector(".topbar")', 30000, 'wallet before the two-tab test');
+  await skipTour();
+  const ledgerKey = await evaluate(`Object.keys(localStorage).find((k) => k.startsWith('hopper.ledger.')) || ''`);
+  if (!ledgerKey) errors.push('two-tab: no ledger key');
+  const probeSat = '777001';
+  const probeRow = {
+    sat: 777001, address: 'bcrt1ptwotabprobe', script: '5120' + '33'.repeat(32),
+    txid: '77'.repeat(32), vout: 0, value: 25000, provisional: true,
+    range_misses: 0, seeded_at: 1,
+  };
+  await evaluate(`(() => {
+    const k = ${JSON.stringify(ledgerKey)};
+    const disk = JSON.parse(localStorage.getItem(k) || '{}');
+    disk.staged = { ...(disk.staged || {}), ${JSON.stringify(probeSat)}: ${JSON.stringify(probeRow)} };
+    localStorage.setItem(k, JSON.stringify(disk));
+    window.__storageEvents = [];
+    window.addEventListener('storage', (ev) => window.__storageEvents.push(ev.key));
+    return true;
+  })()`);
+  await call('Page.reload', { ignoreCache: true });
+  await clearTourChrome('document.querySelector(".topbar") || document.querySelector("[data-input=lock-password]")');
+  if (await evaluate('!!document.querySelector("[data-input=lock-password]")')) {
+    await fill('lock-password', 'hopper-demo-1');
+    await click('unlock');
+  }
+  await waitFor('document.querySelector(".topbar")', 30000, 'wallet after the probe reload');
+  await skipTour();
+  await evaluate('window.__storageEvents = []; window.addEventListener("storage", (ev) => window.__storageEvents.push(ev.key)); true');
+  // A second document on the same origin, inert so it cannot run the app.
+  const version = await (await fetch(`http://127.0.0.1:${cdp}/json/version`)).json();
+  const bws = new WebSocket(version.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { bws.onopen = res; bws.onerror = rej; });
+  let bseq = 0;
+  const bpending = new Map();
+  bws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    const p = bpending.get(m.id);
+    if (!p) return;
+    bpending.delete(m.id);
+    if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result);
+  };
+  const bcall = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++bseq;
+    bpending.set(id, { resolve, reject });
+    bws.send(JSON.stringify({ id, method, params }));
+  });
+  const created = await bcall('Target.createTarget', { url: `${base}/two-tab-inert-404` });
+  let ws2 = null;
+  try {
+    const list = await (await fetch(`http://127.0.0.1:${cdp}/json`)).json();
+    const target = list.find((t) => t.id === created.targetId);
+    if (!target) throw new Error('second tab has no debugger target');
+    ws2 = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((res, rej) => { ws2.onopen = res; ws2.onerror = rej; });
+    let s2 = 0;
+    const p2 = new Map();
+    ws2.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      const p = p2.get(m.id);
+      if (!p) return;
+      p2.delete(m.id);
+      if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result);
+    };
+    const eval2 = (expression) => new Promise((resolve, reject) => {
+      const id = ++s2;
+      p2.set(id, { resolve: (r) => {
+        if (r.exceptionDetails) reject(new Error(r.exceptionDetails.text || 'eval failed'));
+        else resolve(r.result.value);
+      }, reject });
+      ws2.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: {
+        expression, awaitPromise: true, returnByValue: true,
+      } }));
+    });
+    const origin2 = await eval2('location.origin');
+    if (origin2 !== new URL(base).origin) throw new Error(`second tab origin ${origin2}`);
+    await eval2(`(() => {
+      const k = ${JSON.stringify(ledgerKey)};
+      const disk = JSON.parse(localStorage.getItem(k) || '{}');
+      disk.staged = {};
+      localStorage.setItem(k, JSON.stringify(disk));
+      return true;
+    })()`);
+    let repaired = false;
+    for (let i = 0; i < 60 && !repaired; i += 1) {
+      repaired = await eval2(`(() => {
+        const disk = JSON.parse(localStorage.getItem(${JSON.stringify(ledgerKey)}) || '{}');
+        return Boolean(disk.staged && disk.staged[${JSON.stringify(probeSat)}]);
+      })()`);
+      if (!repaired) await sleep(200);
+    }
+    if (!repaired) errors.push('two-tab: a stale save dropped a staged row and nothing restored it');
+    const rowBack = await eval2(`(() => {
+      const disk = JSON.parse(localStorage.getItem(${JSON.stringify(ledgerKey)}) || '{}');
+      return disk.staged && disk.staged[${JSON.stringify(probeSat)}];
+    })()`);
+    if (!rowBack || rowBack.address !== probeRow.address) {
+      errors.push(`two-tab: the restored row is wrong ${JSON.stringify(rowBack)}`);
+    }
+    const seen = await evaluate('window.__storageEvents || []');
+    console.log('two-tab: storage events in tab A:', seen.length, 'restored:', repaired);
+    if (!seen.includes(ledgerKey)) errors.push('two-tab: the storage event never reached tab A');
+  } finally {
+    try { ws2?.close(); } catch { /* already closed */ }
+    try { await bcall('Target.closeTarget', { targetId: created.targetId }); } catch { /* gone */ }
+    try { bws.close(); } catch { /* already closed */ }
+  }
+  // Best effort: A still holds the row in memory, so a later pass may
+  // write it back. Nothing after this test inspects the ledger.
+  await evaluate(`(() => {
+    const k = ${JSON.stringify(ledgerKey)};
+    const disk = JSON.parse(localStorage.getItem(k) || '{}');
+    if (disk.staged) delete disk.staged[${JSON.stringify(probeSat)}];
+    localStorage.setItem(k, JSON.stringify(disk));
+    return true;
+  })()`);
+}
+
 // Persist a screenshot path for inspection.
 await call('Page.captureScreenshot', { format: 'png' }).then(async (shot) => {
   const fs = await import('node:fs');

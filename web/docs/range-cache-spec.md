@@ -279,7 +279,22 @@ Cold start with `U = 100`: today `300` in ~3 s; with the cache `100` in
     non-canonical sat key or a row whose `sat` disagrees with its key is
     refused.
 
-Implemented in `web/tests/scan.test.mjs` (282 checks, up from 150), including
+17. Second red-team pass, on the failure and identity edges: a corrupt
+    scoped ledger falls back to a matching legacy copy and is repaired (an
+    unparseable slot is absent, not fatal); migration writes through the
+    union, so a row another tab already staged under the scoped key survives,
+    and a failed write (quota) leaves the legacy slot for the next attempt;
+    mint packages are identified by the canonical lowercase commit txid, so a
+    mixed-case payload cannot show two recovery cards of which one is
+    undismissable; the 300-row staged cap is a total order (age, then sat),
+    so two tabs with different insertion orders keep the same rows instead of
+    rewriting each other forever; a pass that was stopped mid-flight (lock,
+    wipe) no longer writes a ledger afterwards; and a vault removed in another
+    tab reloads this one, so no in-memory session outlives a wipe. The demo
+    E2E now opens a real second document and checks that a stale save in it
+    cannot drop a staged row from the first.
+
+Implemented in `web/tests/scan.test.mjs` (298 checks, up from 150), including
 the token-bucket tranche, the cooldown skip (0 asks, no backlog), the
 reload-from-storage path, the rollback flag, and the adversarial staged-seed
 and two-tab cases.
